@@ -263,7 +263,7 @@ static const char *get_root_source(void) {
 static bool build_host_path_for_guest(const char *guest_path,
                                       char *out, size_t out_size) {
     if (!guest_path || !out || out_size == 0) return false;
-    // 1) bind-mount wins: /var/minis/... → <application-data>/...
+    // 1) bind-mount wins: /var/minis/... → /Users/.../Library/MinisChat/...
     if (guest_path[0] == '/' &&
         fakefs_bind_mount_translate_path(guest_path, out, out_size))
         return true;

@@ -3,7 +3,16 @@
 
 NS_ASSUME_NONNULL_BEGIN
 void LRSetDatalessMaterialization(void);
+@interface LRTransferControl : NSObject
+- (void)cancel;
+- (NSDictionary<NSString *, NSNumber *> *)snapshot;
+@end
 @interface LRRuntimeBridge : NSObject
+#if TARGET_OS_SIMULATOR
++ (void)runExternalDisplayContract:(void (^)(NSDictionary *result))completion;
++ (NSDictionary *)networkABIContract;
++ (void)runDesktopFilesContract:(void (^)(NSDictionary *result))completion;
+#endif
 + (UIViewController *)guiController;
 + (UIViewController *)desktopController;
 + (UIViewController * _Nullable)desktopControllerIfCreated;
@@ -23,6 +32,8 @@ void LRSetDatalessMaterialization(void);
 + (NSURL *)managedStorageURL;
 + (NSDictionary *)healthSummary;
 + (NSArray<NSDictionary *> *)diagnosticEntries;
+/// Redacted, bounded native events and recent desktop log tails. Call off main.
++ (NSArray<NSDictionary *> *)desktopDiagnosticEntries;
 + (void)configureDiagnostics:(int)level process:(int)pid syscall:(int)number errorsOnly:(BOOL)errorsOnly;
 + (NSURL * _Nullable)exportFullDiagnosticBundle:(NSError **)error;
 + (NSString *)redactDiagnosticText:(NSString *)text application:(BOOL)application;
@@ -46,6 +57,37 @@ void LRSetDatalessMaterialization(void);
 + (BOOL)activeEnvironmentIsArch;
 + (BOOL)activeEnvironmentIsDebian;
 + (NSDictionary *)probeJITPermissions;
+/// Execution backend. The JIT exists only in the JIT-capable build variant and
+/// runs only after iOS grants executable memory (an attached debugger such as
+/// StikDebug); the interpreter is the default and always available.
++ (BOOL)jitCompiledIn;
+// GPU acceleration build (LINUXRUNNER_VIRGL=YES): virtio-gpu device backed by
+// virglrenderer on ANGLE/Metal. virglActive: running in this process.
+// Task Manager: live guest processes. Each entry: pid, ppid, name, uid, state
+// (R running, S sleeping in a blocking call, T stopped, Z zombie), threads,
+// cpu_ms (user+system time of all its threads, host-measured), and the pages
+// in its guest page table: mapped_kb, anonymous_kb, shared_kb (mapped address
+// space, not host residency; shared pages count in every process mapping them).
++ (NSArray<NSDictionary<NSString *, id> *> *)taskSnapshot;
+// SIGTERM, or SIGKILL with force. Returns NO if the process no longer exists.
++ (BOOL)terminateProcess:(int)pid force:(BOOL)force;
+// The whole LinuxRunner app's memory as iOS accounts it (phys_footprint), 0 if unavailable.
++ (uint64_t)appFootprintBytes;
++ (BOOL)virglCompiledIn;
++ (BOOL)virglActive;
++ (NSString *)executionMode;            // interpreter | automatic | jit
++ (void)setExecutionMode:(NSString *)mode;
++ (BOOL)debuggerAttached;
++ (void)setDesktopDisplayWidth:(NSUInteger)width height:(NSUInteger)height;   // KMS preferred mode for the next desktop
++ (NSString *)gpuMode;                     // automatic, metal, software
++ (void)setGPUMode:(NSString *)mode;
++ (NSDictionary *)gpuStatus;                 // mode, active renderer, detail
++ (NSDictionary *)jitStatusReport;           // state (Interpreter Active … JIT Active), detail, counters
++ (void)retryJITWhenAuthorized;
++ (BOOL)requiresPreparedJITRegion;      // iOS 26+: StikDebug's TXM script protocol
++ (NSDictionary *)executionBackendStatus;
++ (BOOL)activateJIT:(NSString * _Nullable * _Nullable)detail;
++ (void)prepareExecutionBackendAtLaunch;
 + (void)createEnvironment:(NSString *)root completion:(void (^)(NSError * _Nullable))completion;
 + (NSArray<NSDictionary<NSString *, NSString *> *> *)discoverApplications;
 + (NSArray<NSDictionary *> *)discoverGraphicalApplications;
@@ -82,6 +124,14 @@ void LRSetDatalessMaterialization(void);
 /// Experimental KDE Plasma (X11) from Debian's packages, on top of the regular desktop.
 + (void)installPlasma:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;
 + (BOOL)plasmaInstalled;
++ (void)installLXQt:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;
++ (BOOL)lxqtInstalled;
++ (void)installEnlightenment:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;
++ (BOOL)enlightenmentInstalled;
++ (void)installWayfire:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;
++ (BOOL)wayfireInstalled;
++ (void)installHyprland:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;
++ (BOOL)hyprlandInstalled;
 /// True while a support installation (account tools, desktop, KDE) runs; a
 /// second one is refused until it finishes.
 + (BOOL)installationRunning;
@@ -111,6 +161,11 @@ void LRSetDatalessMaterialization(void);
 + (NSURL * _Nullable)exportLogs:(NSError **)error;
 + (BOOL)importFile:(NSURL *)source root:(NSString *)root error:(NSError **)error;
 + (NSURL * _Nullable)exportFile:(NSString *)leaf root:(NSString *)root error:(NSError **)error;
++ (NSURL *)sharedExchangeURL:(NSString *)root;
++ (NSArray<NSDictionary *> * _Nullable)sharedEntries:(NSString *)relative root:(NSString *)root error:(NSError **)error;
++ (BOOL)createSharedDirectory:(NSString *)leaf relative:(NSString *)relative root:(NSString *)root error:(NSError **)error;
++ (BOOL)importSharedFile:(NSURL *)source relative:(NSString *)relative root:(NSString *)root control:(LRTransferControl *)control error:(NSError **)error;
++ (NSURL * _Nullable)exportSharedItem:(NSString *)leaf relative:(NSString *)relative root:(NSString *)root control:(LRTransferControl *)control error:(NSError **)error;
 + (void)deleteExport:(NSURL *)url;
 @end
 

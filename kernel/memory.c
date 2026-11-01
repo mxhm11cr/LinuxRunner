@@ -276,6 +276,19 @@ static void mem_pt_del(struct mem *mem, page_t page) {
 }
 
 // Skip over large unallocated regions efficiently by checking intermediate levels
+void mem_page_counts(struct mem *mem, unsigned long *mapped, unsigned long *shared, unsigned long *anonymous) {
+    *mapped = *shared = *anonymous = 0;
+    read_wrlock(&mem->lock);
+    for (page_t page = 0; page < MEM_PAGES; mem_next_page(mem, &page)) {
+        struct pt_entry *pt = mem_pt(mem, page);
+        if (!pt) continue;
+        (*mapped)++;
+        if (pt->flags & P_SHARED) (*shared)++;
+        else if (pt->flags & P_ANONYMOUS) (*anonymous)++;
+    }
+    read_wrunlock(&mem->lock);
+}
+
 void mem_next_page(struct mem *mem, page_t *page) {
     (*page)++;
     if (*page >= MEM_PAGES)
@@ -561,6 +574,11 @@ int pt_unmap(struct mem *mem, page_t start, pages_t pages) {
 void data_release(struct data *data) {
     if (--data->refcount == 0) {
         if (data->data != vdso_data) munmap(data->data, data->size);
+        if (data->memfd_maywrite) {
+            lock(&data->fd->memfd->lock);
+            data->fd->memfd->maywrite_maps--;
+            unlock(&data->fd->memfd->lock);
+        }
         if (data->fd) fd_close(data->fd);
         free(data);
     }
@@ -667,6 +685,8 @@ int pt_set_flags(struct mem *mem, page_t start, pages_t pages, int flags) {
             }
         }
         entry->flags = new_flags;
+        if ((old_flags ^ new_flags) & P_EXEC)
+            asbestos_invalidate_page(mem->mmu.asbestos, page);
 #if ANON_MMAP_LIMIT_PAGES > 0
         int delta = (int)anon_page_is_charged(new_flags) - (int)anon_page_is_charged(old_flags);
         atomic_fetch_add(&anon_page_count, delta);
@@ -750,6 +770,8 @@ static void *mem_ptr_nofault(struct mem *mem, addr_t addr, int type) {
     // Keep the existing readable executable/write-only mapping policy.
     if (type == MEM_READ && !(entry->flags & P_RWX))
         return NULL;
+    if (type == MEM_EXEC && !(entry->flags & P_EXEC))
+        return NULL;
     if (type == MEM_WRITE && !P_WRITABLE(entry->flags))
         return NULL;
     return entry->data->data + entry->offset + PGOFFSET(addr);
@@ -829,7 +851,7 @@ void *mem_ptr(struct mem *mem, addr_t addr, int type) {
         if (p < MEM_PAGES &&
                 (mem_pt(mem, p)->flags & (P_GROWSDOWN | P_WRITE)) == (P_GROWSDOWN | P_WRITE) &&
                 within_limit && mem_find_reservation(mem, page) == NULL &&
-                pt_map_nothing(mem, page, 1, P_READ | P_WRITE | P_GROWSDOWN) >= 0)
+                pt_map_nothing(mem, page, 1, (mem_pt(mem, p)->flags & P_RWX) | P_GROWSDOWN) >= 0)
             mem_changed(mem);
         write_wrunlock(&mem->lock);
         read_wrlock(&mem->lock);

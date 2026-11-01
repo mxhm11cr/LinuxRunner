@@ -394,7 +394,21 @@ ssize_t generic_readlinkat(struct fd *at, const char *path_raw, char *buf, size_
 
 int generic_mkdirat(struct fd *at, const char *path_raw, mode_t_ mode) {
     char path[MAX_PATH];
-    int err = path_normalize(at, path_raw, path, N_SYMLINK_FOLLOW | N_PARENT_DIR_WRITE);
+    // mkdir does not follow the final component. Linux reports EEXIST before
+    // checking whether the caller may create in its parent. BusyBox mkdir -p
+    // probes existing ancestors (including /) as an ordinary user.
+    int err = path_normalize(at, path_raw, path, N_SYMLINK_NOFOLLOW);
+    if (err < 0)
+        return err;
+    struct mount *existing = find_mount_and_trim_path(path);
+    struct statbuf st;
+    err = existing->fs->stat(existing, path, &st);
+    mount_release(existing);
+    if (err == 0)
+        return _EEXIST;
+    if (err != _ENOENT)
+        return err;
+    err = path_normalize(at, path_raw, path, N_SYMLINK_NOFOLLOW | N_PARENT_DIR_WRITE);
     if (err < 0)
         return err;
     struct mount *mount = find_mount_and_trim_path(path);

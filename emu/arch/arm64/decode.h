@@ -115,7 +115,7 @@ static inline enum arm64_insn_type arm64_classify_insn(uint32_t insn) {
 
 // Read a 32-bit instruction from memory
 static inline bool arm64_read_insn(addr_t *ip, struct tlb *tlb, uint32_t *insn) {
-    if (!tlb_read(tlb, *ip, insn, sizeof(*insn)))
+    if (!tlb_read_exec(tlb, *ip, insn, sizeof(*insn)))
         return false;
     *ip += 4;
     return true;

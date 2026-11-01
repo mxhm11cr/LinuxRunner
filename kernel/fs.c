@@ -141,24 +141,20 @@ dword_t sys_faccessat2(fd_t at_f, addr_t path_addr, mode_t_ mode, dword_t flags)
 #define MFD_CLOEXEC_ 0x0001U
 #define MFD_ALLOW_SEALING_ 0x0002U
 
-int_t sys_memfd_create(addr_t name_addr, uint_t flags) {
-    char name[256];
-    if (name_addr != 0 && user_read_string(name_addr, name, sizeof(name)))
-        return _EFAULT;
-    STRACE("memfd_create(\"%s\", %#x)", name_addr ? name : "", flags);
-    if (flags & ~(MFD_CLOEXEC_ | MFD_ALLOW_SEALING_))
-        return _EINVAL;
+// A memfd description that is not installed in any descriptor table (also
+// used for the software DRM device's buffers). Returns an error code on failure.
+struct fd *memfd_new(const char *name, uint_t flags, int *error) {
     int host_fd = platform_create_shared_memory_fd(0);
-    if (host_fd < 0)
-        return errno_map();
+    if (host_fd < 0) { *error = errno_map(); return NULL; }
     struct fd *fd = adhoc_fd_create(&realfs_fdops);
     if (fd == NULL) {
         close(host_fd);
-        return _ENOMEM;
+        *error = _ENOMEM;
+        return NULL;
     }
     fd->real_fd = host_fd;
     fd->memfd = calloc(1, sizeof(*fd->memfd));
-    if (!fd->memfd) { fd_close(fd); return _ENOMEM; }
+    if (!fd->memfd) { *error = _ENOMEM; fd_close(fd); return NULL; }
     lock_init(&fd->memfd->lock);
     atomic_init(&fd->memfd->descriptions, 1);
     fd->memfd->backing_fd = host_fd;
@@ -169,12 +165,25 @@ int_t sys_memfd_create(addr_t name_addr, uint_t flags) {
     fd->stat.uid = current->euid;
     fd->stat.gid = current->egid;
     struct stat native_stat;
-    if (fstat(host_fd, &native_stat) < 0) { int err=errno_map(); fd_close(fd); return err; }
+    if (fstat(host_fd, &native_stat) < 0) { *error = errno_map(); fd_close(fd); return NULL; }
     fd->stat.inode = native_stat.st_ino;
     fd->memfd->stat = fd->stat;
-    snprintf(fd->memfd->name, sizeof fd->memfd->name, "%s", name_addr ? name : "");
+    snprintf(fd->memfd->name, sizeof fd->memfd->name, "%s", name);
     fd->inode = inode_get(fd->mount, native_stat.st_ino);
-    if (!fd->inode) { fd_close(fd); return _ENOMEM; }
+    if (!fd->inode) { *error = _ENOMEM; fd_close(fd); return NULL; }
+    return fd;
+}
+
+int_t sys_memfd_create(addr_t name_addr, uint_t flags) {
+    char name[256];
+    if (name_addr != 0 && user_read_string(name_addr, name, sizeof(name)))
+        return _EFAULT;
+    STRACE("memfd_create(\"%s\", %#x)", name_addr ? name : "", flags);
+    if (flags & ~(MFD_CLOEXEC_ | MFD_ALLOW_SEALING_))
+        return _EINVAL;
+    int error = 0;
+    struct fd *fd = memfd_new(name_addr ? name : "", flags, &error);
+    if (!fd) return error;
     return f_install(fd, (flags & MFD_CLOEXEC_) ? O_CLOEXEC_ : 0);
 }
 
@@ -1203,7 +1212,10 @@ static int generic_fsetattr(struct fd *fd, struct attr attr) {
     struct statbuf stat;
     int err = fd->mount->fs->fstat(fd, &stat);
     if (err < 0) return err;
-    err = setattr_check(&stat, &attr);
+    // ftruncate: a descriptor open for writing is the permission, as on Linux
+    // (checked at open). wlroots chmods its keymap file to 0 before sizing it.
+    if (attr.type != attr_size)
+        err = setattr_check(&stat, &attr);
     if (err < 0) return err;
     return fd->mount->fs->fsetattr(fd, attr);
 }
@@ -1581,22 +1593,31 @@ dword_t sys_fadvise64(fd_t f, uint64_t offset, uint64_t len, dword_t advice) {
     return 0;  // Success - hint acknowledged (and ignored)
 }
 
-// ARM64: mincore (syscall 232)
-// Determines which pages of a memory mapping are currently in RAM.
-// For our emulator, we just pretend all pages are in memory.
+// ARM64: mincore (syscall 232). Every mapped page is reported resident (the
+// host decides residency); an unmapped page in the range is ENOMEM as on
+// Linux. Mesa's EGL tells a wl_egl_window version number from a pointer with
+// exactly this check, so reporting unmapped memory as present crashed every
+// Wayland EGL client.
 dword_t sys_mincore(addr_t addr, dword_t length, addr_t vec_addr) {
     STRACE("mincore(%#x, %u, %#x)", addr, length, vec_addr);
-
-    // Page size is 4096
-    size_t page_size = 4096;
-    size_t pages = (length + page_size - 1) / page_size;
-
-    // Write 1 (page in memory) for each page
-    for (size_t i = 0; i < pages; i++) {
+    if (addr & (PAGE_SIZE - 1))
+        return _EINVAL;
+    if ((uint64_t) addr + length < addr)
+        return _ENOMEM;
+    pages_t pages = PAGE_ROUND_UP(length);
+    read_wrlock(&current->mem->lock);
+    for (pages_t i = 0; i < pages; i++) {
+        if (mem_pt(current->mem, PAGE(addr) + i) == NULL) {
+            read_wrunlock(&current->mem->lock);
+            return _ENOMEM;
+        }
+    }
+    read_wrunlock(&current->mem->lock);
+    // Written after the lock is released: the vector is guest memory too.
+    for (pages_t i = 0; i < pages; i++) {
         unsigned char in_mem = 1;
         if (user_put(vec_addr + i, in_mem))
             return _EFAULT;
     }
-
-    return 0;  // Success
+    return 0;
 }

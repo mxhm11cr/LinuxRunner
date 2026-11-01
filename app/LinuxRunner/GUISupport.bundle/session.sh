@@ -46,6 +46,37 @@ if [ "$(id -u)" = 0 ] && [ "$guest_user" != root ]; then
         esac
     done
     [ ! -x ./window-observer ] || /bin/sh ./prepare-window-observer.sh || true
+    # Hyprland draws on LinuxRunner's software KMS device: its nodes, a seat
+    # (seatd without a virtual terminal) and udev's seat tag exist only for this
+    # desktop; every other desktop runs without a DRM device, as before.
+    # Wayfire uses it too, but only with the GPU (virtio-gpu card answering);
+    # in software it stays nested in the X server as before.
+    kms_desktop=$(cat "$session/desktop-environment" 2>/dev/null)
+    if [ "$mode" = desktop ] && [ "$kms_desktop" = wayfire ] && command -v seatd >/dev/null; then
+        mkdir -p /dev/dri
+        [ -c /dev/dri/card1 ] || mknod -m 660 /dev/dri/card1 c 226 1
+        if (exec 3<>/dev/dri/card1) 2>/dev/null; then kms_desktop=wayfire-gpu; else rm -f /dev/dri/card1; fi
+    fi
+    if [ "$mode" = desktop ] && { [ "$kms_desktop" = hyprland ] || [ "$kms_desktop" = wayfire-gpu ]; } && command -v seatd >/dev/null; then
+        mkdir -p /dev/dri /run/udev/data
+        [ -c /dev/dri/card0 ] || mknod -m 660 /dev/dri/card0 c 226 0
+        [ -c /dev/dri/renderD128 ] || mknod -m 666 /dev/dri/renderD128 c 226 128
+        chown "root:$gid" /dev/dri/card0
+        # GPU acceleration (Settings › Graphics, virgl on Metal): its virtio-gpu
+        # nodes stay only when the device answers; otherwise software KMS only.
+        [ -c /dev/dri/card1 ] || mknod -m 660 /dev/dri/card1 c 226 1
+        [ -c /dev/dri/renderD129 ] || mknod -m 666 /dev/dri/renderD129 c 226 129
+        if (exec 3<>/dev/dri/card1) 2>/dev/null; then chown "root:$gid" /dev/dri/card1; echo "GUI_SESSION: gpu=virgl-metal"
+        else rm -f /dev/dri/card1 /dev/dri/renderD129; fi
+        for minor in 0 1 128 129; do printf 'E:ID_SEAT=seat0\nG:seat\nG:master-of-seat\n' > "/run/udev/data/c226:$minor"; done
+        if ! [ -S /run/seatd.sock ] || ! pgrep -x seatd >/dev/null 2>&1; then
+            rm -f /run/seatd.sock
+            SEATD_VTBOUND=0 seatd -u "$guest_user" -g "$(id -gn "$guest_user")" > "$session/seatd.log" 2>&1 &
+        fi
+        echo "GUI_SESSION: software_kms=prepared seat=seatd"
+    elif [ "$mode" = desktop ] && [ -c /dev/dri/card0 ]; then
+        rm -f /dev/dri/card0 /dev/dri/renderD128 /dev/dri/card1 /dev/dri/renderD129
+    fi
     chown -R "$uid:$gid" "$session"
     absolute_session="$session"
     case "$PWD" in /home/mobile/Downloads/.linuxrunner/gui) ;; *) echo 'GUI_SESSION: unexpected support path'; exit 10;; esac
@@ -144,7 +175,7 @@ export LR_GUI_GPU_MODE="$gpu_mode" LR_GUI_SESSION_DIR="$session"
 # Desktop environment chosen in Settings › Desktop (desktop mode): linuxrunner or plasma (experimental).
 desktop_environment=linuxrunner
 [ ! -f "$session/desktop-environment" ] || desktop_environment=$(cat "$session/desktop-environment")
-case "$desktop_environment" in linuxrunner|plasma) ;; *) desktop_environment=linuxrunner;; esac
+case "$desktop_environment" in linuxrunner|plasma|lxqt|enlightenment|wayfire|hyprland) ;; *) desktop_environment=linuxrunner;; esac
 export LR_DESKTOP_ENVIRONMENT="$desktop_environment"
 glx_mode=off
 [ "$distro" != debian ] || glx_mode=software
@@ -165,6 +196,9 @@ case "$shm_mode" in
  *) echo 'GUI_SESSION: invalid shared-image mode (off or sysv required)'; exit 2;;
 esac
 echo "GUI_CAPTURE: shared-images=$shm_mode"
+# Wayfire draws into this X server through MIT-SHM (wlroots' X11 backend with its
+# software renderer); x11vnc keeps the capture path chosen above.
+[ "$mode" != desktop ] || [ "$desktop_environment" != wayfire ] || shm_switch=+extension
 export XDG_SESSION_TYPE=x11
 export QT_QPA_PLATFORM=${QT_QPA_PLATFORM:-xcb}
 export QT_FORCE_STDERR_LOGGING=${QT_FORCE_STDERR_LOGGING:-1}
@@ -297,7 +331,15 @@ esac
 echo "GUI_VNC: timing=$vnc_timing options=$vnc_timing_options"
 vnc_lifetime="-once -timeout 60"
 [ "$mode" != desktop ] || vnc_lifetime="-forever"
-x11vnc -norc -display "$DISPLAY" -auth "$XAUTHORITY" -localhost -no6 -rfbport "$port" -passwdfile "$session/password" $vnc_lifetime $vnc_shm_option $vnc_timing_options -noxrecord -noscr -nosel -noclipboard -nocursorshape -nolookup $input_option "$xkb" > "$session/display.log" 2>&1 & vpid=$!
+# KMS compositors (Hyprland; Wayfire on the GPU) draw their own pointer into
+# the output the bridge shows: x11vnc must not paint a second one.
+vnc_cursor_option=
+case "$mode:$(cat "$session/desktop-environment" 2>/dev/null)" in
+    desktop:hyprland) if command -v Hyprland >/dev/null && [ -c /dev/dri/card0 ]; then vnc_cursor_option=-nocursor; fi;;
+    desktop:wayfire) if [ -c /dev/dri/card1 ] && command -v wayfire >/dev/null; then vnc_cursor_option=-nocursor; fi;;
+esac
+[ -z "$vnc_cursor_option" ] || echo 'GUI_SESSION: pointer=compositor (x11vnc draws none)'
+x11vnc -norc -display "$DISPLAY" -auth "$XAUTHORITY" -localhost -no6 -rfbport "$port" -passwdfile "$session/password" $vnc_lifetime $vnc_shm_option $vnc_timing_options -noxrecord -noscr -nosel -noclipboard -nocursorshape $vnc_cursor_option -nolookup $input_option "$xkb" > "$session/display.log" 2>&1 & vpid=$!
 echo "GUI_SESSION: stage=vnc-started port=$port"
 if [ "$mode" = test ]; then ./gui-test > "$session/application.log" 2>&1 &
 elif [ "$mode" = xterm ]; then xterm -geometry 80x24+0+0 -fn fixed -xrm 'XTerm*renderFont: false' > "$session/application.log" 2>&1 &

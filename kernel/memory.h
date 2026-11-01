@@ -78,6 +78,9 @@ struct pt_entry *mem_pt(struct mem *mem, page_t page);
 // Increment *page, skipping over unallocated page directories. Intended to be
 // used as the incremenent in a for loop to traverse mappings.
 void mem_next_page(struct mem *mem, page_t *page);
+// Pages present in the guest page table (mapped address space, not host
+// residency): all, shared (MAP_SHARED) and private anonymous.
+void mem_page_counts(struct mem *mem, unsigned long *mapped, unsigned long *shared, unsigned long *anonymous);
 
 #define BYTES_ROUND_DOWN(bytes) (PAGE(bytes) << PAGE_BITS)
 #define BYTES_ROUND_UP(bytes) (PAGE_ROUND_UP(bytes) << PAGE_BITS)
@@ -91,6 +94,8 @@ struct data {
 
     // for display in /proc/pid/maps
     struct fd *fd;
+    // Counted in fd->memfd->maywrite_maps (shared, upgradable memfd mapping).
+    bool memfd_maywrite;
     size_t file_offset;
     size_t mapping_offset; // host alignment correction at the first guest page
     int jit_mod; // module cache; unconditional for app/kernel layout parity

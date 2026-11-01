@@ -22,6 +22,14 @@ The app bundles `gpu-glx-notice.txt`, `gpu-bridge-notice.txt`, `mesa-demos-notic
 
 The custom LinuxRunner wallpaper and active icon have retained generation scripts and original SVG geometry. Inherited alternate iSH icons retain their original files. KDE wallpaper and application artwork visible in screenshots belong to their respective projects.
 
+## GPU-enabled Build 900
+
+The Metal-capable application links **virglrenderer** (MIT/Mesa-derived), **libepoxy** (MIT and retained Khronos terms) and **ANGLE** (BSD-style and component-specific terms). ANGLE's linked source inputs also include Abseil, astc-encoder, Dawn, Perfetto, zlib, LLVM libc++/libc++abi and Volk. Their terms and source copyrights are retained; none is presented as original LinuxRunner code.
+
+[GPU dependency revisions and notice origins](licenses/gpu-dependencies.json) records the exact checkouts. [GPU third-party notices](licenses/GPU-THIRD-PARTY-NOTICES.txt) conservatively reproduces the checked-out source trees' license/notice texts, including nested components. It is broader than a list of linked binaries. Preserve applicable upstream per-file notices in corresponding source as well as this binary-distribution notice material.
+
+The guest Mesa packages used by installed distributions retain their own terms. The runtime's virtual GPU integration and selective earlier graphics helpers are distinct paths. The source distribution must include matching graphics integration source, patches, dependency sources and build instructions; automatic GitHub source archives alone omit externally checked-out dependencies.
+
 ## Bundled Alpine minirootfs
 
 The IPA contains Alpine 3.24.2 aarch64, root archive SHA-256 `9bf70a7f18ea44094cbb5f70c58f9af129c8214745743db0e68e5502cc2ce773`. Packages retain their individual licenses. The APK database is the authoritative package/version inventory; the release review records it separately.
@@ -38,4 +46,4 @@ Debian and Arch Linux ARM packages and additional Alpine packages are downloaded
 
 ## Source availability
 
-The application source, build scripts and dependency revisions are retained in the repository. [SOURCE_ORIGIN.txt](SOURCE_ORIGIN.txt) records the release lineage and exact dependency commits. Submodule contents are not included in GitHub's automatic source archives; initialize the pinned submodules when building from a clone. Source-distribution requirements for bundled binaries apply separately from the licenses of packages downloaded later by users. The v1.0.1 release source asset includes the current application snapshot, pinned build dependencies, matching Alpine package recipes and checksum-verified source inputs, and matching Ghostty Web/Ghostty source. The bundled root filesystem and terminal renderer are checked against these inputs.
+The application source, build scripts and dependency revisions are retained in the repository. [SOURCE_ORIGIN.txt](SOURCE_ORIGIN.txt) records the release lineage and exact dependency commits. Submodule contents are not included in GitHub's automatic source archives; initialize the pinned submodules when building from a clone. Source-distribution requirements for bundled binaries apply separately from the licenses of packages downloaded later by users. The release source asset must include the matching application snapshot, pinned build dependencies, graphics source/patches, matching Alpine recipes and checksum-verified inputs, and matching Ghostty Web/Ghostty source. The unchanged bundled Alpine root archive can use the already retained matching source inputs. Preserve the complete notices asset alongside the IPA.

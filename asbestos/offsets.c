@@ -76,6 +76,9 @@ void cpu() {
     OFFSET(LOCAL, fiber_frame, ret_cache);
     OFFSET(CPU, cpu_state, segfault_addr);
     OFFSET(CPU, cpu_state, segfault_was_write);
+#ifdef GUEST_ARM64
+    OFFSET(CPU, cpu_state, segfault_was_exec);
+#endif
     OFFSET(CPU, cpu_state, poked_ptr);
     OFFSET(CPU, cpu_state, cycle);
     MACRO(MEM_READ);
@@ -99,5 +102,6 @@ void cpu() {
     OFFSET(MMU, mmu, changes);
     OFFSET(MMU, mmu, asbestos);
     OFFSET(ASBESTOS, asbestos, invalidate_gen);
+    OFFSET(ASBESTOS, asbestos, code_seen);
 #endif
 }

@@ -21,6 +21,45 @@
 #include "kernel/vdso.h"
 #include "kernel/mm.h"
 #include "kernel/native_offload.h"
+#if defined(__APPLE__)
+// Declared here: <sys/sysctl.h> pulls in Darwin's <sys/proc.h>, whose P_EXEC
+// would replace the runtime's page flag of the same name (kernel/memory.h).
+int sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
+#endif
+
+// Linux AT_HWCAP bits the interpreter implements and has checked against a
+// native ARM64 oracle (aes-instructions.c, crc_sha_pmull_oracle.c). CRC32 and
+// SHA1/SHA2 gadgets execute the host instructions, so those bits are offered
+// only when the host CPU reports them; PMULL is a portable helper.
+#define LR_HWCAP_FP (1 << 0)
+#define LR_HWCAP_ASIMD (1 << 1)
+#define LR_HWCAP_AES (1 << 3)
+#define LR_HWCAP_PMULL (1 << 4)
+#define LR_HWCAP_SHA1 (1 << 5)
+#define LR_HWCAP_SHA2 (1 << 6)
+#define LR_HWCAP_CRC32 (1 << 7)
+static bool host_has(const char *name) {
+#if defined(__APPLE__)
+    int value = 0;
+    size_t size = sizeof(value);
+    return sysctlbyname(name, &value, &size, NULL, 0) == 0 && value != 0;
+#else
+    (void) name;
+    return false;
+#endif
+}
+static dword_t guest_hwcap_value;
+static void guest_hwcap_compute(void) {
+    guest_hwcap_value = LR_HWCAP_FP | LR_HWCAP_ASIMD | LR_HWCAP_AES | LR_HWCAP_PMULL;
+    if (host_has("hw.optional.armv8_crc32")) guest_hwcap_value |= LR_HWCAP_CRC32;
+    if (host_has("hw.optional.arm.FEAT_SHA1")) guest_hwcap_value |= LR_HWCAP_SHA1;
+    if (host_has("hw.optional.arm.FEAT_SHA256")) guest_hwcap_value |= LR_HWCAP_SHA2;
+}
+static dword_t guest_hwcap(void) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, guest_hwcap_compute);
+    return guest_hwcap_value;
+}
 
 #define ARGV_MAX 32 * PAGE_SIZE
 
@@ -160,6 +199,13 @@ static int elf_exec(struct fd *fd, const char *file, struct exec_args argv, stru
     exec_prg_header *ph;
     if ((err = read_prg_headers(fd, header, &ph)) < 0)
         return err;
+
+    // Linux AArch64 defaults to a non-executable stack. PT_GNU_STACK changes
+    // guest permissions only; interpreted code never needs host PROT_EXEC.
+    int stack_prot = P_READ | P_WRITE | P_GROWSDOWN;
+    for (unsigned i = 0; i < header.phent_count; i++)
+        if (ph[i].type == PT_GNU_STACK)
+            stack_prot = P_READ | P_WRITE | P_GROWSDOWN | ((ph[i].flags & PH_X) ? P_EXEC : 0);
 
     // look for an interpreter
     char *interp_name = NULL;
@@ -305,7 +351,7 @@ static int elf_exec(struct fd *fd, const char *file, struct exec_args argv, stru
     // STACK TIME!
 
     // ARM64: stack near top of 48-bit address space
-    if ((err = pt_map_nothing(current->mem, STACK_INIT_PAGE, 1, P_READ | P_WRITE | P_GROWSDOWN)) < 0)
+    if ((err = pt_map_nothing(current->mem, STACK_INIT_PAGE, 1, stack_prot)) < 0)
         goto beyond_hope;
     if ((err = pt_map_nothing(current->mem, STACK_TOP_PAGE, 1, P_READ)) < 0)
         goto beyond_hope;
@@ -352,11 +398,9 @@ static int elf_exec(struct fd *fd, const char *file, struct exec_args argv, stru
         // The internal VDSO supplies sigreturn trampolines, but it is not a
         // complete aarch64 Linux VDSO for userspace dynamic loaders to parse.
         {AX_SYSINFO_EHDR, 0},
-        // FP | ASIMD | AES. AESE/AESD/AESMC/AESIMC are implemented by the
-        // interpreter, including aliased operands; aes-instructions.c checks
-        // their results against a portable oracle and native ARM64 execution.
-        // PMULL, SHA and LSE remain hidden until separately validated.
-        {AX_HWCAP, 0x00b},
+        // See guest_hwcap(): validated families only; LSE and SHA512 stay
+        // hidden until separately validated.
+        {AX_HWCAP, guest_hwcap()},
         {AX_PAGESZ, PAGE_SIZE},
         {AX_CLKTCK, 0x64},
         {AX_PHDR, load_addr + header.prghead_off},

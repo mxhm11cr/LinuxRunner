@@ -52,6 +52,8 @@ static unsigned gltype(const spirv_cross::SPIRType &t){
  }
  if(t.basetype!=spirv_cross::SPIRType::Float)throw std::runtime_error("Unsupported uniform/attribute scalar type");
  if(t.columns==4&&t.vecsize==4)return 0x8b5c;
+ if(t.columns==3&&t.vecsize==3)return 0x8b5b;   // mat3: default uniforms only (see below)
+ if(t.columns==2&&t.vecsize==2)return 0x8b5a;   // mat2
  if(t.columns!=1||t.vecsize<1||t.vecsize>4)throw std::runtime_error("Unsupported matrix shape");
  return t.vecsize==1?0x1406:0x8b4e + t.vecsize; // FLOAT, FLOAT_VEC2/3/4
 }
@@ -191,7 +193,7 @@ extern "C" void *lr_glsl_link(void *v,void *f,lr_gl_link *r){
      bool explicitly_bound=false;
      for(unsigned i=0;i<bound;i++)if(a.name==bindings[i].name){location=bindings[i].location;explicitly_bound=true;}
      if(!explicitly_bound&&(location>=LR_GL_MAX_ATTRIBUTES||((used|reserved)&(1u<<location)))){location=0;while(location<LR_GL_MAX_ATTRIBUTES&&((used|reserved)&(1u<<location)))location++;}
-     auto type=gltype(m.get_type(a.type_id));unsigned columns=type==0x8b5c?4:1,mask=((1u<<columns)-1)<<location;if(location+columns>LR_GL_MAX_ATTRIBUTES||(type>=0x8b56&&type<=0x8b59)||location>=LR_GL_MAX_ATTRIBUTES||(used&mask))throw std::runtime_error("Unsupported/aliased attribute locations");used|=mask;m.set_decoration(a.id,spv::DecorationLocation,location);
+     auto type=gltype(m.get_type(a.type_id));unsigned columns=type==0x8b5c?4:1,mask=((1u<<columns)-1)<<location;if(location+columns>LR_GL_MAX_ATTRIBUTES||(type>=0x8b56&&type<=0x8b59)||type==0x8b5a||type==0x8b5b||location>=LR_GL_MAX_ATTRIBUTES||(used&mask))throw std::runtime_error("Unsupported/aliased attribute locations");used|=mask;m.set_decoration(a.id,spv::DecorationLocation,location);
      auto &entry=r->attribute[r->attributes++];std::memset(&entry,0,sizeof entry);std::strcpy(entry.name,a.name.c_str());entry.type=type;entry.location=location;
     }
    }
@@ -202,6 +204,7 @@ extern "C" void *lr_glsl_link(void *v,void *f,lr_gl_link *r){
      elements=valueType.array[0];valueType.array.clear();valueType.array_size_literal.clear();
     }
     unsigned type=gltype(valueType),components=lr_gl_type_components(type),scalar=lr_gl_type_kind(type)==3?1:4;
+    if((type==0x8b5a||type==0x8b5b)&&elements>1)throw std::runtime_error("Unsupported matrix array");   // MSL column padding differs from GL packing
     unsigned stride=(components==3?4:components)*scalar;
     if(elements*stride>LR_GL_MAX_UNIFORM_ARRAY_BYTES)throw std::runtime_error("Default uniform array storage exceeds limit");
     if(u.name.size()>=64||index>=LR_GL_MAX_UNIFORMS)throw std::runtime_error("Uniform limit exceeded");

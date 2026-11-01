@@ -1,0 +1,182 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 660" font-family="system-ui, -apple-system, sans-serif" font-size="12">
+  <defs>
+    <marker id="a" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <path d="M0,0 L10,3.5 L0,7 Z" fill="#475569"/>
+    </marker>
+    <marker id="ag" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <path d="M0,0 L10,3.5 L0,7 Z" fill="#16a34a"/>
+    </marker>
+    <marker id="ab" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <path d="M0,0 L10,3.5 L0,7 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="ar" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <path d="M0,0 L10,3.5 L0,7 Z" fill="#dc2626"/>
+    </marker>
+  </defs>
+
+  <rect width="860" height="660" fill="#f8fafc" rx="6"/>
+
+  <!-- Title -->
+  <text x="430" y="28" text-anchor="middle" font-size="16" font-weight="bold" fill="#1e293b">Gadget Execution Step</text>
+  <text x="430" y="44" text-anchor="middle" font-size="10" fill="#64748b">ios-linuxkit threaded-code interpreter — one guest instruction cycle</text>
+
+  <!-- Code Stream -->
+  <rect x="60" y="60" width="720" height="55" rx="5" fill="#eef2ff" stroke="#6366f1" stroke-width="1"/>
+  <text x="75" y="76" font-size="9" font-weight="bold" fill="#4338ca">Code Stream (block→code[])</text>
+
+  <!-- _pc pointer -->
+  <text x="95" y="90" text-anchor="middle" font-size="8" fill="#4f46e5" font-weight="bold">_pc</text>
+  <polygon points="91,92 99,92 95,97" fill="#4f46e5"/>
+
+  <!-- Stream cells -->
+  <rect x="75" y="98" width="90" height="13" rx="2" fill="#818cf8"/>
+  <text x="120" y="108" text-anchor="middle" font-size="8" fill="white" font-weight="bold">gadget_ptr₁</text>
+  <rect x="168" y="98" width="62" height="13" rx="2" fill="#c7d2fe"/>
+  <text x="199" y="108" text-anchor="middle" font-size="8" fill="#312e81">operands₁</text>
+  <rect x="233" y="98" width="90" height="13" rx="2" fill="#818cf8"/>
+  <text x="278" y="108" text-anchor="middle" font-size="8" fill="white" font-weight="bold">gadget_ptr₂</text>
+  <rect x="326" y="98" width="62" height="13" rx="2" fill="#c7d2fe"/>
+  <text x="357" y="108" text-anchor="middle" font-size="8" fill="#312e81">operands₂</text>
+  <rect x="391" y="98" width="90" height="13" rx="2" fill="#818cf8"/>
+  <text x="436" y="108" text-anchor="middle" font-size="8" fill="white" font-weight="bold">gadget_ptr₃</text>
+  <rect x="484" y="98" width="62" height="13" rx="2" fill="#c7d2fe"/>
+  <text x="515" y="108" text-anchor="middle" font-size="8" fill="#312e81">operands₃</text>
+  <rect x="549" y="98" width="85" height="13" rx="2" fill="#fde68a" stroke="#d97706" stroke-width="0.5"/>
+  <text x="591" y="108" text-anchor="middle" font-size="8" fill="#78350f">branch/exit</text>
+  <text x="650" y="108" font-size="9" fill="#94a3b8">…</text>
+
+  <!-- Step 1 -->
+  <rect x="120" y="140" width="220" height="42" rx="5" fill="white" stroke="#475569" stroke-width="1"/>
+  <circle cx="136" cy="154" r="8" fill="#475569"/>
+  <text x="136" y="158" text-anchor="middle" font-size="8" fill="white" font-weight="bold">1</text>
+  <text x="155" y="157" font-size="11" font-weight="bold" fill="#1e293b">Dispatch (gret)</text>
+  <text x="155" y="173" font-size="10" fill="#4b5563" font-family="ui-monospace, monospace">ldr x8, [_pc], #8</text>
+
+  <!-- Arrow stream → step1 -->
+  <line x1="120" y1="111" x2="120" y2="138" stroke="#475569" stroke-width="0.8" marker-end="url(#a)"/>
+
+  <!-- Step 2 -->
+  <rect x="420" y="140" width="220" height="42" rx="5" fill="#fef2f2" stroke="#dc2626" stroke-width="1"/>
+  <circle cx="436" cy="154" r="8" fill="#dc2626"/>
+  <text x="436" y="158" text-anchor="middle" font-size="8" fill="white" font-weight="bold">2</text>
+  <text x="455" y="157" font-size="11" font-weight="bold" fill="#991b1b">Indirect Branch</text>
+  <text x="455" y="173" font-size="10" fill="#4b5563" font-family="ui-monospace, monospace">br x8</text>
+  <text x="570" y="173" font-size="8" fill="#dc2626">(5% mispredict)</text>
+
+  <!-- Arrow step1 → step2 -->
+  <line x1="340" y1="161" x2="418" y2="161" stroke="#475569" stroke-width="0.8" marker-end="url(#a)"/>
+
+  <!-- Step 3 -->
+  <rect x="120" y="210" width="620" height="115" rx="5" fill="#f0fdf4" stroke="#16a34a" stroke-width="1"/>
+  <circle cx="136" cy="226" r="8" fill="#16a34a"/>
+  <text x="136" y="230" text-anchor="middle" font-size="8" fill="white" font-weight="bold">3</text>
+  <text x="155" y="230" font-size="11" font-weight="bold" fill="#166534">Gadget Executes</text>
+  <text x="370" y="230" font-size="9" fill="#4b5563">(example: load64_imm_fast)</text>
+
+  <!-- Sub-steps -->
+  <rect x="135" y="242" width="155" height="32" rx="3" fill="white" stroke="#86efac" stroke-width="0.7"/>
+  <text x="212" y="255" text-anchor="middle" font-size="9" font-weight="bold" fill="#166534">A. Read operands</text>
+  <text x="212" y="268" text-anchor="middle" font-size="9" fill="#374151" font-family="ui-monospace, monospace">ldr x22, [_pc], #8</text>
+
+  <rect x="308" y="242" width="175" height="32" rx="3" fill="white" stroke="#86efac" stroke-width="0.7"/>
+  <text x="395" y="255" text-anchor="middle" font-size="9" font-weight="bold" fill="#166534">B. Address + TLB</text>
+  <text x="395" y="268" text-anchor="middle" font-size="9" fill="#374151" font-family="ui-monospace, monospace">base+off → hash → ptr</text>
+
+  <rect x="501" y="242" width="220" height="32" rx="3" fill="white" stroke="#86efac" stroke-width="0.7"/>
+  <text x="611" y="255" text-anchor="middle" font-size="9" font-weight="bold" fill="#166534">C. Execute + writeback</text>
+  <text x="611" y="268" text-anchor="middle" font-size="9" fill="#374151" font-family="ui-monospace, monospace">ldr val,[host]; str→cpu[rd]</text>
+
+  <!-- Sub-step arrows -->
+  <line x1="290" y1="258" x2="306" y2="258" stroke="#16a34a" stroke-width="0.7" marker-end="url(#ag)"/>
+  <line x1="483" y1="258" x2="499" y2="258" stroke="#16a34a" stroke-width="0.7" marker-end="url(#ag)"/>
+
+  <!-- CPU state -->
+  <rect x="135" y="286" width="586" height="24" rx="3" fill="#dcfce7" stroke="#4ade80" stroke-width="0.7"/>
+  <text x="428" y="302" text-anchor="middle" font-size="9" fill="#166534">cpu_state [_cpu / x1]: x0–x30, SP, PC, NZCV, FP/SIMD — loaded and stored per gadget from memory</text>
+
+  <!-- Arrow step2 → step3 -->
+  <path d="M530,182 L530,196 L430,196 L430,208" stroke="#475569" stroke-width="0.8" fill="none" marker-end="url(#a)"/>
+
+  <!-- Step 4 -->
+  <rect x="310" y="350" width="240" height="36" rx="5" fill="white" stroke="#2563eb" stroke-width="1"/>
+  <circle cx="326" cy="363" r="8" fill="#2563eb"/>
+  <text x="326" y="367" text-anchor="middle" font-size="8" fill="white" font-weight="bold">4</text>
+  <text x="345" y="365" font-size="11" font-weight="bold" fill="#1e3a8a">gret → back to ①</text>
+  <text x="345" y="379" font-size="9" fill="#64748b">Repeat until block ends</text>
+
+  <!-- Arrow step3 → step4 -->
+  <line x1="430" y1="325" x2="430" y2="348" stroke="#475569" stroke-width="0.8" marker-end="url(#a)"/>
+
+  <!-- Loop-back arrow step4 → step1 -->
+  <path d="M310,368 L85,368 L85,161 L118,161" stroke="#2563eb" stroke-width="1" stroke-dasharray="4,2" fill="none" marker-end="url(#ab)"/>
+  <text x="76" y="270" font-size="9" fill="#2563eb" font-weight="bold" transform="rotate(-90,76,270)">next gadget</text>
+
+  <!-- Step 5 -->
+  <rect x="120" y="410" width="620" height="175" rx="5" fill="#fffbeb" stroke="#d97706" stroke-width="1"/>
+  <circle cx="136" cy="426" r="8" fill="#d97706"/>
+  <text x="136" y="430" text-anchor="middle" font-size="8" fill="white" font-weight="bold">5</text>
+  <text x="155" y="430" font-size="11" font-weight="bold" fill="#92400e">Block End → fiber_ret_chain</text>
+
+  <!-- Arrow step4 → step5 -->
+  <line x1="430" y1="386" x2="430" y2="408" stroke="#475569" stroke-width="0.8" marker-end="url(#a)"/>
+  <text x="445" y="401" font-size="8" fill="#6b7280">block ends</text>
+
+  <!-- Decision boxes -->
+  <rect x="135" y="445" width="120" height="24" rx="3" fill="white" stroke="#f59e0b" stroke-width="0.7"/>
+  <text x="195" y="461" text-anchor="middle" font-size="8" fill="#92400e">Unchained? (bit63)</text>
+
+  <rect x="278" y="445" width="105" height="24" rx="3" fill="white" stroke="#f59e0b" stroke-width="0.7"/>
+  <text x="330" y="461" text-anchor="middle" font-size="8" fill="#92400e">Poke pending?</text>
+
+  <rect x="406" y="445" width="130" height="24" rx="3" fill="white" stroke="#f59e0b" stroke-width="0.7"/>
+  <text x="471" y="461" text-anchor="middle" font-size="8" fill="#92400e">Adjacent same-page?</text>
+
+  <rect x="559" y="445" width="115" height="24" rx="3" fill="white" stroke="#f59e0b" stroke-width="0.7"/>
+  <text x="616" y="461" text-anchor="middle" font-size="8" fill="#92400e">mem_changes ok?</text>
+
+  <!-- Horizontal arrows between decisions -->
+  <line x1="255" y1="457" x2="276" y2="457" stroke="#92400e" stroke-width="0.7" marker-end="url(#a)"/>
+  <line x1="383" y1="457" x2="404" y2="457" stroke="#92400e" stroke-width="0.7" marker-end="url(#a)"/>
+  <line x1="536" y1="457" x2="557" y2="457" stroke="#92400e" stroke-width="0.7" marker-end="url(#a)"/>
+
+  <!-- "no" labels -->
+  <text x="264" y="452" font-size="7" fill="#64748b">no</text>
+  <text x="392" y="452" font-size="7" fill="#64748b">no</text>
+  <text x="545" y="452" font-size="7" fill="#64748b">no</text>
+
+  <!-- Outcomes -->
+  <rect x="135" y="490" width="120" height="20" rx="3" fill="#fee2e2"/>
+  <text x="195" y="504" text-anchor="middle" font-size="8" fill="#991b1b">→ exit to C dispatcher</text>
+
+  <rect x="278" y="490" width="105" height="20" rx="3" fill="#fee2e2"/>
+  <text x="330" y="504" text-anchor="middle" font-size="8" fill="#991b1b">→ INT_TIMER</text>
+
+  <rect x="406" y="490" width="130" height="20" rx="3" fill="#d1fae5"/>
+  <text x="471" y="504" text-anchor="middle" font-size="8" fill="#065f46">→ skip check, run ①</text>
+
+  <rect x="559" y="490" width="115" height="20" rx="3" fill="#d1fae5"/>
+  <text x="616" y="504" text-anchor="middle" font-size="8" fill="#065f46">→ chain, run ①</text>
+
+  <!-- Vertical arrows decisions → outcomes -->
+  <line x1="195" y1="469" x2="195" y2="488" stroke="#dc2626" stroke-width="0.7" marker-end="url(#ar)"/>
+  <text x="202" y="482" font-size="7" fill="#dc2626">yes</text>
+
+  <line x1="330" y1="469" x2="330" y2="488" stroke="#dc2626" stroke-width="0.7" marker-end="url(#ar)"/>
+  <text x="337" y="482" font-size="7" fill="#dc2626">yes</text>
+
+  <line x1="471" y1="469" x2="471" y2="488" stroke="#16a34a" stroke-width="0.7" marker-end="url(#ag)"/>
+  <text x="478" y="482" font-size="7" fill="#16a34a">yes</text>
+
+  <line x1="616" y1="469" x2="616" y2="488" stroke="#16a34a" stroke-width="0.7" marker-end="url(#ag)"/>
+  <text x="623" y="482" font-size="7" fill="#16a34a">yes</text>
+
+  <!-- Chain-back: exits right from green outcome, routes up outside step5 to code stream -->
+  <path d="M674,500 L750,500 L750,104 L700,104" stroke="#16a34a" stroke-width="1" fill="none" marker-end="url(#ag)"/>
+  <text x="758" y="310" font-size="9" fill="#16a34a" font-weight="bold" transform="rotate(-90,758,310)">chain to next block</text>
+
+  <!-- Legend -->
+  <rect x="135" y="530" width="500" height="44" rx="3" fill="white" stroke="#e2e8f0" stroke-width="0.7"/>
+  <text x="148" y="546" font-size="9" font-weight="bold" fill="#374151">Cost per guest instruction:</text>
+  <text x="148" y="560" font-size="9" fill="#4b5563">• 1 indirect branch (br x8) • 8–20 host insns per gadget • +12 insns for memory TLB fast path</text>
+  <text x="148" y="572" font-size="9" fill="#4b5563">• Adjacent same-page fast path covers 69% of block transitions (skips mem_changes check)</text>
+</svg>

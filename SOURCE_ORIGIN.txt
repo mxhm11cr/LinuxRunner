@@ -7,12 +7,11 @@ Upstream base revision: abe413540d4ff8b4ad6b52447ab80f824c58495f
 Original 1.0.0 application source: ac696aca3c9e7d0a282244ba17197b9258735282
 1.0.1 original application source baseline: 52410d01d0264898b900cb76c8eea74cdb7aaaf6
 
-This release snapshot includes Arch recovery and desktop stabilization.
-Publication preserves the existing public Git history without importing private
-development reports. Documentation and portability updates do not change runtime
-behavior. The attached source manifest records this public snapshot and the
-original application source baseline.
-IPA SHA-256: c571c7ae1dd8ab641930e513254866658dc94f0bee370f1d2623cd462f0fa2ca
+1.1.0 application source baseline: 3e65792a580fb7124b801730fb64a4b15433f9d3
+Version 1.1.0; build 900; bundle identifier dev.linuxrunner.app.
+Documentation/media changes prepared separately; no runtime edits.
+IPA SHA-256: b2d73496307b6d2f535d80f09c00ef06aaf2b324a3ab9a52798999d4155634ae
+
 Original copyright and license terms remain in their files.
 
 Pinned dependency revisions:
@@ -21,3 +20,5 @@ deps/libapps  b8cacae35e5b11d64bb736a053921c16ca7faf9e
 deps/libarchive  fc6563f5130d8a7ee1fc27c0e55baef35119f26c
 deps/linux  8ec9bf17f89c6dba818f3ed2427de4223e78644a
 deps/spirv-cross  2c32b6bf86f3c4a5539aa1f0bacbd59fe61759cf
+
+GPU dependency revisions are recorded in licenses/gpu-dependencies.json.

@@ -3903,6 +3903,69 @@ ldxr_done:
     cmp x8, _addr
     b.ne stxr_fail               // mismatch -> fail
 
+    // Fast path: translate through the software TLB (same coherence check
+    // and dirty-page tracking as every store) and compare-and-swap on the
+    // host page with a load-acquire/store-release exclusive loop, as the C
+    // helper's sequentially consistent CAS does. Host LSE is not assumed
+    // (ARMv8.0 devices remain supported). A page-crossing access, which the
+    // TLB path would split, keeps the C helper.
+    mov x9, #1
+    lsl x9, x9, x26
+    and x8, x24, #0xfff
+    add x8, x8, x9
+    cmp x8, #0x1000
+    b.hi stxr_slow
+    cmp x26, #3
+    b.eq stxr_fast64
+    cmp x26, #2
+    b.eq stxr_fast32
+    cmp x26, #1
+    b.eq stxr_fast16
+    write_prep 8, stxr_fast8
+    bl stxr_fast_operands
+1:  ldaxrb w9, [_addr]
+    cmp w9, w14
+    b.ne stxr_fast_lost
+    stlxrb w10, w13, [_addr]
+    cbnz w10, 1b
+    b stxr_fast_won
+stxr_fast16:
+    write_prep 16, stxr_fast16
+    bl stxr_fast_operands
+1:  ldaxrh w9, [_addr]
+    cmp w9, w14
+    b.ne stxr_fast_lost
+    stlxrh w10, w13, [_addr]
+    cbnz w10, 1b
+    b stxr_fast_won
+stxr_fast32:
+    write_prep 32, stxr_fast32
+    bl stxr_fast_operands
+1:  ldaxr w9, [_addr]
+    cmp w9, w14
+    b.ne stxr_fast_lost
+    stlxr w10, w13, [_addr]
+    cbnz w10, 1b
+    b stxr_fast_won
+stxr_fast64:
+    write_prep 64, stxr_fast64
+    bl stxr_fast_operands
+1:  ldaxr x9, [_addr]
+    cmp x9, x14
+    b.ne stxr_fast_lost
+    stlxr w10, x13, [_addr]
+    cbnz w10, 1b
+stxr_fast_won:
+    mov w19, #0
+    b stxr_fast_done
+stxr_fast_lost:
+    clrex
+    mov w19, #1
+stxr_fast_done:
+    mov _addr, x24
+    b stxr_result
+
+stxr_slow:
     // Load the new value from Rt
     add x12, _cpu, #CPU_x0
     cmp x23, #31
@@ -3930,6 +3993,7 @@ ldxr_done:
     cmn w19, #1
     b.eq stxr_segfault
 
+stxr_result:
     // Invalidate exclusive monitor
     movn x8, #0
     str x8, [_cpu, #CPU_excl_addr]
@@ -3952,6 +4016,29 @@ stxr_fail:
     mov x8, #1
     str x8, [x9, x25, lsl #3]   // Rs = 1 (failure)
 4:  gret
+
+    write_bullshit 8, stxr_fast8
+    write_bullshit 16, stxr_fast16
+    write_bullshit 32, stxr_fast32
+    write_bullshit 64, stxr_fast64
+// Page-crossing accesses never reach the fast path (checked before
+// write_prep), so its split-store continuation must be unreachable.
+back_write_done_stxr_fast8:
+back_write_done_stxr_fast16:
+back_write_done_stxr_fast32:
+back_write_done_stxr_fast64:
+    brk #0x5
+
+// x13 = new value from Rt (XZR reads 0), x14 = value LDXR observed. Loaded
+// after translation: the TLB miss path calls C and may clobber them.
+stxr_fast_operands:
+    add x12, _cpu, #CPU_x0
+    mov x13, #0
+    cmp x23, #31
+    b.eq 1f
+    ldr x13, [x12, x23, lsl #3]
+1:  ldr x14, [_cpu, #CPU_excl_val]
+    ret
 
 stxr_segfault:
     // Invalidate exclusive monitor

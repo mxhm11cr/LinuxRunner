@@ -51,6 +51,7 @@ typedef struct elf_header64 elf_header;
 #define PT_PHDR 6
 #define PT_TLS 7
 #define PT_NUM 8
+#define PT_GNU_STACK 0x6474e551
 
 // 64-bit program header (for ARM64)
 // Note: field order is different from 32-bit!

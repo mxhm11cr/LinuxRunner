@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <netinet/tcp.h>
 #include <time.h>
+#include <os/lock.h>
 static double LRTransportClock(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+t.tv_nsec*1e-9;}
 @implementation LRRFBClient {
     uint16_t _port,_width,_height;
@@ -22,13 +23,17 @@ static double LRTransportClock(void){struct timespec t;clock_gettime(CLOCK_MONOT
     _Atomic size_t _pendingBytes;
     _Atomic uint64_t _inputSequence;
     dispatch_queue_t _inputQueue;
+    os_unfair_lock _motionLock; // guards _openMotion
+    NSMutableData *_openMotion; // newest queued, unwritten pure-motion pointer packet
+    uint8_t _lastButtons; // button mask of the last queued pointer packet
+    _Atomic uint64_t _coalescedMotion;
     NSMutableData *_pixels,*_raw;
     uint8_t _readBuffer[65536]; size_t _readOffset,_readCount;
     uint64_t _frames,_bytes;
 }
 - (instancetype)initWithPort:(uint16_t)port password:(NSString *)password {
     if((self=[super init])){_port=port;_password=[password copy];_socket=-1;
-        pthread_mutex_init(&_socketLock,NULL);pthread_mutex_init(&_writeLock,NULL);
+        pthread_mutex_init(&_socketLock,NULL);pthread_mutex_init(&_writeLock,NULL);_motionLock=OS_UNFAIR_LOCK_INIT;
         _inputQueue=dispatch_queue_create("dev.linuxrunner.gui.input",DISPATCH_QUEUE_SERIAL);
     }return self;
 }
@@ -210,7 +215,10 @@ static double LRTransportClock(void){struct timespec t;clock_gettime(CLOCK_MONOT
 // Charge the retained input data, not serialized bytes, against a bounded
 // 128 KiB queue. A paste owns one job and is encoded in 1 KiB stack batches.
 // Keep every key pair and subsequent pointer/key event in serial FIFO order.
-- (void)enqueue:(NSData *)data keySymbols:(BOOL)keySymbols {
+- (void)enqueue:(NSData *)data keySymbols:(BOOL)keySymbols { [self enqueue:data keySymbols:keySymbols motion:NO]; }
+// A motion packet stays open for coalescing until it is written or any later
+// packet is queued, so updates never cross button, key or other events.
+- (void)enqueue:(NSData *)data keySymbols:(BOOL)keySymbols motion:(BOOL)motion {
     if(!data.length||!atomic_load(&_ready)||atomic_load(&_stopped))return;
     const size_t limit=128*1024;
     BOOL slotsFull=atomic_fetch_add(&_pending,1)>=128;
@@ -224,12 +232,13 @@ static double LRTransportClock(void){struct timespec t;clock_gettime(CLOCK_MONOT
     double queued=metrics?LRTransportClock():0;
     uint64_t sequence=metrics?atomic_fetch_add(&_inputSequence,1)+1:0;
     unsigned pending=metrics?atomic_load(&_pending):0;
+    size_t length=data.length;os_unfair_lock_lock(&_motionLock);_openMotion=motion?(NSMutableData *)data:nil;
     dispatch_async(_inputQueue,^{@autoreleasepool{
         double began=metrics?LRTransportClock():0;BOOL ok=YES;
         void (^trace)(NSString *)=self.inputTraceHandler;
-        size_t wireBytes=keySymbols?data.length*4:data.length;
+        size_t wireBytes=keySymbols?length*4:length;
         if(keySymbols){
-            const uint32_t *symbols=data.bytes;size_t count=data.length/4;
+            const uint32_t *symbols=data.bytes;size_t count=length/4;
             for(size_t offset=0;offset<count;offset+=64){
                 size_t n=MIN((size_t)64,count-offset);uint8_t packets[1024];
                 for(size_t i=0;i<n;i++){uint32_t sym=symbols[offset+i];
@@ -243,18 +252,23 @@ static double LRTransportClock(void){struct timespec t;clock_gettime(CLOCK_MONOT
                     trace([NSString stringWithFormat:@"RFB keysym=0x%08X down=0 written=%d",sym,ok]);
                 }
             }
+        }else if(motion){
+            uint8_t packet[6];os_unfair_lock_lock(&self->_motionLock);
+            if(self->_openMotion==data)self->_openMotion=nil;memcpy(packet,data.bytes,sizeof packet);
+            os_unfair_lock_unlock(&self->_motionLock);ok=[self write:packet count:sizeof packet];
         }else{
-            ok=[self write:data.bytes count:data.length];
-            if(data.length%8==0&&((const uint8_t*)data.bytes)[0]==4&&trace){
-                for(size_t i=0;i<data.length;i+=8){const uint8_t *p=(const uint8_t*)data.bytes+i;uint32_t sym=(uint32_t)p[4]<<24|(uint32_t)p[5]<<16|(uint32_t)p[6]<<8|p[7];trace([NSString stringWithFormat:@"RFB keysym=0x%08X down=%u written=%d",sym,p[1],ok]);}
+            ok=[self write:data.bytes count:length];
+            if(length%8==0&&((const uint8_t*)data.bytes)[0]==4&&trace){
+                for(size_t i=0;i<length;i+=8){const uint8_t *p=(const uint8_t*)data.bytes+i;uint32_t sym=(uint32_t)p[4]<<24|(uint32_t)p[5]<<16|(uint32_t)p[6]<<8|p[7];trace([NSString stringWithFormat:@"RFB keysym=0x%08X down=%u written=%d",sym,p[1],ok]);}
             }
         }
-        if(metrics)metrics(@{@"stage":@"rfb_input_write",@"packet_type":@(keySymbols?4:((const uint8_t *)data.bytes)[0]),
+        if(metrics)metrics(@{@"stage":@"rfb_input_write",@"packet_type":@(keySymbols?4:motion?5:((const uint8_t *)data.bytes)[0]),
             @"packet_bytes":@(wireBytes),@"queue_depth_at_enqueue":@(pending),@"written":@(ok),
-            @"input_sequence":@(sequence),@"queued_monotonic_ms":@(queued*1000),@"write_begin_monotonic_ms":@(began*1000),
+            @"input_sequence":@(sequence),@"coalesced_motion":@(atomic_load(&self->_coalescedMotion)),@"queued_monotonic_ms":@(queued*1000),@"write_begin_monotonic_ms":@(began*1000),
             @"input_queue_ms":@((began-queued)*1000),@"write_ms":@((LRTransportClock()-began)*1000)});
-        atomic_fetch_sub(&self->_pendingBytes,data.length);atomic_fetch_sub(&self->_pending,1);
+        atomic_fetch_sub(&self->_pendingBytes,length);atomic_fetch_sub(&self->_pending,1);
     }});
+    os_unfair_lock_unlock(&_motionLock);
 }
 - (void)enqueue:(NSData *)data { [self enqueue:data keySymbols:NO]; }
 - (void)key:(uint32_t)keysym down:(BOOL)down {
@@ -271,6 +285,14 @@ static double LRTransportClock(void){struct timespec t;clock_gettime(CLOCK_MONOT
     }
 }
 - (void)pointerX:(uint16_t)x y:(uint16_t)y buttons:(uint8_t)buttons {
-    uint8_t data[6]={5,buttons,(uint8_t)(x>>8),(uint8_t)x,(uint8_t)(y>>8),(uint8_t)y};[self enqueue:[NSData dataWithBytes:data length:sizeof data]];
+    uint8_t data[6]={5,buttons,(uint8_t)(x>>8),(uint8_t)x,(uint8_t)(y>>8),(uint8_t)y};
+    // RFB pointer positions are absolute: replacing an unwritten move with the
+    // same button mask keeps the final position and drops only stale samples.
+    // Button transitions (press, release, wheel) are never opened or replaced.
+    os_unfair_lock_lock(&_motionLock);NSMutableData *open=_openMotion;
+    BOOL transition=buttons!=_lastButtons;_lastButtons=buttons;
+    if(!transition&&open){memcpy(open.mutableBytes,data,sizeof data);os_unfair_lock_unlock(&_motionLock);atomic_fetch_add(&_coalescedMotion,1);return;}
+    os_unfair_lock_unlock(&_motionLock);
+    [self enqueue:[NSMutableData dataWithBytes:data length:sizeof data] keySymbols:NO motion:!transition];
 }
 @end

@@ -23,6 +23,8 @@ fi
 # Session-owned requests already inherit its exact DISPLAY/auth/bus/runtime.
 if [ -z "${DISPLAY:-}" ]; then . "$base/desktop-env.sh"; fi
 [ -n "${DISPLAY:-}" ] || { echo 'GUI_LAUNCH: no active display for this account; open Desktop first'; exit 125; }
+# Hyprland or Wayfire running: open inside it (its Wayland socket), not under it.
+[ -n "${WAYLAND_DISPLAY:-}" ] || { command -v linuxrunner_wayland >/dev/null 2>&1 || . "$base/desktop-env.sh"; linuxrunner_wayland || true; }
 export QT_FORCE_STDERR_LOGGING=${QT_FORCE_STDERR_LOGGING:-1}
 echo "GUI_LAUNCH: executable=$command directory=$PWD DISPLAY=$DISPLAY"
 # Graphics routing: the launcher's own choice, else the session default from

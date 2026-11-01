@@ -263,6 +263,31 @@ char *(*get_documents_directory)(void);
     static NSArray<Theme *> *defaultThemes;
     if (!defaultThemes) {
         defaultThemes = @[
+            // LinuxRunner: Nord palette on a deeper polar-night background,
+            // frost cursor; matches the Hyprland and Wayfire presets.
+            [self themeWithName:@"linuxrunner"
+                  foreground:@"#d8dee9"
+                  background:@"#242933"
+                      cursor:@"#88c0d0"
+                  appearance:ThemeAppearance.alwaysDark
+                     palette:@[
+                            @"#3b4252",
+                            @"#bf616a",
+                            @"#a3be8c",
+                            @"#ebcb8b",
+                            @"#81a1c1",
+                            @"#b48ead",
+                            @"#88c0d0",
+                            @"#e5e9f0",
+                            @"#4c566a",
+                            @"#d08770",
+                            @"#b1d196",
+                            @"#f0d399",
+                            @"#8fbcbb",
+                            @"#c895bf",
+                            @"#93ccdc",
+                            @"#eceff4",
+                      ]],
             [self themeWithName:@"xterm"
                   foreground:@"#e5e5e5"
                   background:@"#000000"

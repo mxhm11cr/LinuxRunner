@@ -1,0 +1,13 @@
+// LinuxRunner Waybar preset 2 (Hyprland). Yours to edit.
+{
+    "layer": "top", "position": "top", "height": 34,
+    "margin-top": 8, "margin-left": 10, "margin-right": 10, "spacing": 8,
+    "modules-left": ["custom/launcher", "hyprland/workspaces"],
+    "modules-center": ["clock"],
+    "modules-right": ["cpu", "memory"],
+    "custom/launcher": {"format": "", "on-click": "fuzzel", "tooltip": false},
+    "hyprland/workspaces": {"format": "{id}", "persistent-workspaces": {"*": 4}, "on-click": "activate"},
+    "clock": {"format": "{:%a %d %b  %H:%M}", "tooltip": false},
+    "cpu": {"format": "  {usage}%", "interval": 5, "tooltip": false},
+    "memory": {"format": "  {percentage}%", "interval": 10, "tooltip": false}
+}

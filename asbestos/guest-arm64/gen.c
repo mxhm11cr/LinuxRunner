@@ -33,6 +33,7 @@
 
 // Gadget declarations
 extern void gadget_interrupt(void);
+extern void gadget_instruction_fault(void);
 extern void gadget_exit(void);
 extern void gadget_set_pc(void);
 extern void gadget_set_jit_saved_pc(void);
@@ -711,6 +712,9 @@ extern void gadget_fneg_vec_vec(void);     // FNEG Vd, Vn (vector negate)
 extern void gadget_fsqrt_vec_vec(void);    // FSQRT Vd, Vn (vector square root)
 extern void gadget_frecpe_vec_vec(void);   // FRECPE Vd, Vn (vector reciprocal estimate)
 extern void gadget_frsqrte_vec_vec(void);  // FRSQRTE Vd, Vn (vector rsqrt estimate)
+extern void gadget_frecpe_scalar(void);    // FRECPE <V>d, <V>n (scalar, S/D)
+extern void gadget_frsqrte_scalar(void);   // FRSQRTE <V>d, <V>n (scalar, S/D)
+extern void gadget_frecpx_scalar(void);    // FRECPX <V>d, <V>n (scalar, S/D)
 // Integer compare-with-zero
 extern void gadget_cmeq_zero_vec(void);    // CMEQ Vd, Vn, #0
 
@@ -1293,7 +1297,10 @@ static int gen_step_insn(struct gen_state *state, struct tlb *tlb) {
 
     uint32_t insn;
     if (!arm64_read_insn(&state->ip, tlb, &insn)) {
-        gen_interrupt(state, INT_GPF);
+        gen(state, (unsigned long) gadget_set_pc);
+        gen(state, state->orig_ip);
+        gen(state, (unsigned long) gadget_instruction_fault);
+        gen(state, tlb->segfault_addr);
         return 0;
     }
     state->last_insn = insn;
@@ -1448,7 +1455,7 @@ static bool simd_modimm_pattern(uint32_t cmode, uint8_t imm8, uint64_t *pattern)
  * Returns true if successful, false if read fails.
  */
 static bool gen_peek_next_insn(struct gen_state *state, uint32_t *next_insn) {
-    return tlb_read(state->tlb, state->ip, next_insn, sizeof(*next_insn));
+    return tlb_read_exec(state->tlb, state->ip, next_insn, sizeof(*next_insn));
 }
 
 /*
@@ -4857,6 +4864,15 @@ static int gen_dp_reg(struct gen_state *state, uint32_t insn) {
  * - STP Qn, Qm, [Xbase, #imm]
  */
 static int gen_simd_fp(struct gen_state *state, uint32_t insn) {
+    // AdvSIMD scalar two-register misc, FP estimates: 01 U 11110 1 sz 10000 opcode 10 Rn Rd
+    // FRECPE (U=0, 11101), FRSQRTE (U=1, 11101), FRECPX (U=0, 11111).
+    if ((insn & 0xdfbffc00) == 0x5ea1d800 || (insn & 0xffbffc00) == 0x5ea1f800) {
+        void *gadget = (insn & 0x0000f000) == 0x0000f000 ? (void *) gadget_frecpx_scalar
+            : (insn & (1u << 29)) ? (void *) gadget_frsqrte_scalar : (void *) gadget_frecpe_scalar;
+        gen(state, (unsigned long) gadget);
+        gen(state, (insn & 0x1f) | (((insn >> 5) & 0x1f) << 8) | (((insn >> 22) & 1) << 16));
+        return 1;
+    }
     // FMOV (immediate) - scalar floating-point immediate
     // Pattern: 0b00011110 0/1 1 0 imm8 10000 Rd
     // Mask 0xffa07fe0 ignores imm8 (bits 20-13), Rd (bits 4-0), and type (bit 22)
@@ -5912,13 +5928,16 @@ static int gen_simd_fp(struct gen_state *state, uint32_t insn) {
             }
             gadget = gadget_sub_vec;
         } else if (U == 1 && opcode == 0x06) {
-            // CMHI - Compare higher (unsigned >)
+            // CMHI - Compare higher (unsigned >); 1D is reserved
+            if (size == 3 && Q == 0) { gen_interrupt(state, INT_UNDEFINED); return 0; }
             gadget = gadget_cmhi_vec;
         } else if (U == 1 && opcode == 0x07) {
-            // CMHS - Compare higher or same (unsigned >=)
+            // CMHS - Compare higher or same (unsigned >=); 1D is reserved
+            if (size == 3 && Q == 0) { gen_interrupt(state, INT_UNDEFINED); return 0; }
             gadget = gadget_cmhs_vec;
         } else if (U == 1 && opcode == 0x11) {
-            // CMEQ - Compare equal
+            // CMEQ - Compare equal; 1D is reserved
+            if (size == 3 && Q == 0) { gen_interrupt(state, INT_UNDEFINED); return 0; }
             gadget = gadget_cmeq_vec;
         } else if (U == 0 && opcode == 0x01) {
             // SQADD - Signed saturating add
@@ -5960,13 +5979,16 @@ static int gen_simd_fp(struct gen_state *state, uint32_t insn) {
             // CMGE - Signed compare greater or equal (register)
             gadget = gadget_cmge_reg_vec;
         } else if (U == 0 && opcode == 0x17) {
-            // ADDP - Add pairwise
+            // ADDP - Add pairwise; 1D is reserved
+            if (size == 3 && Q == 0) { gen_interrupt(state, INT_UNDEFINED); return 0; }
             gadget = gadget_addp_vec;
         } else if (U == 1 && opcode == 0x14) {
-            // UMAXP - Unsigned maximum pairwise
+            // UMAXP - Unsigned maximum pairwise (not for size=3/D)
+            if (size == 3) { gen_interrupt(state, INT_UNDEFINED); return 0; }
             gadget = gadget_umaxp_vec;
         } else if (U == 1 && opcode == 0x15) {
-            // UMINP - Unsigned minimum pairwise
+            // UMINP - Unsigned minimum pairwise (not for size=3/D)
+            if (size == 3) { gen_interrupt(state, INT_UNDEFINED); return 0; }
             gadget = gadget_uminp_vec;
         } else if (U == 0 && opcode == 0x14) {
             // SMAXP - Signed maximum pairwise (not for size=3/D)
@@ -6033,7 +6055,8 @@ static int gen_simd_fp(struct gen_state *state, uint32_t insn) {
             if (size == 3) { gen_interrupt(state, INT_UNDEFINED); return 0; }
             gadget = gadget_uaba_vec;
         } else if (U == 0 && opcode == 0x11) {
-            // CMTST - Compare bitwise test (Vn AND Vm != 0)
+            // CMTST - Compare bitwise test (Vn AND Vm != 0); 1D is reserved
+            if (size == 3 && Q == 0) { gen_interrupt(state, INT_UNDEFINED); return 0; }
             gadget = gadget_cmtst_vec;
         }
 
@@ -6397,7 +6420,8 @@ skip_three_different:
     // NOT/RBIT (vector) - AdvSIMD two-register misc (bytes only)
     // NOT:  0 Q 1 01110 00 10000 00101 10 Rn Rd  (U=1, size=00, opcode=0x05)
     // RBIT: 0 Q 1 01110 01 10000 00101 10 Rn Rd  (U=1, size=01, opcode=0x05)
-    if ((insn & 0xbf3ffc00) == 0x2e205800) {   // NOT (size=00)
+    // Only size tells them apart, so the masks include bits 22-23.
+    if ((insn & 0xbffffc00) == 0x2e205800) {   // NOT (size=00)
         uint32_t Q = (insn >> 30) & 1;
         uint32_t rn = (insn >> 5) & 0x1f;
         uint32_t rd = insn & 0x1f;
@@ -6405,7 +6429,7 @@ skip_three_different:
         gen(state, rd | (rn << 8) | (Q << 16));
         return 1;
     }
-    if ((insn & 0xbf3ffc00) == 0x2e605800) {   // RBIT (size=01)
+    if ((insn & 0xbffffc00) == 0x2e605800) {   // RBIT (size=01)
         uint32_t Q = (insn >> 30) & 1;
         uint32_t rn = (insn >> 5) & 0x1f;
         uint32_t rd = insn & 0x1f;
@@ -6604,20 +6628,6 @@ skip_three_different:
         }
         gen(state, (unsigned long) gadget);
         gen(state, rd | (rn << 8) | (size << 16) | (Q << 24));
-        return 1;
-    }
-
-    // RBIT (vector) - reverse bits in each byte
-    // 0 Q 1 01110 sz 10000 00101 10 Rn Rd
-    // Mask 0xbf3ffc00 checks fixed bits, ignores Q, sz, Rn, Rd
-    // Value: sz must be 00 for .8B/.16B
-    if ((insn & 0xbf3ffc00) == 0x2e205800) {
-        uint32_t Q = (insn >> 30) & 1;
-        uint32_t rn = (insn >> 5) & 0x1f;
-        uint32_t rd = insn & 0x1f;
-
-        gen(state, (unsigned long) gadget_rbit_vec);
-        gen(state, rd | (rn << 8) | (Q << 16));
         return 1;
     }
 
@@ -6950,6 +6960,12 @@ skip_three_different:
         // re-executes the instruction natively on the host (with emulated FP
         // reg operands). Zig probes scalar FP16 conversion through FCVT Sd,Hn,
         // so keep that one half-precision form explicit.
+        // Opcodes 6 and 13 are unallocated; FCVT to the source's own type
+        // (single->single 4, double->double 5) is reserved.
+        if (ftype <= 1 && (opcode == 6 || opcode == 13 || opcode == 4 + ftype)) {
+            gen_interrupt(state, INT_UNDEFINED);
+            return 0;
+        }
         if (ftype <= 1 && opcode <= 15) {
             gen(state, (unsigned long) gadget_fp_dp1);
             // Pack: rd | rn<<8 | ftype<<16 | opcode<<20

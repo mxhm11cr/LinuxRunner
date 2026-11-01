@@ -61,7 +61,7 @@ static _Atomic uint64_t bridge_retired_ns,bridge_retired_frames;   // when retir
 static int resident_enabled(void){
  if(atomic_load_explicit(&bridge_retired,memory_order_relaxed))return 0;
  const char *mode=config("LR_MESA_METAL_MODE"),*resident=config("LR_MESA_METAL_RESIDENT");
- return mode&&!strcmp(mode,"replace")&&resident&&!strcmp(resident,"1");
+ return mode&&!strcmp(mode,"replace")&&resident&&!strcmp(resident,"1")&&!es_current();   /* GPU-resident images: desktop GL contexts only */
 }
 // Open addressing keyed by (group, name); a slot is free when group == 0 (groups
 // start at 1, window entries use a high-bit group with name 0). Generation
@@ -635,9 +635,15 @@ static void bridge_consider_retiring(struct bridge_context *c){
   report_reason("bridge-retired");
  }
 }
-void glXSwapBuffers(Display *d,GLXDrawable drawable){HOOK_ORIGINAL(glXSwapBuffers);window_size_changed();atomic_fetch_add(&stats_frames,1);if(!resident_reentry)stats_write(0);struct bridge_context *c=resident_context();if(c){if(resident_group_shared(c))RESIDENT_SYNC_ALL(c);else{report_reasonf("sync:swap-window");resident_sync(c,0,1);}}   /* presented image only; other images stay on the GPU */
+// Before a window presentation (GLX or EGL): Metal-resident images of the presented framebuffer return to Mesa.
+static void before_present(void){window_size_changed();atomic_fetch_add(&stats_frames,1);if(!resident_reentry)stats_write(0);struct bridge_context *c=resident_context();if(c){if(resident_group_shared(c))RESIDENT_SYNC_ALL(c);else{report_reasonf("sync:swap-window");resident_sync(c,0,1);}}   /* presented image only; other images stay on the GPU */
  if(c&&c->resident){static LR_TLS unsigned swaps;if(++swaps%64==0)resident_report(c);GLenum pending=resident_errors_begin();resident_reentry++;bridge_consider_retiring(c);resident_reentry--;resident_errors_end(c,pending);}
- real(d,drawable);}
+}
+void glXSwapBuffers(Display *d,GLXDrawable drawable){HOOK_ORIGINAL(glXSwapBuffers);before_present();real(d,drawable);}
+EGLBoolean eglSwapBuffers(EGLDisplay d,EGLSurface s){HOOK_ORIGINAL(eglSwapBuffers) EGL_FALSE;before_present();return real(d,s);}
+// Extension entry points: reached through eglGetProcAddress (the provider is recorded there).
+EGLBoolean eglSwapBuffersWithDamageKHR(EGLDisplay d,EGLSurface s,const EGLint *rects,EGLint n){HOOK_ORIGINAL(eglSwapBuffersWithDamageKHR) EGL_FALSE;before_present();return real(d,s,rects,n);}
+EGLBoolean eglSwapBuffersWithDamageEXT(EGLDisplay d,EGLSurface s,const EGLint *rects,EGLint n){HOOK_ORIGINAL(eglSwapBuffersWithDamageEXT) EGL_FALSE;before_present();return real(d,s,rects,n);}
 // Texture/sampler parameter writers (texture_epoch). Pass-through plus an epoch bump.
 #define EPOCH_HOOK(name,params,args) void name params{HOOK_ORIGINAL(name);texture_state_changed();real args;}
 EPOCH_HOOK(glTexParameteri,(GLenum t,GLenum p,GLint v),(t,p,v))

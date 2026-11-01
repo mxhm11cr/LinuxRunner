@@ -201,6 +201,7 @@ dword_t sys_splice(fd_t in_fd, addr_t in_off_addr, fd_t out_fd, addr_t out_off_a
 dword_t sys_copy_file_range(fd_t in_fd, addr_t in_off, fd_t out_fd, addr_t out_off, dword_t len, uint_t flags);
 
 int_t sys_memfd_create(addr_t name_addr, uint_t flags);
+struct fd *memfd_new(const char *name, uint_t flags, int *error);
 ssize_t sys_process_vm_readv(pid_t_ pid, addr_t local_iov_addr, dword_t local_iovcnt, addr_t remote_iov_addr, dword_t remote_iovcnt, dword_t flags);
 ssize_t sys_process_vm_writev(pid_t_ pid, addr_t local_iov_addr, dword_t local_iovcnt, addr_t remote_iov_addr, dword_t remote_iovcnt, dword_t flags);
 

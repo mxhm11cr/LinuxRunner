@@ -7,7 +7,7 @@
 // Config via environment variables:
 //   FAKEFS_ROOT=/path/to/fakefs/data   (required)
 //
-// Example: guest "/tmp/foo.mp4" → host "<application-data>/fakefs/data/tmp/foo.mp4"
+// Example: guest "/tmp/foo.mp4" → host "/Users/.../fakefs/data/tmp/foo.mp4"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -22,7 +22,7 @@
 
 // --- Configuration ---
 
-static char g_root[PATH_MAX];    // fakefs data root, e.g. "<application-data>/fakefs/data"
+static char g_root[PATH_MAX];    // fakefs data root, e.g. "/Users/.../fakefs/data"
 static size_t g_root_len;
 static int g_initialized;
 

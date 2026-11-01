@@ -1,21 +1,15 @@
-LinuxRunner 1.0.1 source distribution
+LinuxRunner 1.1.0 (Build 900) source distribution
 
-Release: https://github.com/mxhm11cr/LinuxRunner/releases/tag/v1.0.1
+The matching release source asset is LinuxRunner-1.1.0-source.tar.gz.
+It must include the application source, build scripts, active pinned submodules,
+GPU integration/dependency source and patches, matching bundled-Alpine recipes
+and source inputs, and matching terminal renderer source. Retain each component's
+notices and the source manifest identifying all included revisions.
 
-LinuxRunner-1.0.1-source.tar.gz contains the application and build scripts,
-four exact dependency snapshots, the bundled Alpine packages' matching recipes
-and checksum-verified source inputs, and matching Ghostty Web/Ghostty sources.
-SOURCE_CONTENTS.txt and SOURCE_MANIFEST.json describe the archive.
+GitHub automatic archives omit submodule contents and external graphics sources.
+They are not substitutes for the dependency-inclusive corresponding-source asset.
+See docs/BUILDING.md, THIRD_PARTY_NOTICES.md and licenses/gpu-dependencies.json.
 
-Minimal shallow Git snapshots allow build scripts to resolve revisions without
-private development history or credentials. The unused deps/linux pin is retained
-but its checkout is not needed by the application release scheme.
-
-LICENSES.txt combines the application declarations and third-party notices.
-SHA256SUMS covers the IPA, corresponding-source archive and license notices.
-GitHub automatic source archives omit submodule contents; use the attached source
-asset for the complete packaged source distribution.
-
-The IPA has an ad-hoc signature but no Apple provisioning profile. It requires a
-compatible signing/provisioning method for ordinary physical-device installation.
-No certificate, private key or provisioning profile is part of the source archive.
+The IPA is ad-hoc signed without Apple provisioning. Ordinary device installation
+requires a compatible signing/provisioning method. No credentials or profiles
+belong in the source or notices assets. JIT activation is optional.

@@ -2,6 +2,8 @@
 #include "LinuxAccountPolicy.h"
 #import "GuestMetalBackend.h"
 #import "FileTransfer.h"
+#import "FileArchive.h"
+#import "DiagnosticLogTail.h"
 #import "DebianBootstrap.h"
 #import "BootLog.h"
 #import "GUIViewController.h"
@@ -10,20 +12,35 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <sys/mman.h>
+#include <sys/sysctl.h>
+#include <sys/proc.h>
+#ifdef LINUXRUNNER_JIT_BUILD
+#include "asbestos/guest-arm64/jit.h"
+#endif
 #include <os/log.h>
 #include <errno.h>
 #include <stdio.h>
 #include <time.h>
+#include "fs/netlink.h"
 #include <mach/mach.h>
 #include <archive.h>
 #include <archive_entry.h>
 #import "../Roots.h"
 #import "../AppGroup.h"
 #import "../AppDelegate.h"
+#if LINUXRUNNER_VIRGL_BUILD
+// Host renderer for the virtio-gpu device (upstream virglrenderer + ANGLE, linked statically).
+#include "../../graphics/virgl_host.c"
+#endif
+#include "../../graphics/virgl_backend.h"
+#include "fs/drm.h"
+static BOOL LRVirglActive;
+static NSString *LRVirglStatus;   // GPU start result (renderer or failure), nil when not started
 #import "../iOSFS.h"
 #include "PasswordHash.h"
 @class TerminalViewController;
 static void LRWaitForProcess(TerminalViewController *process, NSTimeInterval timeout, void (^done)(BOOL ended));
+static int LRTransferStaging(void);
 @interface TerminalViewController (LRAccountProcess)
 @property (readonly) int sessionPid;
 @property (nonatomic) Terminal *sessionTerminal;
@@ -38,6 +55,8 @@ static void LRWaitForProcess(TerminalViewController *process, NSTimeInterval tim
 #include <sys/resource.h>
 #include "kernel/task.h"
 #include "kernel/mm.h"
+#include "kernel/resource.h"
+#include "kernel/signal.h"
 #include "kernel/futex.h"
 #include "fs/proc.h"
 #include "kernel/fs.h"
@@ -217,7 +236,51 @@ static void LRPackageDiagnostic(void *context,int severity,const char *message) 
     @autoreleasepool { [LRDiagnosticCenter installer:severity message:[NSString stringWithUTF8String:message]?:@"bootstrap diagnostic encoding failure"]; }
 }
 
+@interface LRTransferControl ()
+@property BOOL stopped;
+@property uint64_t transferred,total;
+@end
+@implementation LRTransferControl
+- (void)cancel { @synchronized(self){_stopped=YES;} }
+- (NSDictionary *)snapshot { @synchronized(self){return @{@"cancelled":@(_stopped),@"bytes":@(_transferred),@"total":@(_total)};} }
+- (void)recordBytes:(uint64_t)bytes total:(uint64_t)total { @synchronized(self){_transferred=bytes;_total=total;} }
+@end
+static bool LRTransferCancelled(void *context){return [((__bridge LRTransferControl *)context).snapshot[@"cancelled"] boolValue];}
+static void LRTransferProgress(void *context,uint64_t bytes,uint64_t total){[(__bridge LRTransferControl *)context recordBytes:bytes total:total];}
+static struct lr_transfer_control LRTransferCallbacks(LRTransferControl *control){return (struct lr_transfer_control){LRTransferCancelled,LRTransferProgress,(__bridge void *)control};}
+
 @implementation LRRuntimeBridge
+#if TARGET_OS_SIMULATOR
++ (NSDictionary *)networkABIContract {
+    struct header {uint32_t len;uint16_t type,flags;uint32_t seq,pid;};
+    struct {struct header h;uint8_t family,pad[3];} req={.h={17,18,0x301,41,0}};
+    NSMutableDictionary *result=[NSMutableDictionary new];BOOL ok=YES;
+    char *buffer=malloc(NETLINK_SNAPSHOT_SIZE);
+    if(!buffer)return @{@"status":@"FAIL",@"reason":@"allocation"};
+    for(NSNumber *type in @[@18,@22,@26]) {
+        req.h.type=type.unsignedShortValue;
+        int n=netlink_snapshot(&req,sizeof(req),73,buffer,NETLINK_SNAPSHOT_SIZE);
+        unsigned messages=0;BOOL done=NO;int error=0;
+        for(size_t at=0;n>0&&at<(size_t)n;) {
+            struct header h;if((size_t)n-at<sizeof(h)){error=-1;break;}
+            memcpy(&h,buffer+at,sizeof(h));
+            if(h.len<sizeof(h)||h.len>(size_t)n-at||h.seq!=41||h.pid!=73){error=-1;break;}
+            if(h.type==2&&h.len>=sizeof(h)+4)memcpy(&error,buffer+at+sizeof(h),4);
+            else if(h.type==3)done=YES;else messages++;
+            at+=((size_t)h.len+3)&~(size_t)3;
+        }
+        BOOL passed=n>0&&done&&!error&&(type.intValue==26||messages>0);
+        result[type.stringValue]=@{@"status":passed?@"PASS":@"FAIL",@"messages":@(messages),@"linux_error":@(n<0?n:error)};ok=ok&&passed;
+    }
+    free(buffer);result[@"status"]=ok?@"PASS":@"FAIL";
+    result[@"scope"]=@"Simulator sandbox, real host snapshots encoded as Linux link/address/route replies; no physical Wi-Fi transition";
+    return result;
+}
+#endif
+#if TARGET_OS_SIMULATOR
++ (void)runExternalDisplayContract:(void (^)(NSDictionary *))completion{[LRGUIViewController runExternalDisplayContract:completion];}
+#endif
+
 static UINavigationController *desktopNavigation;
 static NSString *desktopRoot;
 + (UIViewController *)desktopController {
@@ -267,6 +330,19 @@ static NSString *desktopRoot;
     LRBootEvent(memoryFusion ? (fusionSetting ? "[RUNTIME] Asbestos memory dispatch fusion enabled (Settings)" : "[RUNTIME] Asbestos memory dispatch fusion enabled (default)") : "[RUNTIME] Asbestos previous memory dispatch selected in Settings");
     LRInstallGuestMetalBackend();
     LRBootEvent("[GUEST_GPU] experimental EGL/GLES subset backend registered; existing Mesa libraries unchanged");
+#if LINUXRUNNER_VIRGL_BUILD
+    // Opt-in GPU acceleration: guest Mesa's virgl driver on the Apple GPU. If
+    // ANGLE/Metal cannot start, the virtio-gpu device stays absent and
+    // everything renders in software as before.
+    if ([LRRuntimeBridge.gpuMode isEqual:@"metal"]) {
+        const struct lr_virgl_backend *virgl = lr_virgl_host_start();
+        lr_virgl_install(virgl);
+        LRVirglActive = virgl != NULL;
+        LRVirglStatus = [NSString stringWithUTF8String:lr_virgl_host_status()];
+        if (virgl) setenv("ISH_VIRGL", "1", 1);
+        LRBootEvent([[NSString stringWithFormat:virgl ? @"[GPU] virtio-gpu device active: virglrenderer on %@" : @"[GPU] Metal GPU unavailable (%@); software rendering", LRVirglStatus] UTF8String]);
+    }
+#endif
     // All anonymous guest shared-memory backing stays inside this sandbox.
     NSString *temporary = NSTemporaryDirectory();
     if (temporary.length) setenv("TMPDIR", temporary.fileSystemRepresentation, 1);
@@ -286,6 +362,7 @@ static NSString *desktopRoot;
     atomic_store(&diagnosticLevel,[NSUserDefaults.standardUserDefaults objectForKey:@"DiagnosticLevel"]?[NSUserDefaults.standardUserDefaults integerForKey:@"DiagnosticLevel"]:2);
     atomic_store(&runtime_syscall_timing_enabled,atomic_load(&diagnosticLevel)>=3);
     runtime_syscall_result_observer=LRObserveCompletedCall;
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(thermalStateChanged:) name:NSProcessInfoThermalStateDidChangeNotification object:nil];
     LRBootEvent("manual/automatic boot requested; optional numeric observers installed");
     return YES;
 }
@@ -313,12 +390,105 @@ static NSString *desktopRoot;
 }
 + (NSURL *)managedStorageURL { return ContainerURL(); }
 + (NSArray *)diagnosticEntries { return [LRDiagnosticCenter entries]; }
++ (NSArray<NSDictionary *> *)desktopDiagnosticEntries {
+    NSMutableArray *records=[NSMutableArray new];
+    NSArray *native=self.diagnosticEntries;
+    for(NSDictionary *entry in [native subarrayWithRange:NSMakeRange(native.count>512?native.count-512:0,MIN(native.count,512))]){
+        NSMutableDictionary *safe=[entry mutableCopy];
+        safe[@"message"]=[self redactDiagnosticText:entry[@"message"]?:@"" application:NO];
+        [records addObject:safe];
+    }
+    NSURL *base=[[self exchangeURL:self.activeRootName] URLByAppendingPathComponent:@".linuxrunner/gui"];
+    // Every component below the exchange is app-managed. Refuse replaced links.
+    for(NSURL *folder in @[[base URLByDeletingLastPathComponent],base]){
+        NSNumber *link=nil;[folder getResourceValue:&link forKey:NSURLIsSymbolicLinkKey error:nil];if(link.boolValue)return records;
+    }
+    NSArray<NSURL *> *children=[NSFileManager.defaultManager contentsOfDirectoryAtURL:base includingPropertiesForKeys:@[NSURLIsSymbolicLinkKey,NSURLIsDirectoryKey,NSURLContentModificationDateKey] options:0 error:nil];
+    NSMutableArray<NSURL *> *sessions=[NSMutableArray new];
+    for(NSURL *child in children){NSNumber *link=nil,*directory=nil;[child getResourceValue:&link forKey:NSURLIsSymbolicLinkKey error:nil];[child getResourceValue:&directory forKey:NSURLIsDirectoryKey error:nil];if([child.lastPathComponent hasPrefix:@"session-"]&&directory.boolValue&&!link.boolValue)[sessions addObject:child];}
+    [sessions sortUsingComparator:^NSComparisonResult(NSURL *a,NSURL *b){NSDate *ad=nil,*bd=nil;[a getResourceValue:&ad forKey:NSURLContentModificationDateKey error:nil];[b getResourceValue:&bd forKey:NSURLContentModificationDateKey error:nil];return [(bd?:NSDate.distantPast) compare:ad?:NSDate.distantPast];}];
+    NSDictionary *components=@{@"session.log":@"Session",@"xvfb.log":@"X11",@"display.log":@"Display",@"bus.log":@"D-Bus",@"wm.log":@"Window Manager",@"panel.log":@"Panel",@"desktop.log":@"Desktop",@"plasma.log":@"Plasma",@"application.log":@"Application",@"focus.log":@"Input",@"window.log":@"Windows",@"desktop-state":@"Status"};
+    for(NSURL *session in [sessions subarrayWithRange:NSMakeRange(0,MIN(sessions.count,3))]) {
+        for(NSString *name in [components.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+            NSURL *url=[session URLByAppendingPathComponent:name];
+            NSString *text=LRDiagnosticTailString(LRReadDiagnosticTail(url,64*1024));if(!text)continue;
+            NSDate *modified=nil;[url getResourceValue:&modified forKey:NSURLContentModificationDateKey error:nil];
+            text=[self redactDiagnosticText:text application:YES];
+            NSArray *lines=[text componentsSeparatedByString:@"\n"];
+            NSUInteger first=lines.count>120?lines.count-120:0;
+            for(NSUInteger i=first;i<lines.count&&records.count<1536;i++){
+                NSString *line=lines[i];if(!line.length||[line hasPrefix:@"[non-diagnostic"]||[line hasPrefix:@"[application output"])continue;
+                NSString *lower=line.lowercaseString,*level=([lower containsString:@"error"]||[lower containsString:@"fatal"]||[lower containsString:@"abort"])?@"ERROR":[lower containsString:@"warning"]?@"WARNING":@"INFO";
+                NSString *component=[lower containsString:@"kwin"]?@"KWin":components[name];
+                [records addObject:@{@"timestamp":@(modified?modified.timeIntervalSince1970:0),@"file_time":@YES,@"category":component,@"level":level,@"message":[line substringToIndex:MIN(line.length,1024)],@"source":name}];
+            }
+        }
+    }
+    return records;
+}
+
 + (NSString *)redactDiagnosticText:(NSString *)text application:(BOOL)application { return [LRDiagnosticCenter redact:text application:application]; }
 + (void)configureDiagnostics:(int)level process:(int)pid syscall:(int)number errorsOnly:(BOOL)errorsOnly {
     atomic_store(&diagnosticLevel,level);atomic_store(&diagnosticPID,pid);atomic_store(&diagnosticSyscall,number);atomic_store(&diagnosticErrorsOnly,errorsOnly);
     atomic_store(&runtime_syscall_timing_enabled,level>=3);
     atomic_store(&runtime_futex_pi_trace_enabled,level>=3 && (number<0||number==98));
     [LRDiagnosticCenter setLevel:level];
+}
+static NSString *LRThermalState(void) {
+    switch(NSProcessInfo.processInfo.thermalState){case NSProcessInfoThermalStateNominal:return @"Nominal";case NSProcessInfoThermalStateFair:return @"Fair";case NSProcessInfoThermalStateSerious:return @"Serious";case NSProcessInfoThermalStateCritical:return @"Critical";default:return @"Unknown";}
+}
++ (void)thermalStateChanged:(NSNotification *)note {
+    [self logCategory:@"MEMORY" event:[NSString stringWithFormat:@"host thermal state changed: %@ (iOS category; no temperature measurement)",LRThermalState()]];
+}
++ (NSArray *)taskSnapshot {
+    struct row { int pid, ppid, uid, threads; char state; char name[17]; uint64_t cpu_us; struct mm *mm; };
+    struct row *rows = calloc(MAX_PID, sizeof *rows); int count = 0;
+    if (!rows) return @[];
+    lock(&pids_lock);
+    for (int i = 1; i < MAX_PID; i++) {
+        struct task *task = pid_get_task(i);
+        if (!task || task->pid != task->tgid || task->exiting) continue;
+        struct row *r = &rows[count++];
+        r->pid = task->pid; r->ppid = task_parent_pid(task); r->uid = (int) task->uid;
+        snprintf(r->name, sizeof r->name, "%s", task->comm);
+        bool running = false; struct task *thread;
+        lock(&task->group->lock);
+        list_for_each_entry(&task->group->threads, thread, group_links) { r->threads++; if (!thread->blocking) running = true; }
+        bool stopped = task->group->stopped;
+        unlock(&task->group->lock);
+        r->state = task->zombie ? 'Z' : stopped ? 'T' : running ? 'R' : 'S';
+        struct rusage_ usage = rusage_get_group_locked(task->group);
+        r->cpu_us = (uint64_t) usage.utime.sec * 1000000 + usage.utime.usec + (uint64_t) usage.stime.sec * 1000000 + usage.stime.usec;
+        lock(&task->general_lock);
+        r->mm = task->mm; if (r->mm) mm_retain(r->mm);
+        unlock(&task->general_lock);
+    }
+    unlock(&pids_lock);
+    NSMutableArray *result = [NSMutableArray arrayWithCapacity:count];
+    for (int i = 0; i < count; i++) {
+        struct row *r = &rows[i];
+        unsigned long mapped = 0, shared = 0, anonymous = 0;
+        if (r->mm) { mem_page_counts(&r->mm->mem, &mapped, &shared, &anonymous); mm_release(r->mm); }   // outside pids_lock
+        [result addObject:@{@"pid": @(r->pid), @"ppid": @(r->ppid), @"uid": @(r->uid), @"name": @(r->name), @"state": [NSString stringWithFormat:@"%c", r->state],
+            @"threads": @(r->threads), @"cpu_ms": @(r->cpu_us / 1000), @"mapped_kb": @(mapped * (PAGE_SIZE / 1024)),
+            @"anonymous_kb": @(anonymous * (PAGE_SIZE / 1024)), @"shared_kb": @(shared * (PAGE_SIZE / 1024))}];
+    }
+    free(rows);
+    return result;
+}
++ (uint64_t)appFootprintBytes {
+    task_vm_info_data_t info = {0}; mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    return task_info(mach_task_self(), TASK_VM_INFO, (task_info_t) &info, &count) == KERN_SUCCESS ? info.phys_footprint : 0;
+}
++ (BOOL)terminateProcess:(int)pid force:(BOOL)force {
+    if (pid <= 1) return NO;   // init (the session's root) is never terminated from here
+    lock(&pids_lock);
+    struct task *task = pid_get_task(pid);
+    BOOL found = task && task->pid == task->tgid && !task->zombie;
+    if (found) send_signal(task, force ? SIGKILL_ : SIGTERM_, SIGINFO_NIL);
+    unlock(&pids_lock);
+    [self logCategory:@"PROCESS" event:[NSString stringWithFormat:@"Task Manager sent %@ to pid %d (%@)", force ? @"SIGKILL" : @"SIGTERM", pid, found ? @"delivered" : @"no such process"]];
+    return found;
 }
 + (NSDictionary *)healthSummary {
     int processes=0,threads=0;
@@ -327,7 +497,7 @@ static NSString *desktopRoot;
     unlock(&pids_lock);
     mach_task_basic_info_data_t info={0};mach_msg_type_number_t count=MACH_TASK_BASIC_INFO_COUNT;
     BOOL haveMemory=task_info(mach_task_self(),MACH_TASK_BASIC_INFO,(task_info_t)&info,&count)==KERN_SUCCESS;
-    return @{@"runtime":self.runtimeStatus,@"source_commit":[NSBundle.mainBundle objectForInfoDictionaryKey:@"LinuxRunnerSourceCommit"]?:@"unavailable",@"distribution_root":self.activeRootName?:@"none",@"architecture":@"aarch64",@"backend":@"ARM64 interpreter",@"jit_backend_active":@NO,@"host_page_size":@(getpagesize()),@"guest_page_size":@4096,@"host_resident_bytes":haveMemory?@(info.resident_size):@0,@"memory_measured":@(haveMemory),@"guest_processes":@(processes),@"guest_threads":@(threads),@"runtime_uptime_seconds":@(runtimeStartedAt?NSProcessInfo.processInfo.systemUptime-runtimeStartedAt:0),@"thread_state_limit":@"Counts are live tasks; no claim of precise sleeping/blocked state"};
+    return @{@"runtime":self.runtimeStatus,@"source_commit":[NSBundle.mainBundle objectForInfoDictionaryKey:@"LinuxRunnerSourceCommit"]?:@"unavailable",@"distribution_root":self.activeRootName?:@"none",@"architecture":@"aarch64",@"backend":@"ARM64 interpreter",@"jit_backend_active":@NO,@"host_page_size":@(getpagesize()),@"guest_page_size":@4096,@"host_resident_bytes":haveMemory?@(info.resident_size):@0,@"memory_measured":@(haveMemory),@"host_thermal_state":LRThermalState(),@"low_power_mode":@(NSProcessInfo.processInfo.lowPowerModeEnabled),@"guest_processes":@(processes),@"guest_threads":@(threads),@"runtime_uptime_seconds":@(runtimeStartedAt?NSProcessInfo.processInfo.systemUptime-runtimeStartedAt:0),@"thread_state_limit":@"Counts are live tasks; no claim of precise sleeping/blocked state"};
 }
 + (NSURL *)catalogURL { return [ContainerURL() URLByAppendingPathComponent:@"environments.json"]; }
 + (NSArray<NSString *> *)rootNames { return Roots.instance.roots.array; }
@@ -382,6 +552,162 @@ static NSString *desktopRoot;
     BOOL permitted=NO;if(page!=MAP_FAILED){permitted=mprotect(page,size,PROT_READ|PROT_EXEC)==0;if(!permitted)protectionError=errno;munmap(page,size);}
     NSDictionary *result=@{@"backend_available":@NO,@"backend_active":@NO,@"executable_protection_change":@(permitted),@"allocation_errno":@(allocationError),@"protection_errno":@(protectionError),@"generated_code_executed":@NO,@"capability_verified":@NO,@"reason":@"Interpreter-only build. Public VM permission probe does not establish generated-code execution or translator activation."};
     [self logCategory:@"JIT" event:[NSString stringWithFormat:@"permission_probe=%d allocation_errno=%d protection_errno=%d backend_available=0 capability_verified=0",permitted,allocationError,protectionError]];return result;
+}
+// ---- Execution backend -----------------------------------------------------
+// The interpreter always runs. In the JIT-capable variant the translator
+// starts once jit_ios_acquire() succeeds; nothing maps executable memory
+// before that, and the mode the user picked is never reported as active.
+static NSString *const LRExecutionModeKey=@"LinuxRunnerExecutionMode";
+static NSString *const LRJITAttemptKey=@"LinuxRunnerJITAttemptInProgress";
+static NSString *const LRJITCrashedPathsKey=@"LinuxRunnerJITCrashedPaths";
+static BOOL LRJITActive;
+static NSString *LRJITDetail=@"Interpreter";
+static NSString *LRJITLastFailure;   // reason of the last refused or failed activation, nil if none
++ (BOOL)virglCompiledIn {
+#if LINUXRUNNER_VIRGL_BUILD
+    return YES;
+#else
+    return NO;
+#endif
+}
++ (BOOL)virglActive { return LRVirglActive; }
++ (void)setDesktopDisplayWidth:(NSUInteger)width height:(NSUInteger)height { drm_set_display_size((unsigned) width, (unsigned) height); }
+// Settings › Graphics: "automatic", "metal" or "software". Automatic renders in
+// software until Metal is validated on iPhone hardware; the former on/off
+// setting maps to metal/software.
++ (NSString *)gpuMode {
+    NSUserDefaults *d=NSUserDefaults.standardUserDefaults;NSString *mode=[d stringForKey:@"LinuxRunnerGraphics.gpuMode"];
+    if([@[@"automatic",@"metal",@"software"] containsObject:mode])return mode;
+    if([d objectForKey:@"LinuxRunnerGraphics.virgl"])return [d boolForKey:@"LinuxRunnerGraphics.virgl"]?@"metal":@"software";
+    return @"automatic";
+}
++ (void)setGPUMode:(NSString *)mode {
+    if(![@[@"automatic",@"metal",@"software"] containsObject:mode])mode=@"automatic";
+    [NSUserDefaults.standardUserDefaults setObject:mode forKey:@"LinuxRunnerGraphics.gpuMode"];
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:@"LinuxRunnerGraphics.virgl"];
+}
+// The renderer this run actually has, never the requested one.
++ (NSDictionary *)gpuStatus {
+    NSString *mode=self.gpuMode,*active,*detail;
+    if(!self.virglCompiledIn){active=@"Software";detail=@"This build has no Metal GPU device";}
+    else if(LRVirglActive){active=@"Metal GPU (virgl) · Experimental";detail=[NSString stringWithFormat:@"virtio-gpu device active · %@",LRVirglStatus?:@"ANGLE/Metal"];}
+    else if(LRVirglStatus.length){active=@"Software (fallback)";detail=[NSString stringWithFormat:@"Metal GPU did not start: %@",LRVirglStatus];}
+    else if([mode isEqual:@"metal"]){active=@"Software";detail=@"Metal GPU selected · takes effect after LinuxRunner restarts";}
+    else if([mode isEqual:@"automatic"]){active=@"Software";detail=@"Automatic uses software rendering until Metal is validated on iPhone";}
+    else {active=@"Software";detail=@"Software rendering selected";}
+    return @{@"mode":mode,@"active":active,@"detail":detail,@"device":@(LRVirglActive),@"restartNeeded":@([mode isEqual:@"metal"]!=LRVirglActive&&!LRVirglStatus.length)};
+}
++ (BOOL)jitCompiledIn {
+#ifdef LINUXRUNNER_JIT_BUILD
+    return YES;
+#else
+    return NO;
+#endif
+}
++ (NSString *)executionMode {
+    NSString *mode=[NSUserDefaults.standardUserDefaults stringForKey:LRExecutionModeKey];
+    // Not chosen yet: a JIT-capable build uses the JIT once iOS allows it
+    // (StikDebug), the interpreter otherwise; an explicit choice is kept.
+    if(!mode)return self.jitCompiledIn?@"automatic":@"interpreter";
+    return [@[@"automatic",@"jit"] containsObject:mode]?mode:@"interpreter";
+}
++ (void)setExecutionMode:(NSString *)mode {
+    [NSUserDefaults.standardUserDefaults setObject:[@[@"automatic",@"jit"] containsObject:mode]?mode:@"interpreter" forKey:LRExecutionModeKey];
+}
++ (BOOL)debuggerAttached {
+    struct kinfo_proc info={0};size_t size=sizeof info;int mib[]={CTL_KERN,KERN_PROC,KERN_PROC_PID,getpid()};
+    return sysctl(mib,4,&info,&size,NULL,0)==0&&(info.kp_proc.p_flag&P_TRACED);
+}
++ (BOOL)requiresPreparedJITRegion { return NSProcessInfo.processInfo.operatingSystemVersion.majorVersion>=26; }
++ (NSDictionary *)executionBackendStatus {
+    return @{@"compiled":@(self.jitCompiledIn),@"mode":self.executionMode,@"active":LRJITActive?@"jit":@"interpreter",@"detail":LRJITDetail?:@"",@"debugger":@(self.debuggerAttached),@"txm":@(self.requiresPreparedJITRegion)};
+}
++ (BOOL)activateJIT:(NSString **)detail {
+    NSString *(^done)(BOOL,NSString *)=^NSString *(BOOL ok,NSString *why){LRJITActive=LRJITActive||ok;LRJITDetail=why;[self logCategory:@"JIT" event:[NSString stringWithFormat:@"activate ok=%d %@",ok,why]];return why;};
+#ifdef LINUXRUNNER_JIT_BUILD
+    if(LRJITActive){if(detail)*detail=LRJITDetail;return YES;}
+    NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
+    NSArray *crashed=[defaults stringArrayForKey:LRJITCrashedPathsKey]?:@[];
+    BOOL traced=self.debuggerAttached,txmDevice=self.requiresPreparedJITRegion;
+    NSMutableArray *paths=[NSMutableArray array];
+    // Classic dual mapping: iOS's own mprotect check decides; harmless when refused.
+    if(![crashed containsObject:@"classic"])[paths addObject:@"classic"];
+    // TXM: only while a debugger is attached (a brk without StikDebug's script kills the app).
+    if(txmDevice&&traced&&![crashed containsObject:@"txm"])[paths addObject:@"txm"];
+    NSString *why=traced||!txmDevice?@"No usable JIT path":@"Attach LinuxRunner with StikDebug first (iOS 26 and later need its script)";
+    for(NSString *path in paths){
+        [defaults setObject:path forKey:LRJITAttemptKey];[defaults synchronize];
+        char text[256]={0};int rc=jit_ios_acquire([path isEqual:@"txm"],text,sizeof text);
+        [defaults removeObjectForKey:LRJITAttemptKey];[defaults synchronize];
+        why=[NSString stringWithFormat:@"%@: %s",[path isEqual:@"txm"]?@"TXM":@"Classic",text];
+        if(rc==0){if(detail)*detail=done(YES,[@"JIT active · " stringByAppendingString:why]);return YES;}
+    }
+    LRJITLastFailure=why;
+    if(detail)*detail=done(NO,why);return NO;
+#else
+    if(detail)*detail=done(NO,@"This build is interpreter-only; install the JIT build to use the JIT.");return NO;
+#endif
+}
+// What actually runs, from runtime facts only: build variant, chosen mode,
+// debugger state, the verified code region (a generated stub returned the
+// expected value) and the translator's counters (native segments installed
+// in guest block code streams, which the dispatcher then runs).
++ (NSDictionary *)jitStatusReport {
+    NSMutableDictionary *r=[NSMutableDictionary dictionaryWithDictionary:@{@"compiled":@(self.jitCompiledIn),@"mode":self.executionMode,@"debugger":@(self.debuggerAttached),@"txm":@(self.requiresPreparedJITRegion),@"os":NSProcessInfo.processInfo.operatingSystemVersionString}];
+    NSArray *crashed=[NSUserDefaults.standardUserDefaults stringArrayForKey:LRJITCrashedPathsKey]?:@[];
+    NSString *state,*detail;
+#ifdef LINUXRUNNER_JIT_BUILD
+    uint64_t blocks=0,segments=0,bytes=0;jit_counters(&blocks,&segments,&bytes);
+    r[@"blocks"]=@(blocks);r[@"segments"]=@(segments);r[@"code_kb"]=@(bytes/1024);
+    if(LRJITActive&&segments>0){state=@"JIT Active";detail=[NSString stringWithFormat:@"%@ · %llu guest blocks translated, %llu native segments installed, %llu KB generated code",LRJITDetail,blocks,segments,bytes/1024];}
+    else if(LRJITActive){state=@"JIT Initializing";detail=[NSString stringWithFormat:@"%@ · code region verified (test code returned the expected value); no guest code translated yet — start or use Linux",LRJITDetail];}
+    else if(crashed.count&&!LRJITLastFailure){state=@"JIT Failed";detail=[NSString stringWithFormat:@"A previous activation (%@) ended LinuxRunner; that method is disabled. Interpreter fallback active.",[crashed componentsJoinedByString:@", "]];}
+    else if([self.executionMode isEqual:@"interpreter"]){state=@"Interpreter Active";detail=self.debuggerAttached?@"A debugger is attached: choose Automatic or JIT to use it":@"Interpreter selected";}
+    else if(LRJITLastFailure){state=@"JIT Unavailable";detail=[LRJITLastFailure stringByAppendingString:@" · interpreter fallback active"];}
+    else if(self.debuggerAttached){state=@"JIT Available";detail=@"Debugger attached · tap Activate JIT Now";}
+    else {state=@"Waiting for JIT Authorization";detail=self.requiresPreparedJITRegion?@"Debugger attachment not detected · attach with StikDebug (its universal script) and return here":@"Executable memory not yet allowed · enable JIT for LinuxRunner in StikDebug and return here";}
+#else
+    state=@"Interpreter Active";detail=@"This build is interpreter-only";
+#endif
+    r[@"state"]=state;r[@"detail"]=detail;return r;
+}
++ (void)retryJITWhenAuthorized {
+    // StikDebug usually grants JIT while LinuxRunner is running: try again on
+    // each return to the foreground. The classic path is iOS's own mprotect
+    // check (harmless when refused); TXM only runs while a debugger is attached.
+    if(!self.jitCompiledIn||LRJITActive||[self.executionMode isEqual:@"interpreter"])return;
+    if(self.requiresPreparedJITRegion&&!self.debuggerAttached){[self logCategory:@"JIT" event:@"foreground check: no debugger attached"];return;}
+    NSString *why=nil;[self activateJIT:&why];
+}
+// 1.1.0: the desktop is landscape 960x540 by default, also in portrait (the
+// owner's choice after testing Fit on an iPhone). A Fit size saved before this
+// build is reset once; picking Fit again later is kept.
++ (void)migrateDesktopSizeToLandscape {
+    NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
+    if([d boolForKey:@"LinuxRunnerDesktop.landscapeDefault.v1"])return;
+    for(NSString *key in d.dictionaryRepresentation.allKeys)
+        if([key hasPrefix:@"LinuxRunnerDesktop.resolution."]&&[d integerForKey:key]==4)[d setInteger:3 forKey:key];
+    [d setBool:YES forKey:@"LinuxRunnerDesktop.landscapeDefault.v1"];
+}
++ (void)prepareExecutionBackendAtLaunch {
+    [self migrateDesktopSizeToLandscape];
+    static dispatch_once_t observe;
+    dispatch_once(&observe,^{[NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){[LRRuntimeBridge retryJITWhenAuthorized];}];});
+    NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
+    NSString *crashedPath=[defaults stringForKey:LRJITAttemptKey];
+    if(crashedPath){
+        // The previous activation never returned: never retry that path automatically.
+        NSArray *crashed=[defaults stringArrayForKey:LRJITCrashedPathsKey]?:@[];
+        [defaults setObject:[crashed arrayByAddingObject:crashedPath] forKey:LRJITCrashedPathsKey];
+        [defaults removeObjectForKey:LRJITAttemptKey];[defaults synchronize];
+        LRJITDetail=[NSString stringWithFormat:@"Interpreter · the last JIT activation (%@) ended LinuxRunner; that method is disabled",crashedPath];
+        [self logCategory:@"JIT" event:LRJITDetail];
+    }
+    NSString *mode=self.executionMode;
+    if(!self.jitCompiledIn||[mode isEqual:@"interpreter"])return;
+    // Automatic and JIT: use what iOS already allows (e.g. launched from StikDebug).
+    if(!self.requiresPreparedJITRegion||self.debuggerAttached){NSString *why=nil;[self activateJIT:&why];}
+    else LRJITDetail=@"Interpreter · attach with StikDebug in Settings › Execution Engine to start the JIT";
 }
 + (BOOL)activeEnvironmentIsDebian {
     // Catalog identity is authoritative; no inference from a library name.
@@ -687,9 +1013,34 @@ void LRSetDatalessMaterialization(void) {
         completion([NSString stringWithFormat:@"%@\n%@%@", ios, linux, roundTrip]);
     });
 }
+// Reuse the existing bind bridge; install a per-root app-controlled Files folder.
++ (void)prepareUserSharedFolder:(NSDictionary *)account {
+    if(!self.isRunning)return;
+    int stage=LRTransferStaging();if(stage>=0)close(stage);
+    NSURL *shared=[self sharedExchangeURL:self.activeRootName];
+    if(![NSFileManager.defaultManager createDirectoryAtURL:shared withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil])return;
+    struct fs_info *fs=LRAccountFS();if(!fs)return;
+    uint32_t uid=[account[@"uid"] unsignedIntValue],gid=[account[@"gid"] unsignedIntValue];
+    struct task context={.uid=0,.euid=0,.gid=0,.egid=0,.fs=fs};struct task *previous=current;current=&context;
+    int result=generic_mkdirat(AT_PWD,"/mnt",0755);
+    if(!result||result==_EEXIST)result=fakefs_bind_mount("/mnt/LinuxRunnerShared",shared.fileSystemRepresentation,false);
+    if(!result)result=fakefs_bind_mount_set_owner("/mnt/LinuxRunnerShared",uid,gid);
+    // Preserve any existing Shared file/directory/link. Never replace user data.
+    NSString *home=account[@"home"];
+    if(!result&&home.length){NSString *alias=[home stringByAppendingPathComponent:@"Shared"];struct statbuf st;
+        context.uid=context.euid=uid;context.gid=context.egid=gid;
+        if(generic_statat(AT_PWD,alias.UTF8String,&st,false)==_ENOENT)generic_symlinkat("/mnt/LinuxRunnerShared",AT_PWD,alias.UTF8String);
+    }
+    current=previous;fs_info_release(fs);
+    [self logCategory:@"FILES" event:[NSString stringWithFormat:@"persistent shared folder mount result=%d",result]];
+}
 + (void)applySharedFolderOwnership {
     NSDictionary *account = LRLoginAccount(self.defaultLinuxUser);
     uint32_t uid = [account[@"uid"] unsignedIntValue], gid = [account[@"gid"] unsignedIntValue];
+    // Downloads was root-owned despite selecting a normal user: imports were
+    // readable but that user could not create/edit files for export.
+    fakefs_bind_mount_set_owner("/home/mobile/Downloads",uid,gid);
+    [self prepareUserSharedFolder:account];
     for (NSDictionary *folder in iosfs_external_folder_mounts()) {
         NSString *mountPoint = folder[@"mountPoint"];
         int err = fakefs_bind_mount_set_owner(mountPoint.fileSystemRepresentation, uid, gid);
@@ -895,8 +1246,37 @@ static void LRWaitForProcess(TerminalViewController *process, NSTimeInterval tim
     for (NSString *path in @[@"/usr/bin/startplasma-x11", @"/usr/bin/kwin_x11", @"/usr/bin/plasmashell"]) if (!LRReadGuestFile(path, 4).length) return NO;
     return YES;
 }
++ (void)installLXQt:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion {
+    [self runDesktopProfile:@"lxqt" progress:progress completion:completion];
+}
++ (BOOL)lxqtInstalled {
+    for (NSString *path in @[@"/usr/bin/startlxqt", @"/usr/bin/lxqt-panel", @"/usr/bin/pcmanfm-qt"]) if (!LRReadGuestFile(path, 4).length) return NO;
+    return YES;
+}
++ (void)installEnlightenment:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion {
+    [self runDesktopProfile:@"enlightenment" progress:progress completion:completion];
+}
++ (BOOL)enlightenmentInstalled {
+    for (NSString *path in @[@"/usr/bin/enlightenment_start", @"/usr/bin/terminology"]) if (!LRReadGuestFile(path, 4).length) return NO;
+    return YES;
+}
++ (void)installWayfire:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion {
+    [self runDesktopProfile:@"wayfire" progress:progress completion:completion];
+}
++ (BOOL)wayfireInstalled {
+    for (NSString *path in @[@"/usr/bin/wayfire", @"/usr/bin/wf-panel", @"/usr/bin/foot"]) if (!LRReadGuestFile(path, 4).length) return NO;
+    return YES;
+}
++ (void)installHyprland:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion {
+    [self runDesktopProfile:@"hyprland" progress:progress completion:completion];
+}
++ (BOOL)hyprlandInstalled {
+    for (NSString *path in @[@"/usr/bin/Hyprland", @"/usr/bin/waybar", @"/usr/bin/fuzzel", @"/usr/bin/seatd"]) if (!LRReadGuestFile(path, 4).length) return NO;
+    return YES;
+}
 + (void)runDesktopProfile:(NSString *)mode progress:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion {
-    [self runSupportInstall:@[mode] title:[mode isEqual:@"plasma"] ? @"Installing KDE Plasma" : @"Installing Desktop Components" progress:progress completion:completion];
+    NSString *title = [mode isEqual:@"plasma"] ? @"Installing KDE Plasma" : [mode isEqual:@"lxqt"] ? @"Installing LXQt" : [mode isEqual:@"enlightenment"] ? @"Installing Enlightenment" : [mode isEqual:@"wayfire"] ? @"Installing Wayfire" : [mode isEqual:@"hyprland"] ? @"Installing Hyprland" : @"Installing Desktop Components";
+    [self runSupportInstall:@[mode] title:title progress:progress completion:completion];
 }
 
 // ---- Support installations: one runner, real progress -------------------------
@@ -1151,9 +1531,12 @@ static void LRDesktopTraceAppend(NSString *line) {
 + (NSURL *)exportLogs:(NSError **)error {
     NSURL *url = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:
                 [NSString stringWithFormat:@"LinuxRunner-diagnostics-%@.txt", NSUUID.UUID.UUIDString]]];
-    NSString *header = [NSString stringWithFormat:@"LinuxRunner %@ (%@)\nLinuxRunner compatibility runtime; ARM64; interpreter; JIT disabled\n%@\n",
+    NSDictionary *jit = self.jitStatusReport, *gpu = self.gpuStatus;
+    NSString *header = [NSString stringWithFormat:@"LinuxRunner %@ (%@)\nLinuxRunner compatibility runtime; ARM64\nJIT: %@ · %@ (mode %@, debugger %@, blocks %@)\nGPU: %@ · %@ (mode %@)\n%@\n",
         [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"],
-        [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"], self.runtimeStatus];
+        [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"],
+        jit[@"state"], jit[@"detail"], jit[@"mode"], [jit[@"debugger"] boolValue] ? @"attached" : @"none", jit[@"blocks"] ?: @0,
+        gpu[@"active"], gpu[@"detail"], gpu[@"mode"], self.runtimeStatus];
     if (bootSnapshot) msync(bootSnapshot, sizeof(*bootSnapshot), MS_SYNC);
     NSMutableString *text = [header mutableCopy];
     [text appendFormat:@"Device diagnostics: %@\n", [self deviceDiagnostics]];
@@ -1199,11 +1582,11 @@ static void LRDesktopTraceAppend(NSString *line) {
         NSMutableArray<NSURL *> *sessions=[NSMutableArray new];
         for(NSURL *u in children)if([u.lastPathComponent hasPrefix:@"session-"]){NSNumber *link=nil;[u getResourceValue:&link forKey:NSURLIsSymbolicLinkKey error:nil];if(!link.boolValue)[sessions addObject:u];}
         [sessions sortUsingComparator:^NSComparisonResult(NSURL *a,NSURL *b){NSDate *ad=nil,*bd=nil;[a getResourceValue:&ad forKey:NSURLContentModificationDateKey error:nil];[b getResourceValue:&bd forKey:NSURLContentModificationDateKey error:nil];return [(bd?:NSDate.distantPast) compare:(ad?:NSDate.distantPast)];}];
-        for(NSURL *session in [sessions subarrayWithRange:NSMakeRange(0,MIN(sessions.count,3))])for(NSString *name in @[@"session.log",@"application.log",@"focus.log",@"window.log",@"display.log",@"xvfb.log",@"bus.log",@"window-state",@"wm.log",@"panel.log",@"desktop.log",@"xfconf.log",@"desktop-state"]){
+        for(NSURL *session in [sessions subarrayWithRange:NSMakeRange(0,MIN(sessions.count,3))])for(NSString *name in @[@"session.log",@"application.log",@"focus.log",@"window.log",@"display.log",@"xvfb.log",@"bus.log",@"window-state",@"wm.log",@"panel.log",@"desktop.log",@"plasma.log",@"xfconf.log",@"desktop-state"]){
             NSURL *url=[session URLByAppendingPathComponent:name];int fd=open(url.fileSystemRepresentation,O_RDONLY|O_NOFOLLOW);if(fd<0)continue;struct stat st;if(fstat(fd,&st)||!S_ISREG(st.st_mode)){close(fd);continue;}
             off_t offset=st.st_size>1024*1024?st.st_size-1024*1024:0;NSMutableData *data=[NSMutableData dataWithLength:st.st_size-offset];ssize_t n=pread(fd,data.mutableBytes,data.length,offset);close(fd);if(n<0)continue;data.length=n;
             NSString *text=[[NSString alloc]initWithData:data encoding:NSUTF8StringEncoding]?:@"non-UTF8 application output omitted";
-            BOOL applicationOutput=[@[@"application.log",@"wm.log",@"panel.log",@"desktop.log",@"xfconf.log"] containsObject:name];
+            BOOL applicationOutput=[@[@"application.log",@"wm.log",@"panel.log",@"desktop.log",@"plasma.log",@"xfconf.log"] containsObject:name];
             NSString *safe=[self redactDiagnosticText:text application:applicationOutput];
             entries[[NSString stringWithFormat:@"gui/%@/%@/%@",root,session.lastPathComponent,name]]=[safe dataUsingEncoding:NSUTF8StringEncoding];
         }
@@ -1215,6 +1598,81 @@ static void LRDesktopTraceAppend(NSString *line) {
     if(archive_write_close(archive)!=ARCHIVE_OK)result=ARCHIVE_FATAL;archive_write_free(archive);
     if(result!=ARCHIVE_OK){[NSFileManager.defaultManager removeItemAtURL:url error:nil];if(error)*error=lrError(EIO,@"Diagnostic archive creation failed");return nil;}
     return url;
+}
++ (NSURL *)sharedExchangeURL:(NSString *)root {
+    NSParameterAssert(validRoot(root));
+    NSURL *documents=[NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+    return [[documents URLByAppendingPathComponent:@"Shared" isDirectory:YES] URLByAppendingPathComponent:root isDirectory:YES];
+}
+static BOOL LRTransferString(NSString *value){return value&&strlen(value.UTF8String)==[value lengthOfBytesUsingEncoding:NSUTF8StringEncoding];}
+static int LRTransferStaging(void) {
+    static dispatch_once_t once;static NSURL *url;static int failure;
+    dispatch_once(&once,^{
+        NSURL *support=[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject;
+        url=[support URLByAppendingPathComponent:@"LinuxRunnerTransferStaging" isDirectory:YES];
+        if(![NSFileManager.defaultManager createDirectoryAtURL:url withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil]){failure=EIO;return;}
+        int fd=open(url.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
+        failure=fd<0?errno:lr_clean_import_staging(fd);if(fd>=0)close(fd);
+    });
+    if(failure){errno=failure;return -1;}
+    return open(url.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
+}
+static int LRSharedDirectory(NSString *root,NSString *relative){
+    if(!validRoot(root)||!LRTransferString(relative)){errno=EINVAL;return -1;}
+    NSURL *base=[LRRuntimeBridge sharedExchangeURL:root];
+    NSError *error=nil;if(![NSFileManager.defaultManager createDirectoryAtURL:base withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:&error]){errno=EIO;return -1;}
+    // Both app-owned ancestors must remain directories, never symbolic links.
+    int parent=open(base.URLByDeletingLastPathComponent.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
+    if(parent<0)return -1;
+    int directory=openat(parent,root.UTF8String,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);int saved=errno;close(parent);if(directory<0){errno=saved;return -1;}
+    int result=lr_open_subdirectory(directory,relative.UTF8String);saved=errno;close(directory);errno=saved;return result;
+}
++ (NSArray<NSDictionary *> *)sharedEntries:(NSString *)relative root:(NSString *)root error:(NSError **)error {
+    int fd=LRSharedDirectory(root,relative);if(fd<0){if(error)*error=lrError(errno,@"Cannot open the shared folder. Symbolic links are not followed.");return nil;}
+    DIR *directory=fdopendir(fd);if(!directory){int saved=errno;close(fd);if(error)*error=lrError(saved,@"Cannot list this folder.");return nil;}
+    NSMutableArray *items=[NSMutableArray new];struct dirent *entry;int failure=0;
+    for(;;){errno=0;entry=readdir(directory);if(!entry){failure=errno;break;}if(entry->d_name[0]=='.')continue;
+        struct stat st;if(fstatat(fd,entry->d_name,&st,AT_SYMLINK_NOFOLLOW)<0)continue;
+        if(!S_ISREG(st.st_mode)&&!S_ISDIR(st.st_mode))continue;
+        NSString *name=[NSString stringWithUTF8String:entry->d_name];if(!name)continue;
+        [items addObject:@{@"name":name,@"directory":@(S_ISDIR(st.st_mode)),@"bytes":@(st.st_size)}];if(items.count>4096){failure=EFBIG;break;}
+    }
+    closedir(directory);if(failure){if(error)*error=lrError(failure,@"Folder could not be listed completely (maximum 4096 entries).");return nil;}
+    [items sortUsingComparator:^NSComparisonResult(NSDictionary *a,NSDictionary *b){if([a[@"directory"] boolValue]!=[b[@"directory"] boolValue])return [a[@"directory"] boolValue]?NSOrderedAscending:NSOrderedDescending;return [a[@"name"] localizedStandardCompare:b[@"name"]];}];return items;
+}
++ (BOOL)createSharedDirectory:(NSString *)leaf relative:(NSString *)relative root:(NSString *)root error:(NSError **)error {
+    if(!LRTransferString(leaf)||!lr_valid_leaf(leaf.UTF8String)){if(error)*error=lrError(EINVAL,@"Choose a single folder name.");return NO;}
+    int fd=LRSharedDirectory(root,relative);int result=fd<0?-1:mkdirat(fd,leaf.UTF8String,0700);int saved=errno;if(fd>=0)close(fd);
+    if(result<0&&error)*error=lrError(saved,@"Cannot create the folder; an existing item is never replaced.");return result==0;
+}
++ (BOOL)importSharedFile:(NSURL *)source relative:(NSString *)relative root:(NSString *)root control:(LRTransferControl *)control error:(NSError **)error {
+    BOOL scoped=[source startAccessingSecurityScopedResource];__block int result=0;
+    NSFileCoordinator *coordinator=[[NSFileCoordinator alloc]initWithFilePresenter:nil];NSError *coordError=nil;
+    struct lr_transfer_control callbacks=LRTransferCallbacks(control);
+    [coordinator coordinateReadingItemAtURL:source options:0 error:&coordError byAccessor:^(NSURL *url){
+        int input=open(url.fileSystemRepresentation,O_RDONLY|O_NONBLOCK|O_NOFOLLOW);int saved=errno;
+        int directory=LRSharedDirectory(root,relative),directoryError=directory<0?errno:0;
+        int stage=LRTransferStaging(),stageError=stage<0?errno:0;
+        result=input<0?saved:directoryError?directoryError:stageError?stageError:!LRTransferString(source.lastPathComponent)?EINVAL:lr_copy_in_staged(input,directory,source.lastPathComponent.UTF8String,stage,&callbacks);
+        if(input>=0)close(input);if(directory>=0)close(directory);if(stage>=0)close(stage);
+    }];
+    if(scoped)[source stopAccessingSecurityScopedResource];
+    if(coordError||result){if(error)*error=coordError?:lrError(result,result==ECANCELED?@"Transfer cancelled; no destination file was published.":result==EEXIST?@"That name already exists. Choose a different folder or rename the source.":result==EBUSY?@"The source changed during copying. Close its editor and retry.":@"Import failed. Use a regular file up to 512 MiB; existing items and symbolic links are not replaced.");return NO;}
+    [self logCategory:@"FILES" event:@"shared file import completed"];return YES;
+}
++ (NSURL *)exportSharedItem:(NSString *)leaf relative:(NSString *)relative root:(NSString *)root control:(LRTransferControl *)control error:(NSError **)error {
+    if(!LRTransferString(leaf)||!lr_valid_leaf(leaf.UTF8String)){if(error)*error=lrError(EINVAL,@"Invalid filename.");return nil;}
+    int directory=LRSharedDirectory(root,relative);struct stat st;int failure=directory<0?errno:fstatat(directory,leaf.UTF8String,&st,AT_SYMLINK_NOFOLLOW)<0?errno:0;
+    NSURL *folder=[NSFileManager.defaultManager.temporaryDirectory URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
+    if(!failure&&![NSFileManager.defaultManager createDirectoryAtURL:folder withIntermediateDirectories:NO attributes:@{NSFilePosixPermissions:@0700} error:error]){close(directory);return nil;}
+    NSString *name=!failure&&S_ISDIR(st.st_mode)?[leaf stringByAppendingString:@".zip"]:leaf;NSURL *target=[folder URLByAppendingPathComponent:name];
+    int output=failure?-1:open(target.fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
+    if(!failure&&output<0)failure=errno;
+    struct lr_transfer_control callbacks=LRTransferCallbacks(control);
+    if(!failure)failure=S_ISDIR(st.st_mode)?lr_archive_directory(directory,leaf.UTF8String,output,&callbacks):lr_copy_out_controlled(directory,leaf.UTF8String,output,&callbacks);
+    if(output>=0&&close(output)<0&&!failure)failure=errno;if(directory>=0)close(directory);
+    if(failure){[NSFileManager.defaultManager removeItemAtURL:folder error:nil];if(error)*error=lrError(failure,failure==ECANCELED?@"Export cancelled; the temporary copy was removed.":failure==EBUSY?@"The selected item changed during export. Close applications writing to it and retry.":@"Export failed. Use regular files or directories without links/special files, up to 512 MiB, 4096 entries and 32 directory levels.");return nil;}
+    [self logCategory:@"FILES" event:@"shared export snapshot prepared"];return target;
 }
 + (BOOL)importFile:(NSURL *)source root:(NSString *)root error:(NSError **)error {
     BOOL scoped = [source startAccessingSecurityScopedResource];
@@ -1260,13 +1718,23 @@ static void LRDesktopTraceAppend(NSString *line) {
     return url;
 }
 + (void)deleteExport:(NSURL *)url {
-    // Only application-created temporary exports are passed by the UI.
-    [NSFileManager.defaultManager removeItemAtURL:url error:nil];
-    NSURL *parent = url.URLByDeletingLastPathComponent;
-    if ([[NSUUID alloc] initWithUUIDString:parent.lastPathComponent] &&
-        [parent.URLByDeletingLastPathComponent.URLByStandardizingPath.path isEqual:[NSURL fileURLWithPath:NSTemporaryDirectory()].URLByStandardizingPath.path])
-        [NSFileManager.defaultManager removeItemAtURL:parent error:nil];
+    // Cleanup is descriptor-relative to app temporary storage. Never follow a
+    // replaced parent link to a shared source or a Files-provider destination.
+    NSString *base=NSFileManager.defaultManager.temporaryDirectory.URLByStandardizingPath.path;
+    NSURL *standard=url.URLByStandardizingPath;NSString *prefix=[base stringByAppendingString:@"/"];
+    if(!url.isFileURL||![standard.path hasPrefix:prefix])return;
+    NSString *relative=[standard.path substringFromIndex:prefix.length],*leaf=relative.lastPathComponent,*parent=relative.stringByDeletingLastPathComponent;
+    if(!LRTransferString(leaf)||!lr_valid_leaf(leaf.UTF8String))return;
+    int root=open(base.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);if(root<0)return;
+    int directory=lr_open_subdirectory(root,[parent isEqual:@"."]?"":parent.UTF8String);
+    if(directory>=0){struct stat st;if(!fstatat(directory,leaf.UTF8String,&st,AT_SYMLINK_NOFOLLOW)&&!S_ISDIR(st.st_mode))unlinkat(directory,leaf.UTF8String,0);close(directory);}
+    if([[NSUUID alloc]initWithUUIDString:parent]&&[parent isEqual:parent.lastPathComponent])unlinkat(root,parent.UTF8String,AT_REMOVEDIR);
+    close(root);
 }
+
+#if TARGET_OS_SIMULATOR
+#include "../../tests/linuxrunner/desktop_files_contract.inc"
+#endif
 @end
 
 @implementation LRDeviceDiagnosticsController

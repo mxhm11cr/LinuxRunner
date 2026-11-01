@@ -5,6 +5,8 @@
 #include "fs/tty.h"
 #include "fs/dyndev.h"
 #include "fs/devices.h"
+#include "fs/dmabuf.h"
+#include "fs/drm.h"
 
 extern struct dev_ops gpu_dev;
 #include "graphics/guest_gpu.h"
@@ -14,6 +16,8 @@ struct dev_ops *block_devs[256] = {
 };
 struct dev_ops *char_devs[256] = {
     [MEM_MAJOR] = &mem_dev,
+    [LR_UDMABUF_MAJOR] = &software_udmabuf_dev,
+    [LR_DRM_MAJOR] = &software_drm_dev,
     [LR_GPU_MAJOR] = &gpu_dev,
     [TTY_CONSOLE_MAJOR] = &tty_dev,
     [TTY_ALTERNATE_MAJOR] = &tty_dev,

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Audit every Mach-O in a device IPA and match its retained archive/symbols."""
-import hashlib, json, os, pathlib, plistlib, stat, subprocess, sys, tempfile, zipfile
+import hashlib, json, os, pathlib, plistlib, re, stat, subprocess, sys, tempfile, zipfile
 os.environ.setdefault('DEVELOPER_DIR', '/Applications/Xcode.app/Contents/Developer')
 release = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith('--') else 'build/browser/release' if '--browser-test' in sys.argv else 'build/qt/release' if '--qt-test' in sys.argv else 'build/gui/release' if '--gui-test' in sys.argv else 'build/device-diagnostics/release' if '--diagnostic' in sys.argv else 'build/releases')
 name = 'LinuxRunner-Browser-Test' if '--browser-test' in sys.argv else 'LinuxRunner-Qt-Test' if '--qt-test' in sys.argv else 'LinuxRunner-GUI-Test' if '--gui-test' in sys.argv else 'LinuxRunner-Debug' if '--diagnostic' in sys.argv else 'LinuxRunner'
@@ -65,7 +65,19 @@ options = pathlib.Path('build/release-derived/Build/Intermediates.noindex/Archiv
 if options.exists():
     values = {item['name']:item['value'] for item in json.loads(options.read_text())}
     result['execution_build_options'] = {k:values[k] for k in ('guest_arch','jit','jit_emit','cli_aot')}
-    assert values['guest_arch'] == 'arm64' and not values['jit'] and not values['jit_emit'] and not values['cli_aot']
+    # Interpreter-only unless the release is declared as the JIT-capable variant
+    # (LINUXRUNNER_JIT=YES, as scripts/build-ipa.sh builds it); never AOT.
+    jit_variant = os.environ.get('LINUXRUNNER_JIT') == 'YES'
+    result['jit_variant_declared'] = jit_variant
+    assert values['guest_arch'] == 'arm64' and not values['cli_aot']
+    assert values['jit'] == values['jit_emit'] == jit_variant, 'JIT build options do not match the declared variant'
+# GPU variant: libepoxy looks EGL up with dlsym, so the entry points must be
+# exported from the shipped (stripped) executable or enabling the GPU aborts.
+result['gpu_variant'] = b'virtio-gpu device active' in binary.read_bytes()
+if result['gpu_variant']:
+    exports = xcrun('dyld_info', '-exports', str(binary))
+    result['gpu_egl_exports'] = sum(1 for line in exports.splitlines() if re.search(r' _egl[A-Z]', line))
+    assert ' _eglGetProcAddress' in exports and ' _eglGetCurrentDisplay' in exports, 'GPU variant without exported EGL entry points'
 result['recursive_macho_audit'] = []
 with tempfile.TemporaryDirectory(prefix='linuxrunner-ipa-audit-') as directory:
     with zipfile.ZipFile(ipa) as archive: archive.extractall(directory)

@@ -28,8 +28,8 @@ On **Choose Linux**, select:
 
 | Choice in the app | Choose it for |
 | --- | --- |
-| **Debian GNU/Linux 13 (ARM64) — recommended** | A familiar `apt` environment and the main desktop path; optional experimental KDE Plasma. |
-| **Arch Linux ARM (ARM64) — experimental** | A rolling `pacman` environment and experimental Openbox desktop with LXQt Panel/PCManFM-Qt. |
+| **Debian GNU/Linux 13 (ARM64) — recommended** | Recommended `apt` environment; LinuxRunner Desktop, LXQt and experimental KDE Plasma/Wayfire. |
+| **Arch Linux ARM (ARM64) — experimental** | Rolling `pacman` environment; the most desktop choices, including experimental Hyprland. The app still labels this distribution experimental. |
 | **Alpine Linux 3.24 (ARM64)** | A small, mainly terminal-oriented environment using `apk`. |
 
 If the selected distribution is already installed, **Already Installed** offers **Configure <environment name>**. Use that to retain its files and accounts. Choose **Install Another Environment** only when you actually want a separate installation. Otherwise, choose **Continue**.
@@ -91,7 +91,7 @@ The architecture is normally reported as `aarch64`. Linux version/CPU informatio
 
 A desktop is optional for terminal use. In the assistant's **Desktop** stage, choose **Install Desktop Components**. This adds the display server, window manager, panel, file manager and available sound support using the distribution's packages. Account tools and desktop packages may need network access even with bundled Alpine.
 
-On Arch the offered desktop uses **Openbox, LXQt Panel and PCManFM-Qt**. Current Arch Plasma needs Wayland and is unavailable. On Debian, the default is LinuxRunner Desktop; KDE Plasma is a separate experimental option under **Settings → Desktop Environment**.
+The setup desktop uses lightweight Openbox components (LXQt Panel/PCManFM-Qt on Arch). For another desktop, open **Settings → Desktop Environment**, use **Install LXQt**, **Install Enlightenment**, **Install Wayfire**, **Install Hyprland** or **Install KDE Plasma** where available, then select it in the **Desktop** picker under **Open Desktop Starts**. Stop an existing desktop before switching. Hyprland is experimental, Arch-only and requires at least 8 GB RAM; Metal is recommended. Enlightenment is disabled on Debian and Arch Plasma remains unvalidated.
 
 When components are installed, choose **Continue**. **Home → Open Desktop** can also install missing desktop support automatically. Alpine's desktop path is experimental; use its terminal if graphical packages fail.
 
@@ -107,13 +107,13 @@ Choose **Open Desktop** at the end of setup or on Home. A running session may in
 | Two-finger movement | Pan while zoomed; scroll when fitted. |
 | Keyboard button and modifier bar | Show the on-screen keyboard; send Esc, Tab, Shift, Ctrl, Alt and Super. |
 | Hardware keyboard / supported mouse or trackpad | Forward the input delivered by iOS/iPadOS. Behavior depends on the accessory and platform settings. |
-| **Desktop → Fit to Screen** / **Actual Size** | Change viewer scaling. |
-| **Desktop → Fit Screen (next desktop start)** | Select a window-sized Linux resolution for the next session start. |
+| **Desktop → Desktop Settings… → Display → Fit** / **Actual Size** | Change viewer scaling. |
+| **Desktop Settings… → Display → Resolution & Viewer Preferences** | Select a window-sized Linux resolution for the next session start. |
 | **Done** | Return to LinuxRunner while retaining the current desktop session. |
 | **Sessions → Resume Desktop** | Reattach to a live session. |
 | **Stop Desktop** | End the desktop and its applications; save documents first. |
 
-The clipboard action is currently labeled **Type Text from iPhone Clipboard**, including on iPad. It types clipboard text into the focused Linux application. Check the text and focus before using it.
+Use **Desktop → Paste Clipboard Text**, including on iPad. It types clipboard text into the focused Linux application. Check the text and focus before using it.
 
 On a hardware keyboard, **Control–Option–Command–M** opens Desktop Options, **–F** fits the view, **–0** uses actual size and **–W** closes the view. Other forwarded Command combinations use the Linux Super modifier. On iPad, hold Command to see available app shortcuts.
 
@@ -152,3 +152,11 @@ sudo apk add nano
 Run `nano` in the terminal. For installed graphical applications, use **Home → Applications** or the environment's discovered application list. Managed launchers supply the active display and authorization. If starting a GUI program from a terminal, open a fresh terminal after the desktop starts; an older shell cannot inherit a new display environment automatically.
 
 Application compatibility varies by distribution, package version and workload. See [Compatibility](COMPATIBILITY.md) and [Troubleshooting](TROUBLESHOOTING.md). Never disable package signature verification to make an installation proceed.
+
+## 13. Select Graphics, External Output or Optional JIT
+
+For the accelerated path, use **Settings → Graphics → Linux GPU Device → GPU → Metal GPU · Experimental**. Fully close/reopen the app, then check **Active renderer**. Automatic uses software in Build 900. See [graphics and performance](PERFORMANCE.md).
+
+For an external display, enable **Settings → Devices → External Desktop Output**, connect a compatible wired/AirPlay display, open the desktop and choose **Desktop → Use iPhone as Trackpad**. Independent controls require a separate iOS external scene. [Display guide](NETWORKING_AND_DISPLAYS.md)
+
+JIT is optional. The interpreter works without activation. Enable **Settings → Advanced → Developer Mode** to inspect **Execution Engine / StikDebug**, actual status and activation controls. Availability depends on signing and OS restrictions; a compiled JIT does not imply permission to execute it.

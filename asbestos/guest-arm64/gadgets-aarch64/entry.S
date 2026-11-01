@@ -46,6 +46,28 @@ NAME(fiber_enter):
     str lr, [sp, #0x60]
     str x1, [sp, #0x70]              // Save original _cpu for verification
 
+    // Guest FP control/status are live in FPCR/FPSR while gadgets (and JIT
+    // code) run, so every FP instruction honours the guest rounding mode,
+    // FZ and DN and accumulates the guest's exception flags. The host FPCR
+    // is saved in the frame and restored at fiber_exit_restore.
+    // MSR FPCR/FPSR are serialising and every block entry/exit passes here
+    // (Python startup was 12 % slower with unconditional writes): write only
+    // a value that differs. Host code never reads its FP exception flags, so
+    // the host FPSR is not restored at exit: the guest's flags stay live and
+    // usually still match here.
+    mrs x8, fpcr
+    str x8, [sp, #0x68]
+    ldr w9, [x1, #CPU_fpcr]
+    cmp x8, x9
+    b.eq 1f
+    msr fpcr, x9
+1:  mrs x8, fpsr
+    ldr w9, [x1, #CPU_fpsr]
+    cmp x8, x9
+    b.eq 2f
+    msr fpsr, x9
+2:
+
     // Save SP for crash recovery: signal handler restores SP to this value
     // so fiber_exit can correctly pop the callee-saved register frame.
     mov x8, sp
@@ -197,6 +219,17 @@ fiber_exit:
     str _pc, [_cpu, #LOCAL_fault_code]
     str _cycle_w, [_cpu, #CPU_cycle]
 fiber_exit_restore:
+    // Guest FPSR back to the cpu state (also on the crash-recovery path, so
+    // through the saved _cpu, not x1), host FPCR back. x0 is the result.
+    ldr x9, [sp, #0x70]
+    mrs x10, fpsr
+    str w10, [x9, #CPU_fpsr]
+    mrs x10, fpcr
+    ldr x11, [sp, #0x68]
+    cmp x10, x11
+    b.eq 1f
+    msr fpcr, x11
+1:
     // Restore callee-saved registers
     ldr lr, [sp, #0x60]
     ldp x28, x29, [sp, #0x50]
@@ -435,6 +468,17 @@ segfault_write_cp:
 // Code stream: [gadget_interrupt addr][interrupt type (32-bit)]
 .gadget interrupt
     ldr w0, [_pc]          // Load interrupt type from code stream
+    b fiber_exit
+
+// Decoder instruction-fetch fault; retain its actual address and access type
+// so the kernel does not retry an NX fault as a successful data read.
+.gadget instruction_fault
+    ldr x8, [_pc]
+    str x8, [_cpu, #CPU_segfault_addr]
+    strb wzr, [_cpu, #CPU_segfault_was_write]
+    mov w8, #1
+    strb w8, [_cpu, #CPU_segfault_was_exec]
+    mov w0, #INT_GPF
     b fiber_exit
 
 // gadget_exit - Exit the block and return to dispatcher

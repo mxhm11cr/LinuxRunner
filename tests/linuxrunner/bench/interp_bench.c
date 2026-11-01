@@ -148,6 +148,26 @@ static uint64_t w_string(uint64_t n) {
     return s;
 }
 
+// Short-string search as parsers and interpreters do it: strlen, strchr,
+// memchr and memcmp on 16..256-byte strings. glibc's AArch64 versions are
+// built on CMEQ/UMAXP/ADDP/SHRN; memcpy-dominated "string" does not show them.
+static uint64_t w_strsearch(uint64_t n) {
+    static char text[4096];
+    for (size_t i = 0; i < sizeof text - 1; i++) text[i] = 'a' + (char)(i * 7 % 26);
+    text[sizeof text - 1] = 0;
+    uint64_t s = 0;
+    for (uint64_t i = 0; i < n; i++) {
+        size_t off = (i * 131) % 3584, len = 16 + (i * 37) % 241;
+        char saved = text[off + len]; text[off + len] = 0;
+        s += strlen(text + off);
+        const char *c = strchr(text + off, 'z'); s += c ? (uint64_t)(c - text) : 1;
+        const void *m = memchr(text + off, 'q', len); s += m ? (uint64_t)((const char *)m - text) : 3;
+        s += (uint64_t)(memcmp(text + off, text + ((off + 26) % 3584), len) & 0xff);
+        text[off + len] = saved;
+    }
+    return s;
+}
+
 // Atomics: uncontended atomic add and compare-exchange (ldxr/stxr or LSE).
 static uint64_t w_atomic(uint64_t n) {
     static uint64_t c;
@@ -213,6 +233,7 @@ static const struct workload workloads[] = {
     { "float",    w_float,    2000000 },
     { "neon",     w_neon,     200 },       // x 1024 vectors
     { "string",   w_string,   400 },       // x 64 KiB
+    { "strsearch", w_strsearch, 200000 },   // strlen+strchr+memchr+memcmp, 16..256 B
     { "atomic",   w_atomic,   1000000 },
     { "mutex",    w_mutex,    1000000 },
     { "syscall",  w_syscall,  200000 },

@@ -183,6 +183,7 @@ static bool realfs_should_surface_eintr(void) {
 // Caller holds memfd->lock. Match shmem_write_begin: a sealed final partial
 // page cannot grow; preceding complete guest pages may still be written.
 static ssize_t memfd_write_size(struct fd *fd, size_t count, off_t offset) {
+    if ((fd->memfd->seals & F_SEAL_ANY_WRITE_) && count) return _EPERM;
     if (!(fd->memfd->seals & F_SEAL_GROW_) || count == 0) return count;
     struct stat st;
     if (fstat(fd->real_fd, &st) < 0) return errno_map();
@@ -508,7 +509,7 @@ int realfs_getpath(struct fd *fd, char *buf) {
         return err;
 
     /* For bind-mounted dirs, F_GETPATH resolves symlinks and returns the
-     * host persistent path (e.g. <application-data>/sessions/<sid>/attachments).
+     * host persistent path (e.g. /Users/.../MinisChat/minis/<sid>/attachments).
      * This won't start with mount->source, so the normal prefix strip fails.
      * Detect and translate back to the Linux path. */
     char linux_path[MAX_PATH];

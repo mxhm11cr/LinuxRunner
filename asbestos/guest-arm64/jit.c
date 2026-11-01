@@ -160,6 +160,70 @@ static bool map_jit(void) {
 }
 #endif
 
+static uint8_t *region_alloc(size_t bytes);
+
+void jit_counters(uint64_t *blocks, uint64_t *segments, uint64_t *code_bytes) {
+    if (blocks) *blocks = atomic_load_explicit(&st_blocks, memory_order_relaxed);
+    if (segments) *segments = atomic_load_explicit(&st_segments, memory_order_relaxed);
+    if (code_bytes) *code_bytes = atomic_load_explicit(&st_bytes, memory_order_relaxed);
+}
+#if !TARGET_OS_OSX && !defined(__linux__) && !defined(ISH_JIT_NO_EMIT)
+// iOS: the translator never maps executable memory by itself. The app calls
+// jit_ios_acquire() once iOS has authorised it (an external debugger such as
+// StikDebug attached; see docs/engine/IOS_JIT.md), and translation starts with
+// the next block compiled after that. Without it the gadgets run as always.
+static _Atomic bool ios_region_ready;
+
+// StikDebug's documented breakpoint protocol for devices with TXM (iOS 26+):
+// the attached script prepares an RX mapping (x16 = 1) and detaches (x16 = 0).
+// A brk with no script attached kills the process, so the app only calls these
+// while a debugger is attached.
+__attribute__((noinline, naked)) static void *jit26_prepare_region(void *address, size_t length) {
+    __asm__ volatile("mov x16, #1\n brk #0xf00d\n ret");
+}
+__attribute__((noinline, naked)) static void jit26_detach(void) {
+    __asm__ volatile("mov x16, #0\n brk #0xf00d\n ret");
+}
+
+// Write "mov w0, #42; ret" through the writable view and run it. Only called
+// after iOS granted the executable view, so a refusal shows up as a failed
+// mprotect/prepare before this point.
+static bool ios_region_verify(void) {
+    static const uint32_t probe[] = {0x52800540, 0xd65f03c0};
+    uint8_t *code = region_alloc(sizeof probe);
+    if (!code) return false;
+    memcpy(code + rw_delta, probe, sizeof probe);
+    sys_icache_invalidate(code, sizeof probe);
+    return ((int (*)(void)) (void *) code)() == 42;
+}
+
+int jit_ios_acquire(bool txm, char *detail, size_t size) {
+    if (atomic_load(&ios_region_ready)) { snprintf(detail, size, "already active"); return 0; }
+    if (region) { snprintf(detail, size, "a previous attempt left an unverified region"); return -1; }
+    if (!txm) {
+        // Without TXM, a debugged process may map an executable alias: the
+        // mprotect below is iOS's own permission check.
+        if (!map_dual()) { snprintf(detail, size, "iOS refused executable memory (no debugger has attached to this process)"); return -1; }
+    } else {
+        uint8_t *rx = jit26_prepare_region(NULL, REGION_SIZE);
+        vm_address_t rw = 0;
+        vm_prot_t cur, max;
+        bool ok = rx && vm_remap(mach_task_self(), &rw, REGION_SIZE, 0, VM_FLAGS_ANYWHERE, mach_task_self(),
+                                 (vm_address_t) rx, false, &cur, &max, VM_INHERIT_NONE) == KERN_SUCCESS &&
+                  mprotect((void *) rw, REGION_SIZE, PROT_READ | PROT_WRITE) == 0;
+        jit26_detach();
+        if (!ok) { snprintf(detail, size, rx ? "the prepared region could not get a writable alias" : "the debugger did not prepare a region"); return -1; }
+        region = rx;
+        rw_delta = (intptr_t) rw - (intptr_t) rx;
+        dual_map = true;
+    }
+    if (!ios_region_verify()) { snprintf(detail, size, "generated code did not run correctly"); return -1; }
+    atomic_store(&ios_region_ready, true);
+    snprintf(detail, size, "%s, %u MB code region", txm ? "TXM prepared region" : "dual mapping", REGION_SIZE >> 20);
+    return 0;
+}
+#endif
+
 static uint8_t *region_alloc(size_t bytes) {
     // Failed reservations must not consume space (or wrap the cursor). Check
     // before rounding too: SIZE_MAX would otherwise round down to zero.
@@ -320,6 +384,12 @@ struct em {
     unsigned ninst;
     struct { unsigned pos; uint8_t *code; struct rec_seg *rec; } inst[256];
     int8_t pin[33];        // guest -> host for this segment: pin_of plus loop promotions
+    // Pinned guest registers whose frame copy may be stale at this point of
+    // the segment. Native code is entered only at a segment's start (and its
+    // loop head is the start), so the set starts full there; every write to a
+    // pinned register goes through writeback(), and a guest-access checkpoint
+    // stores exactly these and clears the set.
+    uint64_t pin_dirty;
     uint16_t uses[33];     // hreg() requests per guest register (loop planning)
     // Self-loop block: guest registers the loop body uses but that are not
     // pinned borrow the host registers of pinned ones it does not use. The hot
@@ -377,8 +447,10 @@ static int hreg(struct em *e, int g) {
 }
 
 static void writeback(struct em *e, int g) {
-    if (e->pin[g] >= 0)
-        return;   // pinned: stored at exits
+    if (e->pin[g] >= 0) {
+        e->pin_dirty |= 1ull << g;   // pinned: stored at exits and guest-access checkpoints
+        return;
+    }
     put(e, 0xF9000000u | ((greg_off(g) / 8) << 10) | (1u << 5) | (uint32_t) e->host[g]);  // str xh, [x1, #off]
 }
 
@@ -534,6 +606,30 @@ static void ldr_off(struct em *e, int rd, int rn, unsigned off) {
     put(e, 0xF9400000u | (off / 8) << 10 | ((uint32_t) rn << 5) | (uint32_t) rd);      // ldr xd, [xn, #off]
 }
 
+// xd = [xn + off] for a signed byte offset (|off| < 2^24). LDUR's 9-bit
+// field wraps silently outside [-256, 255]: fields of struct fiber_block lie
+// more than 256 bytes before code[] in JIT builds, and the wrapped offset
+// read code-stream words as the successor's guest address. Out of range,
+// the address is formed in xd itself, so xn is preserved.
+static void ldr_signed(struct em *e, int rd, int rn, int off) {
+    if (off >= -256 && off <= 255) {
+        put(e, 0xF8400000u | ((uint32_t) off & 0x1ff) << 12 | ((uint32_t) rn << 5) | (uint32_t) rd);   // ldur xd, [xn, #off]
+        return;
+    }
+    if (off > 0) {
+        ldr_off(e, rd, rn, (unsigned) off);
+        return;
+    }
+    unsigned m = (unsigned) -off;
+    if (m >> 12) {
+        put(e, 0xD1400000u | (m >> 12) << 10 | ((uint32_t) rn << 5) | (uint32_t) rd);   // sub xd, xn, #m>>12, lsl #12
+        rn = rd;
+    }
+    if ((m & 0xfff) || rn != rd)
+        put(e, 0xD1000000u | (m & 0xfff) << 10 | ((uint32_t) rn << 5) | (uint32_t) rd);  // sub xd, xn, #m&0xfff
+    put(e, 0xF9400000u | ((uint32_t) rd << 5) | (uint32_t) rd);                          // ldr xd, [xd]
+}
+
 // PIC: xd = the block (ctx->slot[idx].blk)
 static void ldr_ctx_block(struct em *e, int rd) {
     ldr_off(e, rd, FP, CTX_BLK + CTX_SLOT * e->idx);
@@ -587,7 +683,7 @@ static void mov_guest_ref(struct em *e, int rd, uint64_t v, int scratch) {
 // the hot entry is used, so nothing after the branch waits for a load.
 static void enter_native(struct em *e) {
     int co = (int) offsetof(struct fiber_block, jit_ctx) - FIBER_BLOCK_code;
-    put(e, 0xF8400000u | ((uint32_t) (co & 0x1ff) << 12) | (9u << 5) | 10);  // ldur x10, [x9, #jit_ctx-code]
+    ldr_signed(e, 10, 9u, co);  // ldur x10, [x9, #jit_ctx-code]
     put(e, 0xEB1D015Fu);                                                     // cmp x10, x29
     put(e, 0x54000041u);                                                     // b.ne 1f
     put(e, 0x91001108u);                                                     // add x8, x8, #4 (hot entry)
@@ -717,7 +813,7 @@ static void tlb_lookup(struct em *e, unsigned bytes, bool write, unsigned spos) 
     branch_stub(e, spos, 1);                                   // b.ne stub
     put(e, 0xF9400000u | ((offsetof(struct tlb_entry, gen) / 8) << 10) | (T_I << 5) | T_E);  // ldr x11, [x10, #gen]
     int mmu_off = (int) offsetof(struct tlb, mmu) - (int) offsetof(struct tlb, entries);
-    put(e, 0xF8400000u | ((uint32_t) (mmu_off & 0x1ff) << 12) | (2u << 5) | T_Q);             // ldur x12, [x2, #mmu]
+    ldr_signed(e, T_Q, 2u, mmu_off);             // ldur x12, [x2, #mmu]
     put(e, 0xF9400000u | ((offsetof(struct mmu, changes) / 8) << 10) | (T_Q << 5) | T_Q);    // ldr x12, [x12, #changes]
     put(e, 0xEB00001Fu | (T_Q << 16) | (T_E << 5));            // cmp x11, x12
     branch_stub(e, spos, 1);                                   // b.ne stub
@@ -742,8 +838,9 @@ _Static_assert(offsetof(struct fiber_frame, native_fault_host_pc) % 8 == 0 &&
     offsetof(struct fiber_frame, native_fault_write) % 8 == 0, "checkpoint alignment");
 static void emit_guest_access(struct em *e, uint32_t insn, bool write) {
     for (int g = 0; g <= G_SP; g++)
-        if (e->pin[g] >= 0)
+        if (e->pin[g] >= 0 && (e->pin_dirty >> g & 1))
             put(e, 0xF9000000u | ((greg_off(g) / 8) << 10) | (1u << 5) | (uint32_t) e->pin[g]);
+    e->pin_dirty = 0;
     if (n_pinned)
         put(e, 0xB9000000u | ((CPU_cycle / 4) << 10) | (1u << 5) | H_CYC);
     // x9 is the translated pointer; x11 still holds data_minus_addr.
@@ -785,6 +882,20 @@ enum { V_N = 16, V_M = 17, V_D = 18, V_T = 19 };   // table registers: v19..v22
 static bool emit_simd(struct em *e, uint32_t x) {
     int rd = x & 31, rn = (x >> 5) & 31, rm = (x >> 16) & 31;
     uint32_t base = x & ~0x001F03FFu;   // opcode with rd/rn/rm cleared
+    // ARMv8.0 cryptographic extension (every Apple arm64 CPU has it): the same
+    // instruction on the guest's vector registers. AESE/AESD/SHA* also read Vd.
+    if ((x & 0xFFFFCC00u) == 0x4E284800u || (x & 0xFFE08C00u) == 0x5E000000u || (x & 0xFFFFCC00u) == 0x5E280800u) {
+        bool three = (x & 0xFFE08C00u) == 0x5E000000u;
+        uint32_t op = (x >> 12) & 0x1F;
+        bool reads_d = three || ((x & 0xFFFFCC00u) == 0x4E284800u ? op < 6 : op != 0);   // AESMC/AESIMC, SHA1H: Vd write-only
+        if (three && ((x >> 12) & 7) == 7) return false;   // reserved
+        if (reads_d) vload(e, V_D, rd);
+        vload(e, V_N, rn);
+        if (three) vload(e, V_M, rm);
+        put(e, (x & (three ? ~0x001F03FFu : ~0x3FFu)) | (three ? (uint32_t) V_M << 16 : 0) | ((uint32_t) V_N << 5) | V_D);   // bits 16-20 are opcode in the two-register forms
+        vstore(e, V_D, rd);
+        return true;
+    }
     if ((x & 0xBFE0FC00u) == 0x0E000C00u) {                                   // dup (general)
         if ((x & 0x000F0000u) == 0 || (((x >> 16) & 0xF) == 8 && !(x & 0x40000000u))) return false;
         int hn = rn == 31 ? 31 : hreg(e, rn);
@@ -1382,7 +1493,7 @@ static void emit_native_dispatch_ex(struct em *e, bool block_start) {
         if (block_start && n_pinned) {
             int ne = (int) offsetof(struct fiber_block, native_entry) - FIBER_BLOCK_code;
             put(e, 0xAA1C03E9u);  // mov x9, x28 (&code[0])
-            put(e, 0xF8400000u | ((uint32_t) (ne & 0x1ff) << 12) | (9u << 5) | 8);
+            ldr_signed(e, 8, 9u, ne);
             unsigned slow = e->n; put(e, 0xB4000008u);
             enter_native(e);
             patch_here(e, slow);
@@ -1477,12 +1588,12 @@ static void emit_chain_ex(struct em *e, struct fiber_block *b, unsigned long *sl
         generic = e->n;
         // Not linked yet: the successor's native code, if it has some.
         int ne = (int) offsetof(struct fiber_block, native_entry) - FIBER_BLOCK_code;
-        put(e, 0xF8400000u | ((uint32_t) (ne & 0x1ff) << 12) | (9u << 5) | 8);  // ldur x8, [x9, #native_entry-code]
+        ldr_signed(e, 8, 9u, ne);  // ldur x8, [x9, #native_entry-code]
         unsigned slow = e->n; put(e, 0xB4000008u);                               // cbz x8, slow
         enter_native(e);
         patch_here(e, slow);
     }
-    put(e, 0xF8400000u | ((uint32_t) (boff & 0x1ff) << 12) | (9u << 5) | 11);   // ldur x11, [x9, #addr-code]
+    ldr_signed(e, 11, 9u, boff);   // ldur x11, [x9, #addr-code]
     put(e, 0xF9000000u | ((CPU_pc / 8) << 10) | (1u << 5) | 11);                 // str x11, [x1, #pc]
     if (!reg_cycle) {
         put(e, 0xB9400000u | ((CPU_cycle / 4) << 10) | (1u << 5) | 8);           // ldr w8, [x1, #cycle]
@@ -1510,7 +1621,7 @@ static void emit_chain_ex(struct em *e, struct fiber_block *b, unsigned long *sl
         if (self_loop) emit_canon(e);
         ldr_block(e, 9, slot_off);
         unsigned unch2 = e->n; put(e, 0xB7F80009u);                              // tbnz x9, #63, unchained
-        put(e, 0xF8400000u | ((uint32_t) (boff & 0x1ff) << 12) | (9u << 5) | 11);   // ldur x11, [x9, #addr-code]
+        ldr_signed(e, 11, 9u, boff);   // ldur x11, [x9, #addr-code]
         put(e, 0xF9000000u | ((CPU_pc / 8) << 10) | (1u << 5) | 11);             // str x11, [x1, #pc]
         put(e, 0xD1000000u | (FIBER_BLOCK_code << 10) | (9u << 5) | 8);          // sub x8, x9, #code
         put(e, 0xF9000000u | ((LOCAL_last_block / 8) << 10) | (1u << 5) | 8);    // str x8, [x1, #last_block]
@@ -1555,7 +1666,7 @@ static void emit_ret(struct em *e, struct fiber_block *b, int rn) {
     if (n_pinned) {
         // successor native: straight into its hot entry
         int ne = (int) offsetof(struct fiber_block, native_entry) - (int) offsetof(struct fiber_block, code);
-        put(e, 0xF8400000u | ((uint32_t) (ne & 0x1ff) << 12) | (28u << 5) | 8);  // ldur x8, [x28, #native_entry-code]
+        ldr_signed(e, 8, 28u, ne);  // ldur x8, [x28, #native_entry-code]
         unsigned slow = e->n; put(e, 0xB4000008u);                               // cbz x8, slow
         if (pic_on) {
             put(e, 0xAA1C03E9u);                                                 // mov x9, x28
@@ -1609,7 +1720,7 @@ static void store_ret_cache(struct em *e, int h, uint64_t ret, int base) {
 static void emit_block_cache_lookup(struct em *e, unsigned *miss1, unsigned *miss2, unsigned *miss3) {
     // stale cache? tlb->block_cache_gen != mmu->asbestos->invalidate_gen
     int mmu_off = (int) offsetof(struct tlb, mmu) - (int) offsetof(struct tlb, entries);
-    put(e, 0xF8400000u | ((uint32_t) (mmu_off & 0x1ff) << 12) | (2u << 5) | 12);  // ldur x12, [x2, #mmu]
+    ldr_signed(e, 12, 2u, mmu_off);  // ldur x12, [x2, #mmu]
     put(e, 0xF9400000u | ((offsetof(struct mmu, asbestos) / 8) << 10) | (12u << 5) | 12);  // ldr x12, [x12, #asbestos]
     put(e, 0xB9400000u | ((offsetof(struct asbestos, invalidate_gen) / 4) << 10) | (12u << 5) | 12);  // ldr w12, [x12, #gen]
     emit_add_x2(e, 11, offsetof(struct tlb, block_cache_gen) - offsetof(struct tlb, entries));
@@ -1781,6 +1892,7 @@ static unsigned emit_segment(struct em *e, struct fiber_block *b, const struct j
     memset(e->owner, -1, sizeof(e->owner));
     memset(e->uses, 0, sizeof(e->uses));
     memcpy(e->pin, pin_of, sizeof(e->pin));
+    e->pin_dirty = ~0ull;
     for (unsigned i = 0; e->loop && i < e->npromo; i++) {
         e->pin[e->donor_g[i]] = -1;
         e->pin[e->promo_g[i]] = e->promo_h[i];
@@ -1808,7 +1920,7 @@ static unsigned emit_segment(struct em *e, struct fiber_block *b, const struct j
     load_pinned(e);
     if (pic_on) {
         int co = (int) offsetof(struct fiber_block, jit_ctx) - FIBER_BLOCK_code;
-        put(e, 0xF8400000u | ((uint32_t) (co & 0x1ff) << 12) | (9u << 5) | FP);   // ldur x29, [x9, #jit_ctx-code]
+        ldr_signed(e, FP, 9u, co);   // ldur x29, [x9, #jit_ctx-code]
     }
     if (e->loop) {
         emit_promote(e);
@@ -2216,7 +2328,7 @@ void ish_aot_register(const struct aot_module *m) {
 
 // Bump whenever the code emitted for some guest instruction, stub or exit
 // changes: images made before would still pass every other check.
-#define JIT_CODE_VERSION 12
+#define JIT_CODE_VERSION 14   // 13: dirty-only checkpoint stores; 14: ARMv8 crypto instructions translated
 
 // Everything the emitted code bakes in besides the gadgets it names: the
 // conventions, the struct layouts it loads from and the TLB / block cache
@@ -3406,8 +3518,12 @@ static void jit_init(void) {
     bool only_images = ao && ao[0] == '1';
     bool dual = !TARGET_OS_OSX || getenv("ISH_JIT_DUALMAP") != NULL;
 #ifndef ISH_JIT_NO_EMIT
+#if !TARGET_OS_OSX && !defined(__linux__)
+    have_region = !only_images && atomic_load(&ios_region_ready);
+#else
     if (!only_images)
         have_region = dual ? map_dual() : map_jit();
+#endif
 #endif
     bool have_images = aot_nregistered > 0;
     if (!have_region && !have_images) {
@@ -3501,6 +3617,10 @@ static struct jit_scratch *get_scratch(void) {
 }
 
 struct jit_units *jit_units_begin(void) {
+#if !TARGET_OS_OSX && !defined(__linux__) && !defined(ISH_JIT_NO_EMIT)
+    if (!atomic_load_explicit(&ios_region_ready, memory_order_acquire) && !aot_nregistered)
+        return NULL;
+#endif
     pthread_once(&init_once, jit_init);
     if (!jit_on)
         return NULL;
@@ -3530,7 +3650,7 @@ void jit_step_end(struct jit_units *U, const struct jit_step *step,
     u->n = consumed == 4 ? 1 : consumed == 8 ? 2 : 0;
     u->w[0] = u->w[1] = 0;
     for (unsigned k = 0; k < u->n; k++)
-        tlb_read(tlb, step->ip + 4 * k, &u->w[k], 4);
+        tlb_read_exec(tlb, step->ip + 4 * k, &u->w[k], 4);
 }
 
 void jit_block_init(struct fiber_block *b) {
@@ -3544,6 +3664,18 @@ void jit_block_init(struct fiber_block *b) {
 void jit_block(struct fiber_block *b, struct jit_units *U) {
     if (!U || U->n > JIT_MAX_UNITS)
         return;
+    // Diagnostics: ISH_JIT_BLOCK_LIMIT=N translates only the first N blocks
+    // (the rest run as gadgets), for bisecting a faulty translation.
+    static long limit = -2;
+    static _Atomic long seen;
+    if (limit == -2) { const char *v = getenv("ISH_JIT_BLOCK_LIMIT"); limit = v ? atol(v) : -1; }
+    if (limit >= 0 && atomic_fetch_add_explicit(&seen, 1, memory_order_relaxed) >= limit) {
+        if (getenv("ISH_JIT_BLOCK_TRACE") && seen == limit + 1)
+            fprintf(stderr, "JIT_BLOCK_LIMIT reached at guest %#llx\n", (unsigned long long) b->addr);
+        return;
+    }
+    if (getenv("ISH_JIT_BLOCK_TRACE") && limit >= 0 && seen == limit)
+        fprintf(stderr, "JIT_BLOCK_LAST guest %#llx\n", (unsigned long long) b->addr);
     uint64_t t0 = jit_ticks();
     if (cm_on)
         cm_block(b);

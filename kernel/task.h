@@ -63,6 +63,10 @@ struct task {
     // Set when thread is in a blocking syscall (futex_wait, poll_wait, etc.)
     // Used for deadlock detection: if all threads are blocking, it's a hang.
     bool blocking;
+    // The syscall this thread is executing (/proc/<pid>/task/<tid>/syscall):
+    // number + 1 while inside it, 0 in user mode. Written only by the thread.
+    _Atomic int current_syscall;
+    uint64_t current_syscall_args[6], current_syscall_pc;
     // Per-thread pipe for futex_wait wakeup (reused across calls to avoid
     // pipe creation overhead in Go runtime spin loops)
     int futex_pipe[2]; // [0]=read, [1]=write; -1 if not yet created

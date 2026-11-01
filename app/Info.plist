@@ -37,7 +37,7 @@
 	<key>LinuxRunnerSourceCommit</key>
 	<string>$(LINUXRUNNER_SOURCE_COMMIT)</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>This is required for connecting to localhost and using the ping command.</string>
+	<string>Allow Linux applications to connect to computers and services on your local network.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>Programs running in ios-linuxkit will be allowed to track your location in the background.</string>
 	<key>NSLocationAlwaysUsageDescription</key>

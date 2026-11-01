@@ -608,9 +608,13 @@ void handle_interrupt(int interrupt) {
                         (unsigned long long)diagnostic_args[0], (unsigned long long)diagnostic_args[1],
                         (unsigned long long)diagnostic_args[2], (unsigned long long)diagnostic_args[3],
                         (unsigned long long)diagnostic_args[4], (unsigned long long)diagnostic_args[5]);
+                memcpy(current->current_syscall_args, diagnostic_args, sizeof diagnostic_args);
+                current->current_syscall_pc = diagnostic_pc;
+                atomic_store_explicit(&current->current_syscall, syscall_num + 1, memory_order_release);
                 int64_t result = syscall_table[syscall_num](
                     cpu->regs[0], cpu->regs[1], cpu->regs[2],
                     cpu->regs[3], cpu->regs[4], cpu->regs[5]);
+                atomic_store_explicit(&current->current_syscall, 0, memory_order_release);
                 STRACE(" = 0x%llx\n", (unsigned long long)result);
                 int64_t diagnostic_result = result;
                 if ((uint64_t)result >= 0xfffff001ULL && (uint64_t)result <= 0xffffffffULL)
@@ -771,7 +775,11 @@ void handle_interrupt(int interrupt) {
         __atomic_add_fetch(&current->diagnostic_faults, 1, __ATOMIC_RELAXED);
         __atomic_store_n(&current->diagnostic_fault_address, cpu->segfault_addr, __ATOMIC_RELAXED);
         read_wrlock(&current->mem->lock);
-        void *ptr = mem_ptr(current->mem, cpu->segfault_addr, cpu->segfault_was_write ? MEM_WRITE : MEM_READ);
+        int fault_access = cpu->segfault_was_write ? MEM_WRITE : MEM_READ;
+#ifdef GUEST_ARM64
+        if (cpu->segfault_was_exec) fault_access = MEM_EXEC;
+#endif
+        void *ptr = mem_ptr(current->mem, cpu->segfault_addr, fault_access);
         read_wrunlock(&current->mem->lock);
         clock_gettime(CLOCK_MONOTONIC, &fault_end);
         uint64_t fault_ns = (fault_end.tv_sec - fault_begin.tv_sec) * 1000000000ULL +

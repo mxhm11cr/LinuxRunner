@@ -69,6 +69,20 @@ forceinline __no_instrument void *__tlb_read_ptr(struct tlb *tlb, addr_t addr) {
     return tlb_handle_miss(tlb, addr, MEM_READ);
 }
 bool __tlb_read_cross_page(struct tlb *tlb, addr_t addr, char *out, unsigned size);
+// Instruction decoding must not reuse a data-read TLB hit for NX memory.
+// Translation is a cold-path operation; already decoded blocks are invalidated
+// when P_EXEC changes, preserving the existing interpreter's hot dispatch path.
+forceinline bool tlb_read_exec(struct tlb *tlb, addr_t addr, void *out, unsigned size) {
+    while (size) {
+        unsigned part = PAGE_SIZE - PGOFFSET(addr);
+        if (part > size) part = size;
+        const void *ptr = mmu_translate(tlb->mmu, addr, MEM_EXEC);
+        if (!ptr) { tlb->segfault_addr = addr; return false; }
+        memcpy(out, ptr, part);
+        out = (char *)out + part; addr += part; size -= part;
+    }
+    return true;
+}
 forceinline __no_instrument bool tlb_read(struct tlb *tlb, addr_t addr, void *out, unsigned size) {
     if (PGOFFSET(addr) > PAGE_SIZE - size)
         return __tlb_read_cross_page(tlb, addr, out, size);

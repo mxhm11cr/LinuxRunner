@@ -54,6 +54,10 @@ static int proc_pid_stat_show(struct proc_entry *entry, struct proc_data *buf) {
     struct rusage_ children = task->group->children_rusage;
     unlock(&task->group->lock);
 #define LR_TICKS(tv) ((unsigned long)(tv).sec * 100ul + (unsigned long)(tv).usec / 10000ul)
+    // Stack pointer and PC of the last guest instruction state, for readers
+    // allowed to inspect the task (as with ptrace access), 0 otherwise. Decided
+    // before general_lock: task_may_inspect takes it for same-uid readers.
+    bool inspect = task_may_inspect(task);
     lock(&task->general_lock);
     lock(&task->group->lock);
 
@@ -97,8 +101,8 @@ static int proc_pid_stat_show(struct proc_entry *entry, struct proc_data *buf) {
     proc_printf(buf, "%lu ", 0l); // startcode
     proc_printf(buf, "%lu ", 0l); // endcode
     proc_printf(buf, "%lu ", task->mm ? task->mm->stack_start : 0);
-    proc_printf(buf, "%lu ", 0l); // kstkesp
-    proc_printf(buf, "%lu ", 0l); // kstkeip
+    proc_printf(buf, "%lu ", inspect ? (unsigned long) task->cpu.sp : 0l); // kstkesp
+    proc_printf(buf, "%lu ", inspect ? (unsigned long) task->cpu.pc : 0l); // kstkeip
 
     proc_printf(buf, "%lu ", (unsigned long) pending);
     proc_printf(buf, "%lu ", (unsigned long) blocked);
@@ -523,6 +527,17 @@ static int proc_pid_fdinfo_show(struct proc_entry *entry, struct proc_data *buf)
         off_t_ position = fd->ops->lseek ? fd->ops->lseek(fd, 0, LSEEK_CUR) : fd->offset;
         if (position < 0) position = 0; // pipes/sockets have no seek offset
         proc_printf(buf, "pos:\t%llu\nflags:\t0%o\nino:\t%llu\n", (unsigned long long)position, flags, (unsigned long long)st.inode);
+        // pidfd (Linux 5.10+ fdinfo): the target in the reader's PID namespace,
+        // -1 once it has exited. dbus-daemon and portals resolve SO_PEERPIDFD
+        // peers through this line.
+        pid_t_ target;
+        if (fd_pidfd_target(fd, &target)) {
+            lock(&pids_lock);
+            struct task *t = pid_get_task(target);
+            pid_t_ shown = t != NULL && !t->zombie ? pid_view(target, current->pidns) : -1;
+            unlock(&pids_lock);
+            proc_printf(buf, "Pid:\t%d\nNSpid:\t%d\n", shown, shown);
+        }
     }
     fd_close(fd); return err;
 }
@@ -639,6 +654,25 @@ static int proc_pid_root_readlink(struct proc_entry *entry, char *buf) {
     return 0;
 }
 
+// Linux format: "nr arg0 ... arg5 sp pc" while in a syscall, "running" otherwise.
+static int proc_pid_syscall_show(struct proc_entry *entry, struct proc_data *buf) {
+    struct task *task = proc_get_task(entry);
+    if (task == NULL)
+        return _ESRCH;
+    bool allowed = task_may_inspect(task);
+    int nr = atomic_load_explicit(&task->current_syscall, memory_order_acquire);
+    uint64_t args[6], pc = task->current_syscall_pc, sp = task->cpu.sp;
+    memcpy(args, task->current_syscall_args, sizeof args);
+    proc_put_task(task);
+    if (!allowed)
+        return _EACCES;
+    if (!nr) { proc_printf(buf, "running\n"); return 0; }
+    proc_printf(buf, "%d", nr - 1);
+    for (int i = 0; i < 6; i++) proc_printf(buf, " %#llx", (unsigned long long) args[i]);
+    proc_printf(buf, " %#llx %#llx\n", (unsigned long long) sp, (unsigned long long) pc);
+    return 0;
+}
+
 struct proc_children proc_pid_children = PROC_CHILDREN({
     {"auxv", .show = proc_pid_auxv_show},
     {"cmdline", .show = proc_pid_cmdline_show},
@@ -661,6 +695,7 @@ struct proc_children proc_pid_children = PROC_CHILDREN({
     {"setgroups", S_IFREG | 0644, .show = proc_pid_setgroups_show, .pwrite = proc_pid_setgroups_write},
     {"stat", .show = proc_pid_stat_show},
     {"statm", .show = proc_pid_statm_show},
+    {"syscall", S_IFREG | 0400, .show = proc_pid_syscall_show},
     {"status", .show = proc_pid_status_show},
     {"task", S_IFDIR, .readdir = proc_pid_task_readdir, .nlink = proc_pid_task_nlink},
     {"uid_map", S_IFREG | 0644, .show = proc_pid_uid_map_show, .pwrite = proc_pid_uid_map_write},

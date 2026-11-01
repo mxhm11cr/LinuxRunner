@@ -2,6 +2,7 @@
 #include <stdatomic.h>
 #include "debug.h"
 #include "kernel/calls.h"
+#include "fs/dmabuf.h"
 #include "kernel/errno.h"
 #include "kernel/task.h"
 #include "fs/fd.h"
@@ -190,6 +191,7 @@ static addr_t do_mmap(addr_t addr, uint64_t len, dword_t prot, dword_t flags, fd
         struct fd *fd = f_get_retain(fd_no);
         if (fd == NULL)
             return _EBADF;
+        bool maywrite = false;
         int access = __atomic_load_n(&fd->flags, __ATOMIC_RELAXED) & O_ACCMODE_;
         if (fd->ops->mmap == NULL)
             err = _ENODEV;
@@ -202,9 +204,31 @@ static addr_t do_mmap(addr_t addr, uint64_t len, dword_t prot, dword_t flags, fd
                 pages * PAGE_SIZE > (uint64_t)INT64_MAX - offset))
             err = _EOVERFLOW;
         else {
+            err = 0;
             if ((flags & MMAP_SHARED) && access == O_RDONLY_)
                 prot |= P_NO_SHARED_WRITE;
-            err = fd->ops->mmap(fd, current->mem, page, pages, offset, prot, flags);
+            // memfd write seals (Linux shmem): no writable shared mapping, and a
+            // read-only shared one can never be upgraded. Count upgradable shared
+            // mappings before they exist so a concurrent F_SEAL_WRITE sees them.
+            if (fd->memfd && (flags & MMAP_SHARED)) {
+                lock(&fd->memfd->lock);
+                if (fd->memfd->seals & F_SEAL_ANY_WRITE_) {
+                    if (prot & P_WRITE) err = _EPERM;
+                    prot |= P_NO_SHARED_WRITE;
+                }
+                if (err == 0 && !(prot & P_NO_SHARED_WRITE)) {
+                    fd->memfd->maywrite_maps++;
+                    maywrite = true;
+                }
+                unlock(&fd->memfd->lock);
+            }
+            if (err == 0)
+                err = fd->ops->mmap(fd, current->mem, page, pages, offset, prot, flags);
+            if (err < 0 && maywrite) {
+                lock(&fd->memfd->lock);
+                fd->memfd->maywrite_maps--;
+                unlock(&fd->memfd->lock);
+            }
         }
         if (err < 0) {
             fd_report_mapping_failure(fd, fd_no, "file_backend", page << PAGE_BITS,
@@ -214,6 +238,7 @@ static addr_t do_mmap(addr_t addr, uint64_t len, dword_t prot, dword_t flags, fd
         }
         // The mapping keeps the file's identity, not an open host descriptor.
         mem_pt(current->mem, page)->data->fd = fd_mapping_identity(fd);
+        mem_pt(current->mem, page)->data->memfd_maywrite = maywrite;
         fd_close(fd);
         mem_pt(current->mem, page)->data->file_offset = offset;
     }
@@ -323,6 +348,12 @@ addr_t sys_mremap(addr_t addr, dword_t old_len, dword_t new_len, dword_t flags) 
         result = _EFAULT;
         goto out;
     }
+    // Linux udmabuf VMAs are VM_DONTEXPAND. Never replace a device buffer
+    // with an anonymous copy when mremap asks to grow it.
+    if (entry->data->fd && fd_is_software_dmabuf(entry->data->fd)) {
+        result = _EFAULT;
+        goto out;
+    }
     dword_t pt_flags = entry->flags;
     for (page_t page = start; page < start + old_pages; page++) {
         entry = mem_pt(current->mem, page);
@@ -330,6 +361,60 @@ addr_t sys_mremap(addr_t addr, dword_t old_len, dword_t new_len, dword_t flags) 
             result = _EFAULT;
             goto out;
         }
+    }
+    entry = mem_pt(current->mem, start);
+    if (!(pt_flags & P_ANONYMOUS) && (pt_flags & P_SHARED) &&
+            entry->data->fd && entry->data->fd->memfd && entry->data->fd->ops->mmap) {
+        // Wayland shared-memory pools resize a live memfd mapping after the
+        // sender extends the file. Re-map the SAME backing, never copy it to
+        // anonymous pages: aliases, fork and shared futex identity must survive.
+        // Ordinary file identities deliberately own no descriptor; those need
+        // a separate reopen/lifetime design and are not silently approximated.
+        struct pt_entry *first = mem_pt(current->mem, start);
+        struct fd *file = first->data->fd;
+        uint64_t offset = first->data->file_offset + first->offset - first->data->mapping_offset;
+        if (start > USER_ADDR_MAX_PAGE || new_pages > USER_ADDR_MAX_PAGE + 1 - start ||
+                offset > INT64_MAX || (uint64_t)new_pages * PAGE_SIZE > INT64_MAX - offset) {
+            result = _ENOMEM;
+            goto out;
+        }
+        for (pages_t i = 0; i < old_pages; i++) {
+            struct pt_entry *part = mem_pt(current->mem, start + i);
+            if (!part->data->fd || part->data->fd->memfd != file->memfd ||
+                    part->data->file_offset + part->offset - part->data->mapping_offset != offset + (uint64_t)i * PAGE_SIZE) {
+                result = _EFAULT;
+                goto out;
+            }
+        }
+        page_t destination = start;
+        if (!pt_is_hole(current->mem, start + old_pages, new_pages - old_pages)) {
+            if (!(flags & MREMAP_MAYMOVE_) || (destination = pt_find_hole(current->mem, new_pages)) == BAD_PAGE) {
+                result = _ENOMEM;
+                goto out;
+            }
+        }
+        // An in-place pt_map releases the old data object. Pin its description
+        // first; transfer that reference to the new mapping only on success.
+        fd_retain(file);
+        // The replacement mapping stays counted for memfd write seals; the
+        // released old data object drops its own count.
+        bool maywrite = !(pt_flags & P_NO_SHARED_WRITE);
+        if (maywrite) { lock(&file->memfd->lock); file->memfd->maywrite_maps++; unlock(&file->memfd->lock); }
+        int error = file->ops->mmap(file, current->mem, destination, new_pages,
+                                    offset, pt_flags & ~P_COW, MMAP_SHARED);
+        if (error < 0) {
+            if (maywrite) { lock(&file->memfd->lock); file->memfd->maywrite_maps--; unlock(&file->memfd->lock); }
+            fd_close(file);
+            result = error;
+            goto out;
+        }
+        struct data *mapped = mem_pt(current->mem, destination)->data;
+        mapped->memfd_maywrite = maywrite;
+        mapped->fd = file;
+        mapped->file_offset = offset;
+        if (destination != start) pt_unmap_always(current->mem, start, old_pages);
+        result = destination << PAGE_BITS;
+        goto out;
     }
     if (!(pt_flags & P_ANONYMOUS)) {
         FIXME("mremap grow on file mappings");
@@ -382,11 +467,38 @@ int_t sys_mprotect(addr_t addr, addr_t len, int_t prot) {
     STRACE("mprotect(0x%llx, 0x%llx, 0x%x)", (unsigned long long)addr, (unsigned long long)len, prot);
     if (PGOFFSET(addr) != 0)
         return _EINVAL;
-    if (prot & ~P_RWX)
+    const unsigned down = 0x01000000, up = 0x02000000;
+    unsigned grows = prot & (down | up);
+    if ((prot & ~(P_RWX | down | up)) || grows == (down | up))
         return _EINVAL;
+    prot &= ~(down | up);
+    if (!len) return 0;
+    const addr_t limit = (USER_ADDR_MAX_PAGE + 1) << PAGE_BITS;
+    if (addr >= limit || len > limit - addr ||
+            len > UINT64_MAX - (PAGE_SIZE - 1)) return _ENOMEM;
     pages_t pages = PAGE_ROUND_UP(len);
+    if (pages > USER_ADDR_MAX_PAGE + 1 - PAGE(addr)) return _ENOMEM;
     write_wrlock(&current->mem->lock);
-    int err = pt_set_flags(current->mem, PAGE(addr), pages, prot);
+    page_t start = PAGE(addr), end = start + pages;
+    int err = 0;
+    if (grows) {
+        page_t anchor = start;
+        if (grows & down) {
+            // find_vma semantics allow the first grow-down VMA to start
+            // after addr, but it must intersect the requested interval.
+            while (anchor < end && !mem_pt(current->mem, anchor)) mem_next_page(current->mem, &anchor);
+        }
+        struct pt_entry *entry = anchor < end ? mem_pt(current->mem, anchor) : NULL;
+        if (!entry) { err = _ENOMEM; goto out; }
+        if ((grows & up) || !(entry->flags & P_GROWSDOWN)) { err = _EINVAL; goto out; }
+        start = anchor;
+        unsigned signature = entry->flags & (P_RWX | P_GROWSDOWN | P_SHARED | P_NO_SHARED_WRITE);
+        while (start && (entry = mem_pt(current->mem, start - 1)) &&
+                (entry->flags & (P_RWX | P_GROWSDOWN | P_SHARED | P_NO_SHARED_WRITE)) == signature) start--;
+        pages = end - start;
+    }
+    err = pt_set_flags(current->mem, start, pages, prot);
+out:
     write_wrunlock(&current->mem->lock);
     return err;
 }

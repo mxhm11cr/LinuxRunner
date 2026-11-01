@@ -2,6 +2,8 @@
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <net/if.h>
+#include <linux/ethtool.h>
+#include <linux/sockios.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <stdio.h>
@@ -23,6 +25,11 @@ int main(void){
   CHECK(ioctl(fd,SIOCGIFINDEX,&q)==0&&q.ifr_ifindex>0);
   CHECK(ioctl(fd,SIOCGIFNAME,&q)==0&&!strcmp(q.ifr_name,data[i].ifr_name));
   CHECK(ioctl(fd,SIOCGIFFLAGS,&q)==0);CHECK(ioctl(fd,SIOCGIFMTU,&q)==0&&q.ifr_mtu>0);
+  struct ethtool_value link={.cmd=ETHTOOL_GLINK};q.ifr_data=(void *)&link;
+  CHECK(ioctl(fd,SIOCETHTOOL,&q)==0&&link.data<=1);
+  struct ethtool_ts_info ts={.cmd=ETHTOOL_GET_TS_INFO};q.ifr_data=(void *)&ts;
+  CHECK(ioctl(fd,SIOCETHTOOL,&q)==-1&&errno==EOPNOTSUPP);
+  q.ifr_data=(void *)1;CHECK(ioctl(fd,SIOCETHTOOL,&q)==-1&&errno==EFAULT);
  }
  snprintf(q.ifr_name,sizeof q.ifr_name,"lr_missing_if");CHECK(ioctl(fd,SIOCGIFINDEX,&q)==-1&&errno==ENODEV);
  // This view refuses setters before invoking any host ioctl.

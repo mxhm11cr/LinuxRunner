@@ -5,6 +5,7 @@
 #include "kernel/calls.h"
 #include "fs/fd.h"
 #include "fs/inode.h"
+#include "fs/dmabuf.h"
 #ifdef __APPLE__
 #include <pthread/qos.h>
 #endif
@@ -49,6 +50,9 @@ static int pi_key_locked(struct mem *mem, addr_t addr, bool private, int access,
     struct pt_entry *pte = mem_pt(mem, PAGE(addr));
     if (private || !(pte->flags & P_SHARED)) {
         *key = (struct pi_key){.object=mem, .offset=addr, .kind=0};
+    } else if (fd_is_software_dmabuf(pte->data->fd)) {
+        // udmabuf uses PFN mappings, which cannot supply a shared futex key.
+        return _EFAULT;
     } else if (pte->data->fd && pte->data->fd->inode) {
         *key = (struct pi_key){.object=pte->data->fd->inode,
             .offset=pte->data->file_offset + pte->offset - pte->data->mapping_offset + PGOFFSET(addr), .kind=2};

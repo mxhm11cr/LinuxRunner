@@ -25,19 +25,53 @@
 const struct fd_ops socket_fdops;
 extern volatile bool g_trace_syscalls;
 
-// Opt-in, read-only route-netlink compatibility. Replies use a bounded datagram
-// socketpair so existing poll/epoll readiness follows the receive queue. Never
-// block the sending guest waiting for itself to drain that queue.
+// Opt-in, read-only route-netlink compatibility. One native readiness token
+// represents a bounded reply queue. Enqueue whole snapshots atomically: a
+// full native datagram queue must not leave half a dump after a failed send.
 #include "fs/netlink.h"
+#include "fs/uevent.h"
 
 bool ish_netlink_stub_enabled(void) {
     const char *v = getenv("ISH_NETLINK_STUB");
     return v != NULL && strcmp(v, "1") == 0;
 }
 
+// ISH_GUEST_LISTEN=loopback: a guest bind to the IPv4/IPv6 wildcard address
+// is made on the matching loopback address instead, so guest servers (for
+// example a session's RFB server) are never reachable from the device's
+// networks. Explicit addresses and other families are unchanged.
+static bool guest_listen_loopback(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *v = getenv("ISH_GUEST_LISTEN");
+        enabled = v != NULL && strcmp(v, "loopback") == 0;
+    }
+    return enabled;
+}
+static void guest_bind_wildcard_to_loopback(void *sockaddr) {
+    if (!guest_listen_loopback())
+        return;
+    struct sockaddr *addr = sockaddr;
+    if (addr->sa_family == PF_INET) {
+        struct sockaddr_in *in = sockaddr;
+        if (in->sin_addr.s_addr == htonl(INADDR_ANY))
+            in->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    } else if (addr->sa_family == PF_INET6) {
+        struct sockaddr_in6 *in6 = sockaddr;
+        if (IN6_IS_ADDR_UNSPECIFIED(&in6->sin6_addr))
+            in6->sin6_addr = in6addr_loopback;
+    }
+}
+
 static lock_t netlink_lock = LOCK_INITIALIZER;
 static struct list netlink_sockets = LIST_INITIALIZER(netlink_sockets);
 static uint32_t netlink_next_port = 0x80000000;
+struct lr_netlink_replies {
+    struct lr_netlink_replies *next;
+    size_t size, offset;
+    char data[];
+};
+#define NETLINK_REPLY_LIMIT (256 * 1024)
 static int sock_wait_readable(int hostfd);
 static ssize_t unix_credential_send(struct fd *, const void *, size_t, int, bool *);
 static ssize_t unix_plain_recv(struct fd *, void *, size_t, int, void *, socklen_t *);
@@ -45,7 +79,7 @@ static ssize_t unix_stream_send_fitting(struct fd *, struct msghdr *, int, bool)
 static bool unix_send_may_block(struct fd *, int);
 
 static bool fd_is_netlink_stub(struct fd *fd) {
-    return fd != NULL && fd->ops == &socket_fdops && fd->socket.domain == AF_NETLINK_;
+    return fd != NULL && fd->ops == &socket_fdops && fd->socket.domain == AF_NETLINK_ && fd->socket.protocol == NETLINK_ROUTE_;
 }
 static bool netlink_port_used(uint32_t port, struct fd *except) {
     struct fd *fd;
@@ -90,27 +124,67 @@ static int netlink_destination(addr_t addr, uint32_t size) {
 }
 static int netlink_stub_reply(struct fd *fd, const void *req, size_t size) {
     if (size > NETLINK_BUFFER_SIZE) return _EMSGSIZE;
-    char reply[NETLINK_BUFFER_SIZE];
+    char *reply = malloc(NETLINK_SNAPSHOT_SIZE);
+    if (!reply) return _ENOMEM;
     lock(&netlink_lock);
     fd->socket.netlink_bound = true;
     uint32_t port = fd->socket.netlink_port;
     unlock(&netlink_lock);
-    int len = netlink_snapshot(req, size, port, reply, sizeof(reply));
-    if (len < 0) return len;
-    if (send(fd->socket.netlink_peer_fd, reply, len, MSG_DONTWAIT) < 0)
-        // Darwin's bounded AF_UNIX datagram queue reports ENOBUFS when full;
-        // Linux nonblocking netlink send reports EAGAIN for the same condition.
-        return errno == ENOBUFS ? _EAGAIN : errno_map();
-    return size;
+    int len = netlink_snapshot(req, size, port, reply, NETLINK_SNAPSHOT_SIZE);
+    if (len < 0) { free(reply); return len; }
+    struct lr_netlink_replies *entry = malloc(sizeof(*entry) + len);
+    if (!entry) { free(reply); return _ENOMEM; }
+    *entry = (struct lr_netlink_replies){.size = len};
+    memcpy(entry->data, reply, len);
+    free(reply);
+    lock(&netlink_lock);
+    int result = size;
+    if ((size_t)len > NETLINK_REPLY_LIMIT - fd->socket.netlink_reply_bytes) result = _EAGAIN;
+    else if (!fd->socket.netlink_replies &&
+             send(fd->socket.netlink_peer_fd, "n", 1, MSG_DONTWAIT) != 1)
+        result = errno == ENOBUFS ? _EAGAIN : errno_map();
+    if (result >= 0) {
+        if (fd->socket.netlink_replies_tail) fd->socket.netlink_replies_tail->next = entry;
+        else fd->socket.netlink_replies = entry;
+        fd->socket.netlink_replies_tail = entry;
+        fd->socket.netlink_reply_bytes += len;
+    } else free(entry);
+    unlock(&netlink_lock);
+    return result;
 }
 static int netlink_receive(struct fd *fd, void *buf, size_t size, int flags) {
     if (flags & ~(MSG_PEEK_ | MSG_DONTWAIT_ | MSG_TRUNC_)) return _EOPNOTSUPP;
-    int host_flags = (flags & MSG_PEEK_) ? MSG_PEEK : 0;
     for (;;) {
-        int n = recv(fd->real_fd, buf, size, host_flags | MSG_DONTWAIT);
-        if (n >= 0) return n;
-        if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
-            return errno_map();
+        lock(&netlink_lock);
+        struct lr_netlink_replies *entry = fd->socket.netlink_replies;
+        if (entry) {
+            size_t chunk = 0;
+            // The encoder only produces validated, aligned complete messages.
+            while (entry->offset + chunk < entry->size) {
+                uint32_t message;
+                memcpy(&message, entry->data + entry->offset + chunk, sizeof(message));
+                size_t aligned = ((size_t)message + 3) & ~(size_t)3;
+                if (chunk + aligned > NETLINK_BUFFER_SIZE) break;
+                chunk += aligned;
+            }
+            size_t copied = size < chunk ? size : chunk;
+            if (copied) memcpy(buf, entry->data + entry->offset, copied);
+            if (!(flags & MSG_PEEK_)) {
+                entry->offset += chunk;
+                if (entry->offset == entry->size) {
+                    fd->socket.netlink_replies = entry->next;
+                    fd->socket.netlink_reply_bytes -= entry->size;
+                    free(entry);
+                    if (!fd->socket.netlink_replies) {
+                        char token; (void)recv(fd->real_fd, &token, 1, MSG_DONTWAIT);
+                        fd->socket.netlink_replies_tail = NULL;
+                    }
+                }
+            }
+            unlock(&netlink_lock);
+            return (flags & MSG_TRUNC_) ? chunk : copied;
+        }
+        unlock(&netlink_lock);
         if ((flags & MSG_DONTWAIT_) || (fd_getflags(fd) & O_NONBLOCK_)) return _EAGAIN;
         int err = sock_wait_readable(fd->real_fd);
         if (err < 0) return err;
@@ -214,6 +288,10 @@ static fd_t netlink_stub_socket(dword_t type, dword_t protocol) {
     if (type & ~(SOCKET_TYPE_MASK | SOCK_NONBLOCK_ | SOCK_CLOEXEC_)) return _EINVAL;
     int sv[2];
     if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) < 0) return errno_map();
+    // Room for a whole multi-datagram dump in the receive queue.
+    int datagram = NETLINK_BUFFER_SIZE * 2, queue = NETLINK_SNAPSHOT_SIZE * 4;
+    setsockopt(sv[1], SOL_SOCKET, SO_SNDBUF, &datagram, sizeof(datagram));
+    setsockopt(sv[0], SOL_SOCKET, SO_RCVBUF, &queue, sizeof(queue));
     struct fd *fd = adhoc_fd_create(&socket_fdops);
     if (fd == NULL) { close(sv[0]); close(sv[1]); return _ENOMEM; }
     fd->stat.mode = S_IFSOCK | 0666;
@@ -269,6 +347,9 @@ static fd_t sock_fd_create(int sock_fd, int domain, int type, int protocol, stru
 
 int_t sys_socket(dword_t domain, dword_t type, dword_t protocol) {
     STRACE("socket(%d, %d, %d)", domain, type, protocol);
+    // Guest device-event IPC is independent of the optional host-route view.
+    if (domain == AF_NETLINK_ && protocol == NETLINK_KOBJECT_UEVENT_)
+        return uevent_create(type);
     if (domain == AF_NETLINK_ && ish_netlink_stub_enabled())
         return netlink_stub_socket(type, protocol);
     int real_domain = sock_family_to_real(domain);
@@ -328,6 +409,10 @@ static struct fd *sock_getfd_retain(fd_t sock_fd, int *error) {
     }
     return sock;
 }
+// Pin an open description through all early returns and waits. In particular a
+// sibling CLONE_FILES close must not free a blocked netlink receiver.
+static void sock_release_scoped(struct fd **fd) { if (*fd) fd_close(*fd); }
+
 
 static uint32_t unix_socket_next_id() {
     static uint32_t next_id = 0;
@@ -615,15 +700,17 @@ static int sockaddr_write(addr_t sockaddr_addr, void *sockaddr, uint_t buffer_le
 
 int_t sys_bind(fd_t sock_fd, addr_t sockaddr_addr, uint_t sockaddr_len) {
     STRACE("bind(%d, 0x%x, %d)", sock_fd, sockaddr_addr, sockaddr_len);
-    struct fd *sock = sock_getfd(sock_fd);
-    if (sock == NULL)
-        return sock_getfd_error(sock_fd);
+    int lookup_error;
+    struct fd *sock __attribute__((cleanup(sock_release_scoped))) = sock_getfd_retain(sock_fd, &lookup_error);
+    if (sock == NULL) return lookup_error;
+    if (uevent_socket(sock)) return uevent_bind(sock, sockaddr_addr, sockaddr_len);
     if (fd_is_netlink_stub(sock))
         return netlink_bind(sock, sockaddr_addr, sockaddr_len);
     struct sockaddr_max_ sockaddr;
     int err = sockaddr_read_bind(sockaddr_addr, &sockaddr, &sockaddr_len, sock);
     if (err < 0)
         return err;
+    guest_bind_wildcard_to_loopback(&sockaddr);
 
     err = bind(sock->real_fd, (void *) &sockaddr, sockaddr_len);
     if (err < 0) {
@@ -654,9 +741,10 @@ static struct ucred_ cred_for_receiver(struct ucred_ cred) {
 
 int_t sys_connect(fd_t sock_fd, addr_t sockaddr_addr, uint_t sockaddr_len) {
     STRACE("connect(%d, 0x%x, %d)", sock_fd, sockaddr_addr, sockaddr_len);
-    struct fd *sock = sock_getfd(sock_fd);
-    if (sock == NULL)
-        return sock_getfd_error(sock_fd);
+    int lookup_error;
+    struct fd *sock __attribute__((cleanup(sock_release_scoped))) = sock_getfd_retain(sock_fd, &lookup_error);
+    if (sock == NULL) return lookup_error;
+    if (uevent_socket(sock)) return uevent_connect(sock, sockaddr_addr, sockaddr_len);
     // connect(AF_UNSPEC) dissolves a datagram socket's association and
     // returns 0 on Linux. glibc's getaddrinfo relies on it when sorting
     // candidate addresses (RFC 6724): it connects a UDP socket to each
@@ -725,6 +813,19 @@ int_t sys_listen(fd_t sock_fd, int_t backlog) {
     struct fd *sock = sock_getfd(sock_fd);
     if (sock == NULL)
         return sock_getfd_error(sock_fd);
+    // listen() on an unbound IP socket binds an ephemeral port on the wildcard
+    // address; under the loopback policy bind that port to loopback first.
+    if (guest_listen_loopback() && (sock->socket.domain == AF_INET_ || sock->socket.domain == AF_INET6_)) {
+        struct sockaddr_storage bound;
+        socklen_t bound_len = sizeof(bound);
+        if (getsockname(sock->real_fd, (void *) &bound, &bound_len) == 0 &&
+                ((bound.ss_family == PF_INET && ((struct sockaddr_in *) &bound)->sin_port == 0) ||
+                 (bound.ss_family == PF_INET6 && ((struct sockaddr_in6 *) &bound)->sin6_port == 0))) {
+            guest_bind_wildcard_to_loopback(&bound);
+            if (bind(sock->real_fd, (void *) &bound, bound_len) < 0)
+                return errno_map();
+        }
+    }
     int err = listen(sock->real_fd, backlog);
     if (err < 0)
         return errno_map();
@@ -843,9 +944,10 @@ static int copy_unix_name(struct sockaddr_max_ *sockaddr, dword_t buffer_len, dw
 
 int_t sys_getsockname(fd_t sock_fd, addr_t sockaddr_addr, addr_t sockaddr_len_addr) {
     STRACE("getsockname(%d, 0x%x, 0x%x)", sock_fd, sockaddr_addr, sockaddr_len_addr);
-    struct fd *sock = sock_getfd(sock_fd);
-    if (sock == NULL)
-        return sock_getfd_error(sock_fd);
+    int lookup_error;
+    struct fd *sock __attribute__((cleanup(sock_release_scoped))) = sock_getfd_retain(sock_fd, &lookup_error);
+    if (sock == NULL) return lookup_error;
+    if (uevent_socket(sock)) return uevent_name(sock, sockaddr_addr, sockaddr_len_addr, false);
     if (fd_is_netlink_stub(sock)) {
         uint32_t len;
         if (user_get(sockaddr_len_addr, len)) return _EFAULT;
@@ -889,9 +991,10 @@ int_t sys_getsockname(fd_t sock_fd, addr_t sockaddr_addr, addr_t sockaddr_len_ad
 
 int_t sys_getpeername(fd_t sock_fd, addr_t sockaddr_addr, addr_t sockaddr_len_addr) {
     STRACE("getpeername(%d, 0x%x, 0x%x)", sock_fd, sockaddr_addr, sockaddr_len_addr);
-    struct fd *sock = sock_getfd(sock_fd);
-    if (sock == NULL)
-        return sock_getfd_error(sock_fd);
+    int lookup_error;
+    struct fd *sock __attribute__((cleanup(sock_release_scoped))) = sock_getfd_retain(sock_fd, &lookup_error);
+    if (sock == NULL) return lookup_error;
+    if (uevent_socket(sock)) return uevent_name(sock, sockaddr_addr, sockaddr_len_addr, true);
     dword_t sockaddr_len;
     if (user_get(sockaddr_len_addr, sockaddr_len))
         return _EFAULT;
@@ -968,9 +1071,10 @@ int_t sys_sendto(fd_t sock_fd, addr_t buffer_addr, dword_t len, dword_t flags, a
     return result;
 }
 static int_t sock_sendto(fd_t sock_fd, addr_t buffer_addr, dword_t len, dword_t flags, addr_t sockaddr_addr, dword_t sockaddr_len) {
-    struct fd *sock = sock_getfd(sock_fd);
-    if (sock == NULL)
-        return sock_getfd_error(sock_fd);
+    int lookup_error;
+    struct fd *sock __attribute__((cleanup(sock_release_scoped))) = sock_getfd_retain(sock_fd, &lookup_error);
+    if (sock == NULL) return lookup_error;
+    if (uevent_socket(sock)) return uevent_sendto(sock, buffer_addr, len, flags, sockaddr_addr, sockaddr_len);
     if (fd_is_netlink_stub(sock)) {
         if (flags & ~(MSG_DONTWAIT_ | MSG_NOSIGNAL_)) return _EOPNOTSUPP;
         int err = netlink_destination(sockaddr_addr, sockaddr_len);
@@ -1105,9 +1209,10 @@ static int sock_wait_readable(int real_fd) {
 
 int_t sys_recvfrom(fd_t sock_fd, addr_t buffer_addr, dword_t len, dword_t flags, addr_t sockaddr_addr, addr_t sockaddr_len_addr) {
     STRACE("recvfrom(%d, 0x%x, %d, %d, 0x%x, 0x%x)", sock_fd, buffer_addr, len, flags, sockaddr_addr, sockaddr_len_addr);
-    struct fd *sock = sock_getfd(sock_fd);
-    if (sock == NULL)
-        return sock_getfd_error(sock_fd);
+    int lookup_error;
+    struct fd *sock __attribute__((cleanup(sock_release_scoped))) = sock_getfd_retain(sock_fd, &lookup_error);
+    if (sock == NULL) return lookup_error;
+    if (uevent_socket(sock)) return uevent_recvfrom(sock, buffer_addr, len, flags, sockaddr_addr, sockaddr_len_addr);
     if (fd_is_netlink_stub(sock))
         return netlink_recvfrom(sock, buffer_addr, len, flags, sockaddr_addr, sockaddr_len_addr);
     int real_flags = sock_flags_to_real(flags);
@@ -1213,6 +1318,7 @@ int_t sys_shutdown(fd_t sock_fd, dword_t how) {
     struct fd *sock = sock_getfd_retain(sock_fd, &error);
     if (sock == NULL) return error;
     if (how > 2) { fd_close(sock); return _EINVAL; }
+    if (uevent_socket(sock)) { fd_close(sock); return _EOPNOTSUPP; }
     bool unix_connection = sock->socket.domain == AF_LOCAL_ &&
         (sock->socket.type == SOCK_STREAM_ || sock->socket.type == SOCK_SEQPACKET_);
     if (unix_connection) lock(&peer_lock);
@@ -1237,6 +1343,7 @@ int_t sys_setsockopt(fd_t sock_fd, dword_t level, dword_t option, addr_t value_a
     struct fd *sock = sock_getfd_retain(sock_fd,&lookup_error);
     if (sock == NULL)
         return lookup_error;
+    if (uevent_socket(sock)) { int result; if (uevent_setsockopt(sock,level,option,value_addr,value_len,&result)) { fd_close(sock); return result; } }
 
     char *value = NULL;
     if (value_len != 0) {
@@ -1339,6 +1446,7 @@ int_t sys_getsockopt(fd_t sock_fd, dword_t level, dword_t option, addr_t value_a
     struct fd *sock = sock_getfd_retain(sock_fd,&lookup_error);
     if (sock == NULL)
         return lookup_error;
+    if (uevent_socket(sock)) { int result; if (uevent_getsockopt(sock,level,option,value_addr,len_addr,&result)) { fd_close(sock); return result; } }
     dword_t value_len;
     if (user_get(len_addr, value_len)) { fd_close(sock); return _EFAULT; }
     dword_t buffer_len = value_len;
@@ -1727,6 +1835,7 @@ static int_t sock_sendmsg(struct fd *sock, addr_t msghdr_addr, int_t flags) {
     int err;
     bool send_locked = false;
     struct fd *queued_peer = NULL;
+    if (uevent_socket(sock)) return uevent_sendmsg(sock, msghdr_addr, flags);
     if (fd_is_netlink_stub(sock))
         return netlink_stub_sendmsg(sock, msghdr_addr, flags);
 
@@ -2020,6 +2129,7 @@ int_t sys_sendmsg(fd_t sock_fd, addr_t msghdr_addr, int_t flags) {
 }
 
 static int_t sock_recvmsg(struct fd *sock, addr_t msghdr_addr, int_t flags) {
+    if (uevent_socket(sock)) return uevent_recvmsg(sock, msghdr_addr, flags);
     if (fd_is_netlink_stub(sock))
         return netlink_stub_recvmsg(sock, msghdr_addr, flags);
 
@@ -2436,6 +2546,7 @@ static void sock_translate_err(struct fd *fd, int *err) {
 // except "host syscall got EINTR AND guest has a pending signal", which is
 // precisely the bug we need to fix.
 static ssize_t sock_read(struct fd *fd, void *buf, size_t size) {
+    if (uevent_socket(fd)) return uevent_read(fd, buf, size);
     if (fd_is_netlink_stub(fd)) return netlink_receive(fd, buf, size, 0);
     int err;
     int eintr_count = 0;
@@ -2465,6 +2576,7 @@ static ssize_t sock_read(struct fd *fd, void *buf, size_t size) {
 }
 
 static ssize_t sock_write(struct fd *fd, const void *buf, size_t size) {
+    if (uevent_socket(fd)) return uevent_write(fd, buf, size);
     if (fd_is_netlink_stub(fd)) return netlink_stub_reply(fd, buf, size);
     int err;
     int eintr_count = 0;
@@ -2492,12 +2604,18 @@ static ssize_t sock_write(struct fd *fd, const void *buf, size_t size) {
 }
 
 static int sock_close(struct fd *fd) {
+    if (uevent_socket(fd)) uevent_close(fd);
     static _Thread_local unsigned trace_closed;
     if (g_trace_syscalls && fd->socket.domain == AF_LOCAL_ && trace_closed++ < 128)
         printk("UNIX_FD_CLOSE tid=%d native=%d kind=%d\n", current->pid, fd->real_fd, fd->socket.type);
     if (fd_is_netlink_stub(fd)) {
         lock(&netlink_lock);
         list_remove(&fd->socket.netlink_link);
+        while (fd->socket.netlink_replies) {
+            struct lr_netlink_replies *entry = fd->socket.netlink_replies;
+            fd->socket.netlink_replies = entry->next;
+            free(entry);
+        }
         unlock(&netlink_lock);
         close(fd->socket.netlink_peer_fd);
     }
@@ -2540,7 +2658,7 @@ struct lr_ifconf { int32_t len; uint32_t buffer; };
 #endif
 static bool socket_interface_command(int cmd) {
     switch(cmd){case 0x8910:case 0x8912:case 0x8913:case 0x8915:case 0x8917:
-        case 0x8919:case 0x891b:case 0x8921:case 0x8933:return true;default:return false;}
+        case 0x8919:case 0x891b:case 0x8921:case 0x8933:case 0x8946:return true;default:return false;}
 }
 static uint16_t interface_linux_flags(unsigned flags) {
     uint16_t out=0;
@@ -2561,6 +2679,7 @@ static ssize_t socket_ioctl_size(int cmd) {
     return realfs_ioctl_size(cmd);
 }
 static int socket_ioctl(struct fd *fd,int cmd,void *arg) {
+    if(uevent_socket(fd)&&cmd==FIONREAD_){*(int *)arg=uevent_available(fd);return 0;}
     if(!ish_netlink_stub_enabled()||!socket_interface_command(cmd))return realfs_ioctl(fd,cmd,arg);
     if(cmd==0x8910){ // SIOCGIFNAME: index -> name.
         struct lr_ifreq *req=arg;uint32_t index;memcpy(&index,req->value,4);
@@ -2589,6 +2708,16 @@ static int socket_ioctl(struct fd *fd,int cmd,void *arg) {
         if(!found)error=_ENODEV;
         else if(cmd==0x8933){uint32_t index=if_nametoindex(name);if(!index)error=_ENODEV;else memcpy(req->value,&index,4);}
         else if(cmd==0x8913){uint16_t flags=interface_linux_flags(found->ifa_flags);memcpy(req->value,&flags,2);}
+        else if(cmd==0x8946){ // SIOCETHTOOL: ifr_data points at a struct starting with u32 cmd.
+            // Host interfaces have no Linux ethtool driver. Link state (GLINK) is
+            // the host's real carrier flag; everything else is EOPNOTSUPP, as
+            // Linux reports for a device without ethtool operations (libpcap
+            // and ethtool treat that as "not available").
+            uint64_t data=0;memcpy(&data,req->value,sizeof(addr_t));uint32_t ecmd;
+            if(!data||user_get((addr_t)data,ecmd))error=_EFAULT;
+            else if(ecmd==0x0000000a){struct{uint32_t cmd,data;}value={ecmd,(found->ifa_flags&IFF_RUNNING)?1:0};
+                if(user_put((addr_t)data,value))error=_EFAULT;}
+            else error=_EOPNOTSUPP;}
         else if(cmd==0x8921){struct ifreq host={0};strncpy(host.ifr_name,name,sizeof(host.ifr_name)-1);
             int ctl=socket(AF_INET,SOCK_DGRAM,0);if(ctl<0)error=errno_map();else{if(ioctl(ctl,SIOCGIFMTU,&host)<0)error=errno_map();else{int32_t mtu=host.ifr_mtu;memcpy(req->value,&mtu,4);}close(ctl);}}
         else{const struct sockaddr *sa=NULL;
@@ -2602,6 +2731,7 @@ static int socket_ioctl(struct fd *fd,int cmd,void *arg) {
 
 static int sock_poll(struct fd *fd) {
     int events = realfs_poll(fd);
+    if (uevent_socket(fd)) return events | uevent_poll_error(fd);
     if (fd->socket.domain != AF_LOCAL_ ||
         (fd->socket.type != SOCK_STREAM_ && fd->socket.type != SOCK_SEQPACKET_)) return events;
     // Synchronize with native shutdown + state publication and peer teardown.

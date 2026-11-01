@@ -24,6 +24,7 @@ struct SetupWizardView: View {
     @State private var working: String?
     @State private var problem: String?
     @State private var desktopReady = false
+    @State private var extraDesktops: Set<String> = []
     private var step: SetupStep { SetupStep(rawValue: stepRaw) ?? .welcome }
 
     var body: some View {
@@ -135,11 +136,24 @@ struct SetupWizardView: View {
     @ViewBuilder private var desktop: some View {
         Section(footer: Text("Installs the display, window manager, panel, file manager and sound once (network needed). Existing settings are kept.")) {
             HStack { Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor); Text(LRRuntimeBridge.activeEnvironmentIsArch() ? "LinuxRunner Desktop (Openbox, LXQt panel, PCManFM-Qt)" : "LinuxRunner Desktop (Openbox, panel, file manager)") }
+            HStack { Image(systemName: "circle").foregroundStyle(.secondary); VStack(alignment: .leading) { Text("LXQt · Enlightenment · Wayfire · Hyprland"); Text("Optional · install below once the desktop components are ready, or later in Settings › Desktop Environment").font(.caption).foregroundStyle(.secondary) } }
             HStack { Image(systemName: "circle").foregroundStyle(.secondary); VStack(alignment: .leading) { Text("KDE Plasma"); Text(LRRuntimeBridge.activeEnvironmentIsArch() ? "Unavailable: current Arch Plasma requires Wayland; use the X11 desktop above." : "Experimental · install later in Settings › Desktop Environment").font(.caption).foregroundStyle(.secondary) } }
         }
         Section {
             if desktopReady { Label("Desktop components installed", systemImage: "checkmark") ; Button("Continue") { stepRaw = SetupStep.done.rawValue } }
             else { Button("Install Desktop Components") { prepareDesktop() }.disabled(working != nil) }
+        }
+        if desktopReady {
+            Section(header: Text("Another Desktop (Optional)"), footer: Text("Each comes from the distribution's own packages (network needed; Enlightenment is a large download, about 450 MB on Debian). The one installed last opens with Open Desktop; switch any time in Settings › Desktop Environment.")) {
+                extraDesktopRow("LXQt", "lxqt", installed: LRRuntimeBridge.lxqtInstalled()) { LRRuntimeBridge.installLXQt($0, completion: $1) }
+                extraDesktopRow("Enlightenment", "enlightenment", installed: LRRuntimeBridge.enlightenmentInstalled()) { LRRuntimeBridge.installEnlightenment($0, completion: $1) }
+                if LRRuntimeBridge.activeEnvironmentIsDebian() || LRRuntimeBridge.activeEnvironmentIsArch() {
+                    extraDesktopRow("Wayfire", "wayfire", installed: LRRuntimeBridge.wayfireInstalled()) { LRRuntimeBridge.installWayfire($0, completion: $1) }
+                }
+                if LRRuntimeBridge.activeEnvironmentIsArch() {
+                    extraDesktopRow("Hyprland (experimental)", "hyprland", installed: LRRuntimeBridge.hyprlandInstalled()) { LRRuntimeBridge.installHyprland($0, completion: $1) }
+                }
+            }
         }
     }
 
@@ -191,6 +205,22 @@ struct SetupWizardView: View {
     private func useAccount(_ name: String) {
         do { try LRRuntimeBridge.setDefaultLinuxUser(name); problem = nil; stepRaw = SetupStep.desktop.rawValue }
         catch { problem = error.localizedDescription }
+    }
+
+    @ViewBuilder private func extraDesktopRow(_ title: String, _ tag: String, installed: Bool, install: @escaping (@escaping (String) -> Void, @escaping (Error?) -> Void) -> Void) -> some View {
+        if installed || extraDesktops.contains(tag) { Label(title + " installed", systemImage: "checkmark") }
+        else {
+            Button("Install " + title) {
+                problem = nil; working = "Starting"
+                install({ working = $0 }) { error in
+                    working = nil
+                    if let error { problem = error.localizedDescription; return }
+                    extraDesktops.insert(tag)
+                    // Same per-environment choice as Settings › Desktop Environment.
+                    UserDefaults.standard.set(tag, forKey: "LinuxRunnerDesktop.environment." + LRRuntimeBridge.activeRootName())
+                }
+            }.disabled(working != nil)
+        }
     }
 
     private func prepareDesktop() {

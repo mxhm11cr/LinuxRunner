@@ -252,10 +252,41 @@ indirect_cache_dispatch:
     ldr x8, [_tlb, #(-TLB_entries+TLB_dirty_page)]
     cmp x8, #1                   // TLB_PAGE_EMPTY
     b.eq 1f
+    // Inline code_seen_maybe (asbestos.c): a page with neither filter bit set
+    // has never held translated code, so asbestos_flush_dirty_page would only
+    // clear the pending page. Any set bit still takes the C path.
+    lsr x9, x8, #12              // PAGE(dirty_page)
+    eor x9, x9, x9, lsr #17
+    eor x9, x9, x9, lsr #34
+    ldr x11, [_tlb, #(-TLB_entries+TLB_mmu)]
+    ldr x11, [x11, #MMU_asbestos]
+    add x11, x11, #(ASBESTOS_code_seen & 0xfff)
+    add x11, x11, #(ASBESTOS_code_seen >> 12), lsl #12
+    and x10, x9, #0x1ffff        // FIBER_CODE_SEEN_WORDS * 64 - 1
+    lsr x12, x10, #6
+    add x12, x11, x12, lsl #3
+    ldar x12, [x12]
+    lsr x12, x12, x10
+    tbz x12, #0, 2f
+    movz x13, #0x7c15
+    movk x13, #0x7f4a, lsl #16
+    movk x13, #0x79b9, lsl #32
+    movk x13, #0x9e37, lsl #48   // 0x9e3779b97f4a7c15
+    mul x13, x9, x13
+    eor x10, x13, x9, lsr #11
+    and x10, x10, #0x1ffff
+    lsr x12, x10, #6
+    add x12, x11, x12, lsl #3
+    ldar x12, [x12]
+    lsr x12, x12, x10
+    tbz x12, #0, 2f
     save_c
     sub x0, _tlb, #TLB_entries   // struct tlb *
     bl NAME(asbestos_flush_dirty_page)
     restore_c
+    b 1f
+2:  mov x8, #1                   // TLB_PAGE_EMPTY
+    str x8, [_tlb, #(-TLB_entries+TLB_dirty_page)]
 1:
     // Stale cache? tlb->block_cache_gen != mmu->asbestos->invalidate_gen
     ldr x8, [_tlb, #(-TLB_entries+TLB_mmu)]

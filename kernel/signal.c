@@ -9,6 +9,7 @@
 #include "kernel/native_offload.h"
 #include "kernel/vdso.h"
 #include "emu/interrupt.h"
+#include "fs/poll.h"
 
 #if is_gcc(9)
 #pragma GCC diagnostic ignored "-Waddress-of-packed-member"
@@ -44,11 +45,13 @@ struct signalfd_siginfo_ {
 _Static_assert(sizeof(struct signalfd_siginfo_) == 128, "signalfd_siginfo size");
 
 static ssize_t signalfd_read(struct fd *fd, void *buf, size_t bufsize);
+static int signalfd_poll(struct fd *fd);
 static int signalfd_close(struct fd *fd);
 static int signalfd_getflags(struct fd *fd);
 static int signalfd_setflags(struct fd *fd, dword_t flags);
 static const struct fd_ops signalfd_ops = {
     .read = signalfd_read,
+    .poll = signalfd_poll,
     .close = signalfd_close,
     .getflags = signalfd_getflags,
     .setflags = signalfd_setflags,
@@ -1087,7 +1090,7 @@ static bool signalfd_dequeue_locked(sigset_t_ mask, struct siginfo_ *info) {
 static ssize_t signalfd_read(struct fd *fd, void *buf, size_t bufsize) {
     if (bufsize < sizeof(struct signalfd_siginfo_))
         return _EINVAL;
-    sigset_t_ mask = (sigset_t_)(uintptr_t)fd->data;
+    sigset_t_ mask = (sigset_t_)(uintptr_t)__atomic_load_n(&fd->data,__ATOMIC_RELAXED);
     size_t count = 0;
     lock(&current->sighand->lock);
     for (;;) {
@@ -1114,7 +1117,18 @@ static ssize_t signalfd_read(struct fd *fd, void *buf, size_t bufsize) {
         }
     }
     unlock(&current->sighand->lock);
+    // A drain changes readiness, including the next EPOLLET delivery. Never
+    // take the poll lock while holding sighand: poll scans use the reverse order.
+    poll_wakeup(fd,POLL_READ);
     return count;
+}
+
+static int signalfd_poll(struct fd *fd) {
+    sigset_t_ mask=(sigset_t_)(uintptr_t)__atomic_load_n(&fd->data,__ATOMIC_RELAXED);
+    lock(&current->sighand->lock);
+    bool ready=(current->pending&mask)!=0;
+    unlock(&current->sighand->lock);
+    return ready?POLL_READ:0;
 }
 
 static int signalfd_close(struct fd *fd) {
@@ -1143,13 +1157,17 @@ int_t sys_signalfd4(int_t fd_no, addr_t mask_addr, size_t mask_size, int_t flags
     sigset_del(&mask, SIGKILL_);
     sigset_del(&mask, SIGSTOP_);
     if (fd_no >= 0) {
-        struct fd *fd = f_get(fd_no);
+        struct fd *fd = f_get_retain(fd_no);
         if (fd == NULL)
             return _EBADF;
-        if (fd->ops != &signalfd_ops)
+        if (fd->ops != &signalfd_ops) {
+            fd_close(fd);
             return _EINVAL;
-        fd->data = (void *)(uintptr_t)mask;
+        }
+        __atomic_store_n(&fd->data,(void *)(uintptr_t)mask,__ATOMIC_RELAXED);
         fd_setflags(fd, flags & O_NONBLOCK_);
+        poll_wakeup(fd,POLL_READ);
+        fd_close(fd);
         return fd_no;
     }
     struct fd *fd = adhoc_fd_create(&signalfd_ops);

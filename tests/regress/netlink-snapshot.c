@@ -26,9 +26,26 @@ int main(void) {
     memcpy(&error, out + 16, 4);
     assert(error == _ENOBUFS);
     assert(netlink_snapshot(&req, sizeof(req), 44, out, 16) == _ENOBUFS);
-    req.h.type = 26;
-    n = netlink_snapshot(&req, sizeof(req), 44, out, 4096);
-    assert(n == 20 && h->type == 3 && h->flags == 2);
+    // Real iproute2 passes a larger zeroed request buffer and uses AF_PACKET
+    // for GETLINK. Neither is a malformed Linux request.
+    unsigned char padded[64] = {0};
+    req.h.type = 18; req.family = 17;
+    memcpy(padded, &req, sizeof(req));
+    n = netlink_snapshot(padded, sizeof(padded), 44, out, 4096);
+    assert(n > 36 && h->type == 16);
+    // Every complete request in a batch receives its own sequence and DONE.
+    struct request batch[2] = {req, req};
+    batch[1].h.seq = 124;
+    n = netlink_snapshot(batch, sizeof(batch), 44, out, 4096);
+    unsigned done = 0; size_t off = 0;
+    while (off < (size_t)n) {
+        struct header current; memcpy(&current, out + off, sizeof(current));
+        assert(current.len >= 16 && off + current.len <= (size_t)n);
+        assert(current.seq == 123 + done);
+        if (current.type == 3) done++;
+        off += (current.len + 3) & ~3u;
+    }
+    assert(done == 2);
     for (unsigned family = 2; family <= 10; family += 8) {
         req.h.type = 22; req.family = family;
         n = netlink_snapshot(&req, sizeof(req), 44, out, 4096);

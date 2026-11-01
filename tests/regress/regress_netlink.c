@@ -132,8 +132,12 @@ int main(int argc, char **argv) {
         int sent = 0;
         while (sent < 10000 && send(fd, &req, sizeof(req), 0) >= 0) sent++;
         CHECK(sent > 0 && sent < 10000 && errno == EAGAIN);
-        int received = 0;
-        while (recv(fd, buf, sizeof(buf), 0) >= 0) received++;
+        int received = 0, bytes;
+        while ((bytes = recv(fd, buf, sizeof(buf), 0)) >= 0) {
+            for (struct nlmsghdr *h=(void *)buf; NLMSG_OK(h,bytes); h=NLMSG_NEXT(h,bytes))
+                if (h->nlmsg_type == NLMSG_DONE) received++;
+            CHECK(bytes == 0);
+        }
         CHECK(received == sent && errno == EAGAIN);
     }
     CHECK(poll(&p, 1, 0) == 0);

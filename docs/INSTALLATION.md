@@ -1,46 +1,44 @@
 # Install LinuxRunner
 
-Installing LinuxRunner and installing Linux inside it are separate steps. Start with the IPA; then follow [Set Up Linux](GETTING_STARTED.md).
+Installing the IPA installs LinuxRunner. You then install a Linux distribution **inside the app**. No jailbreak or JIT activation is required.
 
 ## Requirements
 
-- An ARM64 iPhone or iPad. The application deployment target is iOS/iPadOS 15.0; this is not a promise that every model or OS version has been qualified.
-- Storage for your distributions and applications, plus a network connection for downloaded packages. The setup screen shows available space and installation estimates.
-- A compatible IPA signing/sideloading method. LinuxRunner's normal release requires no jailbreak or JIT.
-
-The maintainer has tested build 897 on a physical iPhone and confirms physical-iPad testing. An earlier iPhone 11/iOS 17 launch-black-screen report remains unresolved.
+The Build 900 device IPA is ARM64, configured for iPhone and iPad with a 15.0 deployment target. iOS/iPadOS 15 is an intended minimum, not broadly verified compatibility; development and testing primarily use newer releases. See [hardware, memory and storage guidance](../README.md#supported-devices-and-requirements). An older iPhone 11/iOS 17 startup-black-screen report remains unresolved.
 
 ## Download, Sign and Open
 
-1. Open [GitHub Releases](https://github.com/mxhm11cr/LinuxRunner/releases/latest) and download the IPA from **Assets**.
-2. Compare its file size and SHA-256 with the published release values before signing it.
-3. Install it with your preferred compatible tool, such as [Sideloadly](https://sideloadly.io/) or [AltStore Classic](https://altstore.io/).
-4. Open LinuxRunner and follow [Getting Started — Installing Linux in LinuxRunner](GETTING_STARTED.md).
+1. Download the IPA from [GitHub Releases](https://github.com/mxhm11cr/LinuxRunner/releases).
+2. Compare the original file's SHA-256 with the checksum supplied for that release.
+3. Install using your preferred compatible IPA sideloading tool, such as [Sideloadly](https://sideloadly.io/) or [AltStore Classic](https://altstore.io/).
+4. Open the app, then **Distributions → Set Up Linux…**. Follow the [Linux installation walkthrough](GETTING_STARTED.md).
 
-The v1.0.1 build script's **unsigned** mode means *no Apple signing identity/provisioning*. It adds an ad-hoc code signature and a standard ZIP layout for tools to replace or process. An ad-hoc signature alone does not authorize ordinary installation on a physical device. Signing requirements, refresh periods and tool compatibility depend on the method and account. No sideloading service is guaranteed to work.
+The proposed 1.1.0 asset is **LinuxRunner-1.1.0-build900.ipa**. It has an ad-hoc signature and no Apple provisioning profile. A compatible tool must provide the signing/provisioning needed for ordinary device installation. Signing requirements, renewal intervals and compatibility depend on the tool and account; no service is guaranteed to work.
 
-App Group access is optional. The app uses `group.dev.linuxrunner.app` when that entitlement is provided and private application storage otherwise. No JIT entitlement is required by the normal **LinuxRunner** scheme. Do not confuse optional developer execution-engine experiments with ordinary release requirements.
+The bundle identifier is `dev.linuxrunner.app`. Optional App Group access uses `group.dev.linuxrunner.app` when provisioned; otherwise private application storage is used. **Ordinary interpreter execution does not require debugger/JIT permission.** Optional JIT activation has separate signing/OS restrictions; see [JIT](engine/IOS_JIT.md).
 
-## Verify a Download
+## Verify the Original Download
 
-Use the actual downloaded filename and checksum published for that release:
-
-```sh
-shasum -a 256 "$IPA_FILE"
-```
-
-Here `IPA_FILE` is a local variable containing your downloaded IPA's path. On Windows PowerShell, use `Get-FileHash -Algorithm SHA256` with that file. Signing changes the file, so compare the original download first.
-
-With the matching source checkout and Python 3, you can also inspect its package structure:
+On macOS/Linux, using the actual downloaded filename:
 
 ```sh
-python3 scripts/validate-ipa.py "$IPA_FILE" --expect-sha256 "$PUBLISHED_SHA256"
+shasum -a 256 LinuxRunner-1.1.0-build900.ipa
 ```
 
-These checks detect archive/hash problems; they do not establish acceptance by every installer or device.
+On Windows PowerShell:
 
-## Updating Without Losing Environments
+```powershell
+Get-FileHash -Algorithm SHA256 .\LinuxRunner-1.1.0-build900.ipa
+```
 
-Back up important Linux files, retain your earlier IPA and keep the same bundle identifier and App Group configuration. Changing how the app is signed can change which storage container it can access. Do not delete the app to investigate missing environments. Reinstalling over the same app identity may preserve data, but a different identity or provisioning/container change can prevent access to it.
+Build 900's verified original hash is:
 
-If an installer reports an invalid ZIP/IPA or cannot find the end-of-central-directory record, verify the download before changing signing tools. [Troubleshooting](TROUBLESHOOTING.md#the-installer-says-the-ipa-is-invalid)
+```text
+b2d73496307b6d2f535d80f09c00ef06aaf2b324a3ab9a52798999d4155634ae
+```
+
+Signing changes the file; compare before signing. A valid checksum confirms the downloaded bytes, not compatibility with every installer or device.
+
+## Update Without Losing Environments
+
+Back up important files and retain your previous IPA. Keep the existing bundle identifier and App Group/container configuration. Changing signing identity or storage entitlements can change access to existing data. Do not uninstall LinuxRunner or delete a root filesystem to diagnose a problem. See [Troubleshooting](TROUBLESHOOTING.md).

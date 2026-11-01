@@ -5,8 +5,13 @@
 #include "fs/proc.h"
 #include "fs/path.h"
 
-static int proc_lookup(const char *path, struct proc_entry *entry) {
-    entry->meta = &proc_root;
+// procfs and sysfs share this implementation; the mount picks the tree.
+static struct proc_dir_entry *mount_root(struct mount *mount) {
+    return mount && mount->fs == &sysfs ? &sys_root : &proc_root;
+}
+
+static int proc_lookup(struct proc_dir_entry *root_entry, const char *path, struct proc_entry *entry) {
+    entry->meta = root_entry;
     char component[MAX_NAME + 1];
     int err = 0;
     while (path_next_component(&path, component, &err)) {
@@ -49,12 +54,12 @@ found:
     return err;
 }
 
-static int proc_permission(struct mount *UNUSED(mount), const char *path,
+static int proc_permission(struct mount *mount, const char *path,
         struct statbuf *stat, int check) {
     int err = access_check(stat, check);
     if (err != _EACCES) return err;
     struct proc_entry entry = {0};
-    if (proc_lookup(path, &entry) < 0) return err;
+    if (proc_lookup(mount_root(mount), path, &entry) < 0) return err;
     // fs/proc/fd.c: a nondumpable process still needs its own fd directory,
     // including /proc/TID/fd and /proc/PID/task/TID/fd. Foreign groups and
     // fdinfo retain their ordinary DAC/ptrace restrictions.
@@ -67,7 +72,7 @@ extern const struct fd_ops procfs_fdops;
 
 static struct fd *proc_open(struct mount *mount, const char *path, int flags, int UNUSED(mode)) {
     struct proc_entry entry = {0};
-    int err = proc_lookup(path, &entry);
+    int err = proc_lookup(mount_root(mount), path, &entry);
     if (err < 0)
         return ERR_PTR(err);
     struct statbuf st;
@@ -93,9 +98,9 @@ static int proc_getpath(struct fd *fd, char *buf) {
     return 0;
 }
 
-static int proc_stat(struct mount *UNUSED(mount), const char *path, struct statbuf *stat) {
+static int proc_stat(struct mount *mount, const char *path, struct statbuf *stat) {
     struct proc_entry entry = {0};
-    int err = proc_lookup(path, &entry);
+    int err = proc_lookup(mount_root(mount), path, &entry);
     if (err < 0)
         return err;
     int ret = proc_entry_stat(&entry, stat);
@@ -246,9 +251,9 @@ const struct fd_ops procfs_fdops = {
     .close = proc_close,
 };
 
-static ssize_t proc_readlink(struct mount *UNUSED(mount), const char *path, char *buf, size_t bufsize) {
+static ssize_t proc_readlink(struct mount *mount, const char *path, char *buf, size_t bufsize) {
     struct proc_entry entry = {0};
-    int err = proc_lookup(path, &entry);
+    int err = proc_lookup(mount_root(mount), path, &entry);
     if (err < 0)
         return err;
     if (!S_ISLNK(proc_entry_mode(&entry))) {
@@ -269,7 +274,7 @@ static ssize_t proc_readlink(struct mount *UNUSED(mount), const char *path, char
 
 static struct fd *proc_follow_link(struct mount *mount, const char *path, bool for_stat) {
     struct proc_entry entry = {0};
-    int err = proc_lookup(path, &entry);
+    int err = proc_lookup(mount_root(mount), path, &entry);
     if (err < 0) return NULL; // ordinary lookup reports its own error
     struct fd *fd = entry.meta->follow_link ? entry.meta->follow_link(&entry, for_stat) : NULL;
     proc_entry_cleanup(&entry);
@@ -281,9 +286,9 @@ static struct fd *proc_follow_link(struct mount *mount, const char *path, bool f
     return fd;
 }
 
-static int proc_unlink(struct mount *UNUSED(mount), const char *path) {
+static int proc_unlink(struct mount *mount, const char *path) {
     struct proc_entry entry = {0};
-    int err = proc_lookup(path, &entry);
+    int err = proc_lookup(mount_root(mount), path, &entry);
     if (err < 0)
         return err;
     err = _EPERM;
@@ -311,6 +316,21 @@ void proc_printf(struct proc_data *buf, const char *format, ...) {
 static int proc_fsetattr(struct fd *UNUSED(fd), struct attr attr) {
     return attr.type == attr_size ? 0 : _EPERM;
 }
+
+// sysfs: the same synthetic-file machinery over fs/sys.c's tree (the software
+// DRM device's entries), with sysfs's filesystem magic that udev checks.
+const struct fs_ops sysfs = {
+    .name = "sysfs", .magic = 0x62656572,
+    .fsetattr = proc_fsetattr,
+    .permission = proc_permission,
+    .open = proc_open,
+    .getpath = proc_getpath,
+    .stat = proc_stat,
+    .fstat = proc_fstat,
+    .readlink = proc_readlink,
+    .follow_link = proc_follow_link,
+    .unlink = proc_unlink,
+};
 
 const struct fs_ops procfs = {
     .name = "proc", .magic = 0x9fa0,

@@ -1,6 +1,14 @@
 #!/bin/bash
 
 jit=false
+jit_emit=false
+# JIT-capable app variant (LINUXRUNNER_JIT=YES): the translator is compiled in
+# but only runs once iOS grants executable memory; the default build stays
+# interpreter-only because the JIT build's gadgets are slower when it is off.
+if [[ $# -eq 0 && ${LINUXRUNNER_JIT:-NO} == YES ]]; then
+    jit=true
+    jit_emit=true
+fi
 if [[ $# -ne 0 ]]; then
     if [[ $# -ne 1 || $1 != --aot-bootstrap || ${TARGET_NAME:-} != iSH-ARM64-AOT-Bootstrap || ${ARCHS:-} != arm64 || ${MESON_BUILD_DIR:-} != */meson-aot-bootstrap ]]; then
         echo 'AOT bootstrap requires its isolated ARM64 target and Meson directory' >&2
@@ -75,7 +83,7 @@ EOF
         guest_arch_opt="-Dguest_arch=$GUEST_ARCH"
     fi
     (set -x; meson "$SRCROOT" --cross-file "$crossfile" $guest_arch_opt \
-        -Djit=$jit -Djit_emit=false -Dcli_aot=) || exit $?
+        -Djit=$jit -Djit_emit=$jit_emit -Dcli_aot=) || exit $?
     config=$(meson introspect --buildoptions)
 fi
 
@@ -100,7 +108,7 @@ guest_arch=${GUEST_ARCH:-arm64}
 # Only the isolated bootstrap target may compile the native backend; it still
 # installs the native fault adapter; static images are linked separately only
 # when the checked Apple image build is explicitly requested.
-(set -x; meson configure -Djit=$jit -Djit_emit=false -Dcli_aot= -Dvdso_required=true) || exit $?
+(set -x; meson configure -Djit=$jit -Djit_emit=$jit_emit -Dcli_aot= -Dvdso_required=true) || exit $?
 for var in buildtype log b_ndebug b_sanitize log_handler kernel kconfig guest_arch; do
     old_value=$(python3 -c "import sys, json; v = next(x['value'] for x in json.load(sys.stdin) if x['name'] == '$var'); print(str(v).lower() if isinstance(v, bool) else ','.join(v) if isinstance(v, list) else v)" <<< $config)
     new_value=${!var}

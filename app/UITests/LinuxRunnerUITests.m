@@ -332,7 +332,7 @@
     [app.navigationBars.buttons.firstMatch tap];
     [app.navigationBars.buttons.firstMatch tap];
     [app.buttons[@"Diagnostics"] tap];
-    XCTAssertTrue([app.staticTexts[@"Guest: ARM64 · Asbestos interpreter · JIT disabled"] waitForExistenceWithTimeout:10]);
+    XCTAssertTrue([app.staticTexts[@"Guest: ARM64 · Interpreter Active"] waitForExistenceWithTimeout:10]);
     [app.buttons[@"Export Diagnostics"] tap];
     XCTAssertTrue([app.collectionViews[@"activityCollectionView"] waitForExistenceWithTimeout:10]);
     [app.buttons[@"header.closeButton"] tap];

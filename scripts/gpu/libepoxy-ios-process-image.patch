@@ -1,0 +1,22 @@
+diff --git a/src/dispatch_common.c b/src/dispatch_common.c
+index 3ba9b0f..97ab072 100644
+--- a/src/dispatch_common.c
++++ b/src/dispatch_common.c
+@@ -173,7 +173,16 @@
+ 
+ #include "dispatch_common.h"
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) && defined(EPOXY_EGL_IN_PROCESS_IMAGE)
++/* ANGLE (EGL + GLES on Metal) is linked statically into the application: iOS
++ * apps do not load libraries by name, so look the entry points up in the
++ * process image (dlopen(NULL)). There is no desktop OpenGL on iOS. */
++#define GLX_LIB NULL
++#define EGL_LIB NULL
++#define OPENGL_LIB NULL
++#define GLES1_LIB NULL
++#define GLES2_LIB NULL
++#elif defined(__APPLE__)
+ #define GLX_LIB "/opt/X11/lib/libGL.1.dylib"
+ #define EGL_LIB "libEGL.dylib"
+ #define OPENGL_LIB "/System/Library/Frameworks/OpenGL.framework/Versions/Current/OpenGL"

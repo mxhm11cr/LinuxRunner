@@ -69,6 +69,10 @@ check() {
       echo "distribution=${distro:-unknown}"
       case "$distro" in arch|archarm) echo desktop-components=openbox,lxqt-panel,pcmanfm-qt;; esac
       if have startplasma-x11 && have kwin_x11 && have plasmashell; then echo plasma=installed; else echo plasma=missing; fi
+      if have startlxqt && have lxqt-panel && have pcmanfm-qt; then echo lxqt=installed; else echo lxqt=missing; fi
+      if have enlightenment_start && have terminology; then echo enlightenment=installed; else echo enlightenment=missing; fi
+      if have wayfire && have wf-panel && have foot; then echo wayfire=installed; else echo wayfire=missing; fi
+      if have Hyprland && have waybar && have fuzzel && have seatd; then echo hyprland=installed; else echo hyprland=missing; fi
       # Startup timeline (app diagnostics): Debian first start, helper build.
       if [ -e /usr/lib/linuxrunner/initialize-debian.sh ] || [ -e /usr/lib/linuxrunner/initialize-arch.sh ]; then
           if [ -f /var/lib/linuxrunner/initialized ]; then echo first-start=done; else echo first-start=pending; fi
@@ -274,5 +278,65 @@ case "$mode" in
         fi
         have startplasma-x11 && have kwin_x11 && have plasmashell || support_fail PROFILE plasma-missing
         echo 'PROFILE: plasma=PASS';;
+    lxqt)
+        # LXQt 2.x X11 session from the distribution's own packages, on top of
+        # the regular desktop (which stays available as the fallback).
+        repair "${2:-}"
+        if ! { have startlxqt && have lxqt-panel && have pcmanfm-qt; }; then
+            install_packages "LXQt" lxqt-core qterminal openbox lxqt-themes \
+                -- lxqt-session lxqt-panel lxqt-runner lxqt-config pcmanfm-qt qterminal openbox lxqt-themes \
+                -- lxqt-session lxqt-panel lxqt-runner lxqt-config pcmanfm-qt qterminal openbox lxqt-themes || support_fail PROFILE lxqt-packages
+        fi
+        have startlxqt && have lxqt-panel && have pcmanfm-qt || support_fail PROFILE lxqt-missing
+        # LXQt's configuration names the Breeze icons, which Debian only
+        # recommends: without them the menu, panel and file manager have no icons.
+        # Also repairs an LXQt installed before this check existed.
+        [ -d /usr/share/icons/breeze-dark ] || install_packages "Breeze icons" breeze-icon-theme -- breeze-icons -- breeze-icons || support_fail PROFILE lxqt-icons
+        echo 'PROFILE: lxqt=PASS';;
+    enlightenment)
+        # Enlightenment (X11, its own software compositor) and the Terminology
+        # terminal from the distribution's packages; the regular desktop stays
+        # the fallback. Most of the download is enlightenment's theme and
+        # wallpaper data. Not on Debian: its session stops at the splash screen.
+        repair "${2:-}"
+        case "$distro" in debian) support_fail PROFILE enlightenment-not-available-on-debian;; esac
+        if ! { have enlightenment_start && have terminology; }; then
+            install_packages "Enlightenment" enlightenment terminology \
+                -- enlightenment terminology \
+                -- enlightenment terminology || support_fail PROFILE enlightenment-packages
+        fi
+        have enlightenment_start && have terminology || support_fail PROFILE enlightenment-missing
+        echo 'PROFILE: enlightenment=PASS';;
+    wayfire)
+        # Wayfire (wlroots), its wf-shell panel/dock/background, the foot terminal
+        # and the WCM settings app from the distribution's packages. It runs
+        # inside the session's X server with wlroots' software renderer.
+        repair "${2:-}"
+        [ "$distro" != alpine ] || support_fail PROFILE wayfire-unavailable-on-alpine
+        if ! { have wayfire && have wf-panel && have foot; }; then
+            install_packages "Wayfire" wayfire wf-shell foot wcm xwayland \
+                -- wayfire \
+                -- wayfire wf-shell foot wcm xorg-xwayland || support_fail PROFILE wayfire-packages
+        fi
+        have wayfire && have wf-panel && have foot || support_fail PROFILE wayfire-missing
+        echo 'PROFILE: wayfire=PASS';;
+    hyprland)
+        # Hyprland on LinuxRunner's software KMS device (llvmpipe, no GPU), with
+        # Waybar, the fuzzel launcher, the foot terminal and seatd. Arch Linux
+        # ARM packages it; Debian 13 does not.
+        repair "${2:-}"
+        case "$distro" in arch|archarm) ;; *) support_fail PROFILE hyprland-needs-arch;; esac
+        if ! { have Hyprland && have waybar && have fuzzel && have seatd; }; then
+            install_packages "Hyprland" hyprland -- hyprland \
+                -- hyprland waybar fuzzel foot seatd otf-font-awesome || support_fail PROFILE hyprland-packages
+        fi
+        have Hyprland && have waybar && have fuzzel && have seatd || support_fail PROFILE hyprland-missing
+        # Appearance of the LinuxRunner preset: wallpaper (swaybg), icons and
+        # fonts. Optional: without them the desktop works with a plain background.
+        if ! { have swaybg && [ -d /usr/share/icons/Papirus-Dark ] && [ -d /usr/share/fonts/inter ]; }; then
+            install_packages "Hyprland appearance" swaybg -- swaybg -- \
+                swaybg papirus-icon-theme inter-font ttf-jetbrains-mono || echo 'PROFILE: hyprland appearance packages unavailable; plain background'
+        fi
+        echo 'PROFILE: hyprland=PASS';;
     *) exit 2;;
 esac

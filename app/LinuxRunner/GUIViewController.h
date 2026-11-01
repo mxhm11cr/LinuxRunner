@@ -1,11 +1,19 @@
 #import <UIKit/UIKit.h>
 NS_ASSUME_NONNULL_BEGIN
 @interface LRGUIViewController : UIViewController
+#if TARGET_OS_SIMULATOR
++ (void)runExternalDisplayContract:(void (^)(NSDictionary *result))completion;
+#endif
 - (instancetype)initDesktop;
 - (NSDictionary *)desktopSessionSummary;
+/// Native desktop settings use these bounded actions; no arbitrary shell command.
+- (NSDictionary *)desktopControlState;
+- (void)performDesktopAction:(NSString *)action;
 - (void)stopDesktopSession;
 - (void)launchDesktopApplication:(NSDictionary *)configuration;
 + (NSURL * _Nullable)prepareSupport:(NSError **)error;
+/// Persistent workspace ownership keeps external output when its viewer closes.
++ (void)registerExternalDisplayForController:(UIViewController *)controller;
 - (instancetype)initWithLaunchConfiguration:(NSDictionary *)configuration;
 /// Graphics routing and per-process GPU statistics of the most recently started session.
 + (NSDictionary<NSString *, id> *)latestGraphicsSummary;
@@ -16,4 +24,5 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 /// Session graphics default (Settings): mesa, mesa-metal-resident, or mesa-metal-verify.
 extern NSString *const LRGraphicsModeDefaultsKey;
+extern NSString *const LRExternalDisplayEnabledKey;
 NS_ASSUME_NONNULL_END

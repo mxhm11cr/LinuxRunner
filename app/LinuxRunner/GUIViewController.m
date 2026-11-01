@@ -2,10 +2,13 @@
 #import "RuntimeBridge.h"
 #import "RFBClient.h"
 #import "FramebufferPatch.h"
+#import "DiagnosticLogTail.h"
 #import "RFBProtocol.h"
 #import "MetalFramebufferView.h"
 #import "AudioBridge.h"
+#import "LinuxRunner-Swift.h"
 #import <GameController/GameController.h>
+#import <objc/runtime.h>
 #import "../SceneDelegate.h"
 #include <Security/Security.h>
 #include <CommonCrypto/CommonDigest.h>
@@ -79,6 +82,7 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
 
 #import "TouchScrollPolicy.h"
 #import "PointerPolicy.h"
+#import "DisplayPolicy.h"
 @interface LRFramebufferView : UIView <UIKeyInput,UIGestureRecognizerDelegate,UIPointerInteractionDelegate>
 @property UIImageView *image;
 @property LRRFBClient *client;
@@ -92,6 +96,10 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
 @property CGPoint viewportOffset;
 @property LRMetalFramebufferView *metal;
 @property NSData *latestPixels;
+@property BOOL presentationSuppressed;
+@property(nonatomic) BOOL relativeTouchpad;
+@property UILabel *touchpadHint;
+@property CGPoint touchpadDragPoint;
 @property NSData *patchPixels;
 @property(nonatomic,strong) UIPanGestureRecognizer *twoFingerScroll;
 @property(nonatomic,strong) UIPinchGestureRecognizer *viewportPinch;
@@ -108,6 +116,7 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
 @property BOOL sawIndirectPointer,sawHover,pointerModeActive;
 @property CFTimeInterval lastGCScroll;
 @property NSMutableDictionary<NSString *,NSNumber *> *inputCounts;
+@property NSMutableArray *inputObservers;
 @property double latencySum,latencyMax;
 @property NSUInteger latencyCount;
 @property NSString *lastInputSource;
@@ -126,14 +135,18 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
 - (void)fitViewport;
 - (void)actualViewport;
 - (void)releaseInput;
+- (void)relativeMoveX:(CGFloat)x y:(CGFloat)y;
 - (void)stroke:(uint32_t)symbol;
 - (void)toggleModifier:(UIKeyModifierFlags)flag;
 @end
 @implementation LRFramebufferView
 - (instancetype)init {
     if((self=[super initWithFrame:CGRectZero])){
-        _zoom=1;self.clipsToBounds=YES;_pressedKeys=[NSMutableDictionary new];self.backgroundColor=UIColor.blackColor;_image=[UIImageView new];_image.contentMode=UIViewContentModeScaleAspectFit;_image.layer.magnificationFilter=kCAFilterNearest;
+        _zoom=1;_inputObservers=[NSMutableArray new];self.clipsToBounds=YES;_pressedKeys=[NSMutableDictionary new];self.backgroundColor=UIColor.blackColor;_image=[UIImageView new];_image.contentMode=UIViewContentModeScaleAspectFit;_image.layer.magnificationFilter=kCAFilterNearest;
         [self addSubview:_image];self.accessibilityIdentifier=@"Linux GUI surface";self.isAccessibilityElement=YES;self.accessibilityLabel=@"Linux GUI display";
+        _touchpadHint=[UILabel new];_touchpadHint.hidden=YES;_touchpadHint.numberOfLines=0;_touchpadHint.textAlignment=NSTextAlignmentCenter;_touchpadHint.textColor=[UIColor.whiteColor colorWithAlphaComponent:.85];_touchpadHint.font=[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+        _touchpadHint.text=@"External Desktop Touchpad\nSlide: move · Tap: click · Hold and slide: drag\nTwo fingers: scroll or tap to right-click\nUse Keyboard below to type.";
+        [self addSubview:_touchpadHint];
         [self configurePresentation];
         _inputCounts=[NSMutableDictionary new];
         UITapGestureRecognizer *tap=[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tap:)];[self addGestureRecognizer:tap];_tapGesture=tap;
@@ -150,16 +163,36 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
         [self addInteraction:[[UIPointerInteraction alloc] initWithDelegate:self]];
         __weak typeof(self) weakSelf=self;
         for(NSNotificationName name in @[UIAccessibilityAssistiveTouchStatusDidChangeNotification,GCMouseDidDisconnectNotification,NSUserDefaultsDidChangeNotification])
-            [NSNotificationCenter.defaultCenter addObserverForName:name object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){[weakSelf refreshPointerMode];}];
+            [_inputObservers addObject:[NSNotificationCenter.defaultCenter addObserverForName:name object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){[weakSelf refreshPointerMode];}]];
         // Deliver touch-up immediately: in pointer mode it is the mouse-button release.
         for(UIGestureRecognizer *g in self.gestureRecognizers)g.delaysTouchesEnded=NO;
         [self refreshPointerMode];
         UIPanGestureRecognizer *wheel=[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(wheel:)];wheel.allowedScrollTypesMask=UIScrollTypeMaskAll;wheel.allowedTouchTypes=@[];[self addGestureRecognizer:wheel];
     }return self;
 }
+- (void)dealloc{for(id observer in _inputObservers)[NSNotificationCenter.defaultCenter removeObserver:observer];}
+- (void)setRelativeTouchpad:(BOOL)enabled {
+    if(_relativeTouchpad==enabled)return;
+    [self releaseInput];_pointerTouchButton=0;_relativeTouchpad=enabled;
+    _mouseX=_pointerX;_mouseY=_pointerY;
+    _presentationSuppressed=enabled;_touchpadHint.hidden=!enabled;
+    _image.hidden=enabled||_metal!=nil;_metal.hidden=enabled;
+    if(enabled){[_metal clearFrame];_image.image=nil;[self bringSubviewToFront:_touchpadHint];}
+    else if(_latestPixels)[self presentPixels:_latestPixels width:_pixelWidth height:_pixelHeight];
+    self.accessibilityLabel=enabled?@"External desktop touchpad":@"Linux GUI display";
+    [self refreshPointerMode];
+}
+- (void)relativeMoveX:(CGFloat)x y:(CGFloat)y {
+    double px=_mouseX,py=_mouseY;
+    double gain=lr_input_gain([NSUserDefaults.standardUserDefaults doubleForKey:@"LinuxRunnerInput.touchpadGain"],1.5);
+    if(lr_touchpad_move(&px,&py,x*gain/1.5,y*gain/1.5,_pixelWidth,_pixelHeight)) {
+        _pointerX=(uint16_t)px;_pointerY=(uint16_t)py;_mouseX=px;_mouseY=py;
+        [self sendPointerFromEventTime:CACurrentMediaTime() buttons:_mouseButtons|_pointerTouchButton];
+    }
+}
 - (void)configurePresentation {
     if (![NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerDesktop.metalPresentation"]) {
-        [_metal removeFromSuperview]; _metal = nil; _image.hidden = NO;
+        [_metal removeFromSuperview]; _metal = nil; _image.hidden = _relativeTouchpad;
         if (_latestPixels) [self presentPixels:_latestPixels width:_pixelWidth height:_pixelHeight];
         return;
     }
@@ -172,11 +205,12 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
                 [LRRuntimeBridge logCategory:@"GUI_PRESENTATION" event:[@"Metal failed; Core Graphics fallback: " stringByAppendingString:reason]];
                 [self presentPixels:self.latestPixels width:self.pixelWidth height:self.pixelHeight];
             }];
-            if (_metal) { [self addSubview:_metal]; _image.hidden = YES; }
+            if (_metal) { [self addSubview:_metal]; _image.hidden = YES; _metal.hidden=_relativeTouchpad; }
             [LRRuntimeBridge logCategory:@"GUI_PRESENTATION" event:_metal ? @"Metal final framebuffer presentation selected; guest rendering unchanged" : @"Metal unavailable; Core Graphics fallback selected"];
         }
 }
 - (void)layoutSubviews{[super layoutSubviews];
+    _touchpadHint.frame=CGRectInset(self.bounds,16,16);
     CGFloat fit=(_pixelWidth&&_pixelHeight)?MIN(self.bounds.size.width/_pixelWidth,self.bounds.size.height/_pixelHeight):1;
     CGSize size=CGSizeMake(_pixelWidth*fit*_zoom,_pixelHeight*fit*_zoom);
     CGFloat limitX=MAX(0,(size.width-self.bounds.size.width)/2),limitY=MAX(0,(size.height-self.bounds.size.height)/2);
@@ -189,7 +223,10 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
 }
 - (void)presentPixels:(NSData *)pixels width:(uint16_t)width height:(uint16_t)height damage:(LRFrameDamage)damage {
     if (!width || !height || pixels.length != (NSUInteger)width * height * 4) return;
-    _latestPixels = pixels; _pixelWidth = width; _pixelHeight = height; [self setNeedsLayout];
+    BOOL resized = _pixelWidth != width || _pixelHeight != height;
+    _latestPixels = pixels; _pixelWidth = width; _pixelHeight = height;
+    if(resized)[self setNeedsLayout];
+    if(_presentationSuppressed)return;
     if (_metal) { [_metal presentPixels:pixels width:width height:height damage:damage]; return; }
     CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)[pixels copy]);
     CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
@@ -224,6 +261,7 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
     return YES;
 }
 - (void)pinch:(UIPinchGestureRecognizer *)g{
+    if(_relativeTouchpad)return;
     if(g.state==UIGestureRecognizerStateCancelled||g.state==UIGestureRecognizerStateFailed){[self finishTwoFingerRecognizer:g other:_twoFingerScroll];return;}
     if(!isfinite(g.scale)||g.scale<=0){[self finishTwoFingerRecognizer:g other:_twoFingerScroll];return;}
     CGPoint t=[_twoFingerScroll translationInView:self];LRTwoFingerIntent before=_twoFingerIntent;
@@ -266,6 +304,7 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
 }
 - (void)releaseInput{
     [_client pointerX:_pointerX y:_pointerY buttons:0];_stickyModifiers=0;_hardwareModifiers=0;[self syncModifiers];
+    _mouseButtons=0;_pointerTouchButton=0;_pointerTouch=nil;
     for(NSNumber *symbol in _pressedKeys.allValues)[_client key:symbol.unsignedIntValue down:NO];
     [_pressedKeys removeAllObjects];
 }
@@ -331,7 +370,7 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
 // and drags that AssistiveTouch synthesizes for the same click are ignored.
 - (void)observeMice{
     __weak typeof(self) weak=self;
-    [NSNotificationCenter.defaultCenter addObserverForName:GCMouseDidConnectNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){[weak attachMouse:n.object];}];
+    [_inputObservers addObject:[NSNotificationCenter.defaultCenter addObserverForName:GCMouseDidConnectNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){[weak attachMouse:n.object];}]];
     for(GCMouse *mouse in GCMouse.mice)[self attachMouse:mouse];
 }
 - (void)attachMouse:(GCMouse *)mouse{
@@ -356,7 +395,9 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
 // is a mouse button press at its exact position. Two-finger scroll and zoom stay.
 - (void)refreshPointerMode{
     LRPointerEnvironment e=[self pointerEnvironment];BOOL active=lr_pointer_mode(e);
-    _tapGesture.enabled=_dragGesture.enabled=_secondaryGesture.enabled=!active;
+    _tapGesture.enabled=_dragGesture.enabled=_secondaryGesture.enabled=!active||_relativeTouchpad;
+    for(UIGestureRecognizer *g in @[_tapGesture,_dragGesture,_secondaryGesture])
+        g.allowedTouchTypes=_relativeTouchpad?@[@(UITouchTypeDirect),@(UITouchTypePencil)]:@[@(UITouchTypeDirect),@(UITouchTypeIndirect),@(UITouchTypePencil),@(UITouchTypeIndirectPointer)];
     if(active!=_pointerModeActive){_pointerModeActive=active;
         [LRRuntimeBridge desktopTrace:@"input" result:@"info" detail:[NSString stringWithFormat:@"pointer mode=%@ assistive-touch=%d gc-mice=%lu indirect-pointer=%d hover=%d setting=%d",active?@"on":@"off",e.assistive_touch,(unsigned long)GCMouse.mice.count,e.indirect_pointer,e.hover,e.mode]];}
 }
@@ -391,7 +432,7 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
     for(UITouch *t in touches)[self countInput:t.type==UITouchTypeIndirectPointer?@"uikit.touch.indirect-pointer":t.type==UITouchTypeDirect?@"uikit.touch.direct":t.type==UITouchTypePencil?@"uikit.touch.pencil":@"uikit.touch.indirect"];
     UITouch *t=touches.anyObject;_lastTouchDown=t.timestamp;
     if(t.type==UITouchTypeIndirectPointer&&!_sawIndirectPointer){_sawIndirectPointer=YES;[self refreshPointerMode];}
-    if(_pointerModeActive&&!_pointerTouch&&event.allTouches.count==1&&[self position:[t locationInView:self]]){
+    if(_pointerModeActive&&(!_relativeTouchpad||t.type==UITouchTypeIndirectPointer)&&!_pointerTouch&&event.allTouches.count==1&&[self position:[t locationInView:self]]){
         _pointerTouch=t;_pointerTouchButton=(uint8_t)lr_pointer_touch_button(t.type==UITouchTypeIndirectPointer&&(event.buttonMask&UIEventButtonMaskSecondary));
         [self sendPointerFromEventTime:t.timestamp buttons:_mouseButtons];                      // move first
         [self sendPointerFromEventTime:t.timestamp buttons:_mouseButtons|_pointerTouchButton];  // then press
@@ -432,7 +473,7 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
     if(!_pixelWidth||!_pixelHeight)return;
     // Device points to framebuffer pixels at the current zoom; GCMouse reports
     // upward motion as positive y.
-    CGFloat scale=_image.frame.size.width>0?_pixelWidth/_image.frame.size.width:1;
+    CGFloat scale=(_image.frame.size.width>0?_pixelWidth/_image.frame.size.width:1)*lr_input_gain([NSUserDefaults.standardUserDefaults doubleForKey:@"LinuxRunnerInput.mouseGain"],1);
     if(_mouseX==0&&_mouseY==0){_mouseX=_pointerX;_mouseY=_pointerY;}
     _mouseX=MAX(0,MIN(_pixelWidth-1,_mouseX+dx*scale));_mouseY=MAX(0,MIN(_pixelHeight-1,_mouseY-dy*scale));
     _pointerX=(uint16_t)_mouseX;_pointerY=(uint16_t)_mouseY;[self sendMouse];
@@ -444,7 +485,7 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
 }
 - (void)mouseWheel:(float)y{
     [self countInput:@"gc.scroll"];_lastGCScroll=CACurrentMediaTime();
-    _mouseScroll+=y;
+    _mouseScroll+=y*lr_input_gain([NSUserDefaults.standardUserDefaults doubleForKey:@"LinuxRunnerInput.scrollGain"],1);
     while(fabs(_mouseScroll)>=1){uint8_t wheel=_mouseScroll>0?8:16;_mouseScroll+=_mouseScroll>0?-1:1;
         [_client pointerX:_pointerX y:_pointerY buttons:_mouseButtons|wheel];[_client pointerX:_pointerX y:_pointerY buttons:_mouseButtons];}
 }
@@ -455,19 +496,30 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
     _pointerX=x;_pointerY=y;_mouseX=x;_mouseY=y;return YES;
 }
 // Touch-gesture clicks: latency counted from the finger-down time, so recognizer waits show up.
-- (void)click:(uint8_t)button at:(CGPoint)p{if([self position:p]){[self sendPointerFromEventTime:_lastTouchDown buttons:button];[self sendPointerFromEventTime:0 buttons:0];}}
-- (void)tap:(UITapGestureRecognizer *)g{if([self mouseActive])return;[self click:1 at:[g locationInView:self]];}
-- (void)drag:(UIPanGestureRecognizer *)g{if([self mouseActive])return;if([self position:[g locationInView:self]])[_client pointerX:_pointerX y:_pointerY buttons:(g.state==UIGestureRecognizerStateBegan||g.state==UIGestureRecognizerStateChanged)?1:0];}
-- (void)secondary:(UILongPressGestureRecognizer *)g{if(!_secondaryTwoFinger&&g.state==UIGestureRecognizerStateBegan)[self click:4 at:[g locationInView:self]];}
-- (void)twoTap:(UITapGestureRecognizer *)g{if(_secondaryTwoFinger)[self click:4 at:[g locationInView:self]];}
+- (void)click:(uint8_t)button at:(CGPoint)p{if(_relativeTouchpad||[self position:p]){[self sendPointerFromEventTime:_lastTouchDown buttons:button];[self sendPointerFromEventTime:0 buttons:0];}}
+- (void)tap:(UITapGestureRecognizer *)g{if([self mouseActive]&&!_relativeTouchpad)return;[self click:1 at:[g locationInView:self]];}
+- (void)drag:(UIPanGestureRecognizer *)g{
+    if(_relativeTouchpad){CGPoint t=[g translationInView:self];[g setTranslation:CGPointZero inView:self];[self relativeMoveX:t.x y:t.y];return;}
+    if([self mouseActive])return;if([self position:[g locationInView:self]])[_client pointerX:_pointerX y:_pointerY buttons:(g.state==UIGestureRecognizerStateBegan||g.state==UIGestureRecognizerStateChanged)?1:0];
+}
+- (void)secondary:(UILongPressGestureRecognizer *)g{
+    if(_relativeTouchpad){CGPoint p=[g locationInView:self];
+        if(g.state==UIGestureRecognizerStateBegan){_touchpadDragPoint=p;_pointerTouchButton=1;[self relativeMoveX:0 y:0];}
+        else if(g.state==UIGestureRecognizerStateChanged){[self relativeMoveX:p.x-_touchpadDragPoint.x y:p.y-_touchpadDragPoint.y];_touchpadDragPoint=p;}
+        else{_pointerTouchButton=0;[self relativeMoveX:0 y:0];}return;
+    }
+    if(!_secondaryTwoFinger&&g.state==UIGestureRecognizerStateBegan)[self click:4 at:[g locationInView:self]];
+}
+- (void)twoTap:(UITapGestureRecognizer *)g{if(_relativeTouchpad||_secondaryTwoFinger)[self click:4 at:[g locationInView:self]];}
 - (void)scroll:(UIPanGestureRecognizer *)g{
+    if(_relativeTouchpad){CGPoint t=[g translationInView:self];if(fabs(t.y)>=12/lr_input_gain([NSUserDefaults.standardUserDefaults doubleForKey:@"LinuxRunnerInput.scrollGain"],1)){[self click:t.y<0?16:8 at:CGPointZero];[g setTranslation:CGPointZero inView:self];}return;}
     if(g==_twoFingerScroll){
         if(g.state==UIGestureRecognizerStateCancelled||g.state==UIGestureRecognizerStateFailed){[self finishTwoFingerRecognizer:g other:_viewportPinch];return;}
         CGPoint t=[g translationInView:self];LRTwoFingerIntent before=_twoFingerIntent;_twoFingerIntent=LRChooseTwoFingerIntent(before,t.x,t.y,_viewportPinch.scale);
         if(before!=LRTwoFingerZoom&&_twoFingerIntent==LRTwoFingerZoom)[self releaseInput];
         if(_twoFingerIntent!=LRTwoFingerScroll){[self finishTwoFingerRecognizer:g other:_viewportPinch];return;}
     }
-    CGPoint t=[g translationInView:self];if(_zoom>1.01&&g.allowedScrollTypesMask==0){_viewportOffset=CGPointMake(_viewportOffset.x+t.x,_viewportOffset.y+t.y);[g setTranslation:CGPointZero inView:self];[self setNeedsLayout];}else if(fabs(t.y)>=12){[self click:t.y<0?16:8 at:[g locationInView:self]];[g setTranslation:CGPointZero inView:self];}
+    CGPoint t=[g translationInView:self];if(_zoom>1.01&&g.allowedScrollTypesMask==0){_viewportOffset=CGPointMake(_viewportOffset.x+t.x,_viewportOffset.y+t.y);[g setTranslation:CGPointZero inView:self];[self setNeedsLayout];}else if(fabs(t.y)>=12/lr_input_gain([NSUserDefaults.standardUserDefaults doubleForKey:@"LinuxRunnerInput.scrollGain"],1)){[self click:t.y<0?16:8 at:[g locationInView:self]];[g setTranslation:CGPointZero inView:self];}
     if(g==_twoFingerScroll)[self finishTwoFingerRecognizer:g other:_viewportPinch];
 }
 - (void)wheel:(UIPanGestureRecognizer *)g{[self countInput:@"uikit.scroll"];if(!lr_pointer_use_uikit_wheel(CACurrentMediaTime(),_lastGCScroll))return;[self scroll:g];}
@@ -493,10 +545,14 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
 @property double pendingFrameReceivedAt;
 @property NSUInteger transportDiagnosticEvents;
 @property uint64_t frames,bytes;
+// Display updates per second over the last status refresh (RFB updates delivered
+// to iOS; not the compositor frame rate, which the guest does not report here).
+@property uint64_t rateFrames;@property double rateTime,updateRate;
 @property BOOL applicationWindowMapped;
 @property NSDate *startedAt;
 @property id exitObserver;
 @property NSTimer *metricsTimer;
+@property NSTimer *restartTimer;
 @property NSDictionary *launchConfiguration;
 @property BOOL autoLaunchPending;
 @property NSMutableArray<UIButton *> *modifierButtons;
@@ -527,6 +583,8 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
 @property UIStackView *startButtons;
 @property LRAudioBridge *audio; // session sound; lives as long as the session, not the viewer
 @property uint16_t audioPort;
+@property BOOL viewerVisible;
+@property BOOL trackpadRequested;
 @end
 enum { LRStartIdle, LRStartChecking, LRStartRepairing, LRStartSession, LRStartFailed };
 // ---- External display (second screen) ----------------------------------
@@ -536,12 +594,22 @@ enum { LRStartIdle, LRStartChecking, LRStartRepairing, LRStartSession, LRStartFa
 // keyboard, mouse, trackpad). With "Fit Screen", the X display is sized to the
 // external screen. The scene is non-interactive by iOS design.
 NSNotificationName const LRExternalDisplayChangedNotification = @"LRExternalDisplayChanged";
+NSString *const LRExternalDisplayEnabledKey = @"LinuxRunnerDesktop.externalDisplay";
+static BOOL LRExternalOutputEnabled(void) {
+    id value=[NSUserDefaults.standardUserDefaults objectForKey:LRExternalDisplayEnabledKey];
+    return !value || [value boolValue]; // Preserve the existing automatic output default.
+}
 @interface LRExternalDisplayController : UIViewController
 @property(nullable) LRMetalFramebufferView *metal;
 @property UIImageView *image;
 @property UILabel *placeholder;
 @property uint16_t pixelWidth,pixelHeight;
-@property CFTimeInterval lastImageFrame;
+@property NSData *pendingPixels;
+@property LRFrameDamage pendingDamage;
+@property BOOL frameScheduled;
+@property NSUInteger frameGeneration;
+@property double lastPresentationTime;
+- (double)presentationDelayAt:(double)now;
 - (void)presentFrame:(NSData *)pixels width:(uint16_t)width height:(uint16_t)height damage:(LRFrameDamage)damage;
 - (void)showPlaceholder;
 @end
@@ -559,10 +627,10 @@ static __weak LRExternalDisplayController *LRCurrentExternalDisplay;
     _placeholder.font=[UIFont systemFontOfSize:28 weight:UIFontWeightMedium];
     _placeholder.text=@"LinuxRunner\n\nOpen the Linux desktop on your iPhone or iPad to show it on this display.";
     [self.view addSubview:_placeholder];
-    LRCurrentExternalDisplay=self;
-    [LRRuntimeBridge logCategory:@"EXTERNAL_DISPLAY" event:[NSString stringWithFormat:@"connected size=%.0fx%.0f",self.view.bounds.size.width,self.view.bounds.size.height]];
+
 }
 - (void)viewDidAppear:(BOOL)animated{[super viewDidAppear:animated];[NSNotificationCenter.defaultCenter postNotificationName:LRExternalDisplayChangedNotification object:self];}
+- (void)dealloc{if(LRCurrentExternalDisplay==self)LRCurrentExternalDisplay=nil;}
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGRect b=self.view.bounds;_placeholder.frame=CGRectInset(b,b.size.width*0.1,0);
@@ -570,58 +638,168 @@ static __weak LRExternalDisplayController *LRCurrentExternalDisplay;
     double s=MIN(b.size.width/_pixelWidth,b.size.height/_pixelHeight);CGSize z=CGSizeMake(_pixelWidth*s,_pixelHeight*s);
     CGRect f=CGRectMake((b.size.width-z.width)/2,(b.size.height-z.height)/2,z.width,z.height);_image.frame=f;_metal.frame=f;
 }
-- (void)presentFrame:(NSData *)pixels width:(uint16_t)width height:(uint16_t)height damage:(LRFrameDamage)damage {
-    if(!width||!height||pixels.length!=(NSUInteger)width*height*4)return;
-    BOOL resized=width!=_pixelWidth||height!=_pixelHeight;
-    if(resized){_pixelWidth=width;_pixelHeight=height;damage=(LRFrameDamage){0,0,width,height};[self.view setNeedsLayout];}
-    _placeholder.hidden=YES;
-    if(_metal){_image.hidden=YES;[_metal presentPixels:pixels width:width height:height damage:damage];return;}
-    // Core Graphics fallback: whole-frame images, at most ~30 per second.
-    CFTimeInterval now=CACurrentMediaTime();if(!resized&&now-_lastImageFrame<1.0/30)return;_lastImageFrame=now;
-    _image.hidden=NO;NSData *copy=[pixels copy];
-    CGDataProviderRef provider=CGDataProviderCreateWithCFData((__bridge CFDataRef)copy);CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
-    CGImageRef cg=CGImageCreate(width,height,8,32,width*4,space,kCGBitmapByteOrder32Little|kCGImageAlphaNoneSkipFirst,provider,NULL,NO,kCGRenderingIntentDefault);
-    if(cg){_image.image=[UIImage imageWithCGImage:cg];CGImageRelease(cg);}
-    CGColorSpaceRelease(space);CGDataProviderRelease(provider);
+- (double)presentationDelayAt:(double)now {
+    // Retain the 30 Hz cap, but do not delay the first update after idle.
+    return _lastPresentationTime ? MAX(0, 1.0/30.0-(now-_lastPresentationTime)) : 0;
 }
-- (void)showPlaceholder{_placeholder.hidden=NO;_image.hidden=YES;_image.image=nil;[_metal clearFrame];}
+- (void)presentFrame:(NSData *)pixels width:(uint16_t)width height:(uint16_t)height damage:(LRFrameDamage)damage {
+    if(!LRExternalOutputEnabled())return;
+    size_t bytes;if(!lr_rfb_dimensions(width,height,&bytes)||pixels.length!=bytes)return;
+    BOOL resized=width!=_pixelWidth||height!=_pixelHeight;
+    if(resized){_pixelWidth=width;_pixelHeight=height;damage=(LRFrameDamage){0,0,width,height};_pendingDamage=(LRFrameDamage){0};[self.view setNeedsLayout];}
+    // Main-thread-owned backing storage. Only a Core Graphics image needs an
+    // immutable copy, at presentation time. Coalescing must retain ALL damage
+    // and flush the final frame even if no more updates arrive.
+    _pendingPixels=pixels;_pendingDamage=lr_damage_union(_pendingDamage,damage);
+    if(_frameScheduled)return;
+    _frameScheduled=YES;NSUInteger generation=_frameGeneration;
+    __weak typeof(self) weak=self;
+    double delay=[self presentationDelayAt:LRGUIClock()];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(delay*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+        typeof(self) self=weak;if(!self||self.frameGeneration!=generation)return;
+        self.frameScheduled=NO;
+        if(!LRExternalOutputEnabled()){[self showPlaceholder];return;}
+        NSData *pixels=self.pendingPixels;LRFrameDamage dirty=self.pendingDamage;
+        self.pendingPixels=nil;self.pendingDamage=(LRFrameDamage){0};
+        if(!pixels)return;
+        self.lastPresentationTime=LRGUIClock();
+        self.placeholder.hidden=YES;
+        if(self.metal){self.image.hidden=YES;[self.metal presentPixels:pixels width:self.pixelWidth height:self.pixelHeight damage:dirty];return;}
+        self.image.hidden=NO;
+        CGDataProviderRef provider=CGDataProviderCreateWithCFData((__bridge CFDataRef)[pixels copy]);CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
+        CGImageRef cg=CGImageCreate(self.pixelWidth,self.pixelHeight,8,32,self.pixelWidth*4,space,kCGBitmapByteOrder32Little|kCGImageAlphaNoneSkipFirst,provider,NULL,NO,kCGRenderingIntentDefault);
+        if(cg){self.image.image=[UIImage imageWithCGImage:cg];CGImageRelease(cg);}
+        CGColorSpaceRelease(space);CGDataProviderRelease(provider);
+    });
+}
+- (void)showPlaceholder{
+    _frameGeneration++;_frameScheduled=NO;_pendingPixels=nil;_pendingDamage=(LRFrameDamage){0};_lastPresentationTime=0;
+    _placeholder.text=LRExternalOutputEnabled()?@"LinuxRunner\n\nOpen a Linux desktop to show it on this display.":@"LinuxRunner\n\nExternal Desktop Output is off. Enable it in Settings › Devices.";
+    _placeholder.hidden=NO;_image.hidden=YES;_image.image=nil;_pixelWidth=_pixelHeight=0;[_metal clearFrame];
+}
 @end
 
 @interface LRExternalDisplaySceneDelegate : UIResponder <UIWindowSceneDelegate>
-@property(nullable) UIWindow *window;
+@property(nonatomic,strong,nullable) UIWindow *window;
+@property(weak) UIWindowScene *outputScene;
+@property(nonatomic,strong) id preferenceObserver;
 @end
 @implementation LRExternalDisplaySceneDelegate
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions {
     if(![scene isKindOfClass:UIWindowScene.class])return;
-    _window=[[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
-    _window.rootViewController=[LRExternalDisplayController new];
-    _window.hidden=NO;   // never key: keyboard and pointer input stay with the device
+    _outputScene=(UIWindowScene *)scene;
+    __weak typeof(self) weak=self;
+    _preferenceObserver=[NSNotificationCenter.defaultCenter addObserverForName:NSUserDefaultsDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note){[weak refreshOutput];}];
+    [self refreshOutput];
 }
-- (void)sceneDidDisconnect:(UIScene *)scene {
-    [LRRuntimeBridge logCategory:@"EXTERNAL_DISPLAY" event:@"disconnected"];
+- (void)refreshOutput {
+    if(!LRExternalOutputEnabled()){[self hideOutput];return;}
+    if(!_outputScene||_window)return;
+    _window=[[UIWindow alloc] initWithWindowScene:_outputScene];
+    _window.rootViewController=[LRExternalDisplayController new];
+    LRCurrentExternalDisplay=(LRExternalDisplayController *)_window.rootViewController;
+    [LRRuntimeBridge logCategory:@"EXTERNAL_DISPLAY" event:@"external window scene connected (public UIKit API)"];
+    _window.hidden=NO;   // never key: keyboard and pointer input stay with the device
+    [NSNotificationCenter.defaultCenter postNotificationName:LRExternalDisplayChangedNotification object:nil];
+}
+- (void)hideOutput {
+    if(!_window)return;
+    // Decline external content when disabled. Legacy iOS can mirror the phone
+    // instead of being covered by a blank window; iOS 27 disables its accessory.
+    [(LRExternalDisplayController *)_window.rootViewController showPlaceholder];
+    if(LRCurrentExternalDisplay==_window.rootViewController)LRCurrentExternalDisplay=nil;
     _window.hidden=YES;_window=nil;
     dispatch_async(dispatch_get_main_queue(),^{[NSNotificationCenter.defaultCenter postNotificationName:LRExternalDisplayChangedNotification object:nil];});
 }
+- (void)sceneDidDisconnect:(UIScene *)scene {
+    [LRRuntimeBridge logCategory:@"EXTERNAL_DISPLAY" event:@"disconnected"];
+    [self hideOutput];_outputScene=nil;
+    if(_preferenceObserver)[NSNotificationCenter.defaultCenter removeObserver:_preferenceObserver];_preferenceObserver=nil;
+}
+- (void)dealloc {if(_preferenceObserver)[NSNotificationCenter.defaultCenter removeObserver:_preferenceObserver];}
 @end
 
+// iOS 27 only creates cable/AirPlay noninteractive scenes for a registered
+// accessory. Own it on the persistent native workspace, not the dismissible
+// desktop viewer. iOS 15–26 continue using the existing scene manifest.
+static char LRExternalAccessoryKey;
+#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 270000 && !TARGET_OS_MACCATALYST
+API_AVAILABLE(ios(27.0))
+@interface LRExternalAccessoryOwner : NSObject
+@property(nonatomic,strong) UISceneAccessoryRegistration *registration;
+@property(nonatomic,strong) id observer;
+- (instancetype)initWithController:(UIViewController *)controller;
+@end
+@implementation LRExternalAccessoryOwner
+- (instancetype)initWithController:(UIViewController *)controller {
+    if((self=[super init])) {
+        UISceneConfiguration *configuration=[[UISceneConfiguration alloc]initWithName:@"Linux Desktop" sessionRole:UIWindowSceneSessionRoleExternalDisplayNonInteractive];
+        configuration.delegateClass=LRExternalDisplaySceneDelegate.class;
+        _registration=[controller registerSceneAccessory:[UISceneAccessory externalNonInteractiveSceneAccessoryWithConfiguration:configuration]];
+        _registration.enabled=LRExternalOutputEnabled();
+        __weak typeof(self) weak=self;
+        _observer=[NSNotificationCenter.defaultCenter addObserverForName:NSUserDefaultsDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note){weak.registration.enabled=LRExternalOutputEnabled();}];
+        [LRRuntimeBridge logCategory:@"EXTERNAL_DISPLAY" event:@"iOS 27 external-display accessory registered for cable or AirPlay"];
+    }return self;
+}
+- (void)dealloc {if(_observer)[NSNotificationCenter.defaultCenter removeObserver:_observer];}
+@end
+#endif
+
+#if TARGET_OS_SIMULATOR
+#include "../../tests/linuxrunner/gui/external_display_contract.inc"
+#endif
 static NSString *DesktopDegradedNotice(NSString *state);
 @implementation LRGUIViewController
++ (void)registerExternalDisplayForController:(UIViewController *)controller {
+#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 270000 && !TARGET_OS_MACCATALYST
+    if(@available(iOS 27.0,*)) {
+        if(!objc_getAssociatedObject(controller,&LRExternalAccessoryKey)) {
+            LRExternalAccessoryOwner *owner=[[LRExternalAccessoryOwner alloc]initWithController:controller];
+            objc_setAssociatedObject(controller,&LRExternalAccessoryKey,owner,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+#endif
+}
+#if TARGET_OS_SIMULATOR
++ (void)runExternalDisplayContract:(void (^)(NSDictionary *))completion{LRRunExternalDisplayContract(completion);}
+#endif
 - (instancetype)initDesktop{if((self=[super init])){_desktopMode=YES;_autoLaunchPending=YES;}return self;}
 + (NSURL *)prepareSupport:(NSError **)error { return PrepareSupport(error); }
 - (instancetype)initWithLaunchConfiguration:(NSDictionary *)configuration{if((self=[super init])){_launchConfiguration=[configuration copy];_autoLaunchPending=YES;}return self;}
 - (void)viewDidAppear:(BOOL)animated{[super viewDidAppear:animated];
+    _viewerVisible=YES;_surface.presentationSuppressed=_surface.relativeTouchpad;
+    if(_surface.latestPixels)[_surface presentPixels:_surface.latestPixels width:_surface.pixelWidth height:_surface.pixelHeight];
     if(_desktopMode)[LRRuntimeBridge desktopTrace:@"02 view" result:@"ok" detail:[NSString stringWithFormat:@"viewDidAppear controller=desktop auto-launch=%d window=%d size=%.0fx%.0f",_autoLaunchPending,self.view.window!=nil,self.view.bounds.size.width,self.view.bounds.size.height]];
     else [LRRuntimeBridge desktopTrace:@"02 view" result:@"info" detail:[NSString stringWithFormat:@"viewDidAppear controller=%@",_launchConfiguration?@"application":@"gui-test"]];
     if(_autoLaunchPending){_autoLaunchPending=NO;_repairAttempted=NO;[self run:_desktopMode?@"desktop":@"custom"];}
     if(_desktopMode&&self.view.bounds.size.width>self.view.bounds.size.height){id automatic=[NSUserDefaults.standardUserDefaults objectForKey:@"LinuxRunnerDesktop.autoFullscreen"];if(!automatic||[automatic boolValue])[self setImmersive:YES];}}
-- (void)viewDidDisappear:(BOOL)animated{[super viewDidDisappear:animated];if(_desktopMode)[LRCurrentExternalDisplay showPlaceholder];}
-// A monitor connected while the desktop is open gets the current frame at once.
+- (void)viewDidDisappear:(BOOL)animated{
+    [super viewDidDisappear:animated];
+    // Opening our settings/logs must not detach the retained display transport.
+    if(self.presentedViewController&&!self.isBeingDismissed&&!self.navigationController.isBeingDismissed)return;
+    _viewerVisible=NO;
+    if(_desktopMode){_surface.presentationSuppressed=YES;[_surface.metal clearFrame];_surface.image.image=nil;[self externalDisplayChanged:nil];}
+}
+- (BOOL)externalOutputActive{return lr_external_output(LRExternalOutputEnabled(),LRCurrentExternalDisplay!=nil);}
+// Reuse the same RFB transport, never launch a second server for a monitor.
 - (void)externalDisplayChanged:(NSNotification *)note{
-    if(!_desktopMode||!self.viewIfLoaded.window||!LRCurrentExternalDisplay||!_surface.latestPixels)return;
-    [LRCurrentExternalDisplay presentFrame:_surface.latestPixels width:_surface.pixelWidth height:_surface.pixelHeight damage:(LRFrameDamage){0,0,_surface.pixelWidth,_surface.pixelHeight}];
+    // UserDefaults notifications arrive on the writer's thread. Session/UI
+    // state and the mutable presentation buffers belong to the main queue.
+    if(!NSThread.isMainThread){__weak typeof(self) weak=self;dispatch_async(dispatch_get_main_queue(),^{[weak externalDisplayChanged:nil];});return;}
+    if(!_desktopMode)return;
+    BOOL active=[self externalOutputActive];
+    if(!active){if(_surface.relativeTouchpad)_trackpadRequested=NO;_surface.relativeTouchpad=NO;[self resetModifierButtons];}
+    if(!active)[LRCurrentExternalDisplay showPlaceholder];
+    if(!lr_keep_desktop_transport(_viewerVisible,LRExternalOutputEnabled(),LRCurrentExternalDisplay!=nil)){
+        [self detachViewer];return;
+    }
+    if(!_client&&_sessionTerminal.sessionPid>0&&_startState!=LRStartFailed)[self connectDesktopViewer];
+    if(active&&_surface.latestPixels)[LRCurrentExternalDisplay presentFrame:_surface.latestPixels width:_surface.pixelWidth height:_surface.pixelHeight damage:(LRFrameDamage){0,0,_surface.pixelWidth,_surface.pixelHeight}];
+    [self resumeRequestedTrackpad];
 }
 - (void)viewDidLoad{
-    [super viewDidLoad];if(_desktopMode)[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(externalDisplayChanged:) name:LRExternalDisplayChangedNotification object:nil];[LRRuntimeBridge desktopTrace:@"02 view" result:@"start" detail:[NSString stringWithFormat:@"viewDidLoad controller=%@",_desktopMode?@"desktop":_launchConfiguration?@"application":@"gui-test"]];self.view.backgroundColor=UIColor.systemBackgroundColor;self.title=[LRRuntimeBridge activeEnvironmentIsDebian]?@"Debian Applications":[LRRuntimeBridge activeEnvironmentIsArch]?@"Arch Applications":@"Alpine Applications";_frameLock=[NSLock new];_compactControls=[NSMutableArray new];if(_desktopMode)self.title=@"LinuxRunner Desktop";
+    [super viewDidLoad];if(_desktopMode){[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(externalDisplayChanged:) name:LRExternalDisplayChangedNotification object:nil];[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(externalDisplayChanged:) name:NSUserDefaultsDidChangeNotification object:nil];}[LRRuntimeBridge desktopTrace:@"02 view" result:@"start" detail:[NSString stringWithFormat:@"viewDidLoad controller=%@",_desktopMode?@"desktop":_launchConfiguration?@"application":@"gui-test"]];self.view.backgroundColor=UIColor.systemBackgroundColor;self.title=[LRRuntimeBridge activeEnvironmentIsDebian]?@"Debian Applications":[LRRuntimeBridge activeEnvironmentIsArch]?@"Arch Applications":@"Alpine Applications";_frameLock=[NSLock new];_compactControls=[NSMutableArray new];if(_desktopMode)self.title=@"LinuxRunner Desktop";
     self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"Done" style:UIBarButtonItemStyleDone target:self action:@selector(done)];
 #if TARGET_OS_SIMULATOR
     // Simulator workflow driver (ManagerView): taps Done on the visible screen.
@@ -706,13 +884,13 @@ static NSString *DesktopDegradedNotice(NSString *state);
             }
         }}}];
 }
-- (void)dealloc{[NSNotificationCenter.defaultCenter removeObserver:self];if(_exitObserver)[NSNotificationCenter.defaultCenter removeObserver:_exitObserver];[_client stop];[_metricsTimer invalidate];}
+- (void)dealloc{[NSNotificationCenter.defaultCenter removeObserver:self];if(_exitObserver)[NSNotificationCenter.defaultCenter removeObserver:_exitObserver];[_client stop];[_metricsTimer invalidate];[_restartTimer invalidate];}
 - (void)message:(NSString *)text{_status.text=text;[LRRuntimeBridge logCategory:@"GUI" event:text];if(_desktopMode)[LRRuntimeBridge desktopTrace:@"status" result:@"info" detail:text];}
 #if TARGET_OS_SIMULATOR
 - (void)simulatorClose{if(self.viewIfLoaded.window)[self done];}
 - (void)simulatorRetry{if(self.viewIfLoaded.window&&_desktopMode&&_startState==LRStartFailed)[self retryDesktopStart];}
 #endif
-- (void)done{if(_desktopMode)[LRRuntimeBridge desktopTrace:@"lifecycle" result:@"info" detail:[NSString stringWithFormat:@"Done tapped start-state=%ld painted=%d",(long)_startState,_desktopPainted]];if(_desktopMode){[self detachViewer];_autoLaunchPending=YES;}else [self stop];[self dismissViewControllerAnimated:YES completion:nil];}
+- (void)done{if(_desktopMode)[LRRuntimeBridge desktopTrace:@"lifecycle" result:@"info" detail:[NSString stringWithFormat:@"Done tapped start-state=%ld painted=%d",(long)_startState,_desktopPainted]];if(_desktopMode){if(![self externalOutputActive])[self detachViewer];_autoLaunchPending=YES;}else [self stop];[self dismissViewControllerAnimated:YES completion:nil];}
 - (void)secondaryMode:(UISegmentedControl *)c{_surface.secondaryTwoFinger=c.selectedSegmentIndex==1;}
 // ---- Desktop startup coordinator ------------------------------------------
 // Open Desktop → (unless already verified) desktop-profile.sh check inside
@@ -897,7 +1075,7 @@ static NSString *DesktopDegradedNotice(NSString *state);
         [LRRuntimeBridge desktopTrace:@"09 desktop" result:ok?@"ok":fail?@"fail":@"info" detail:[line substringToIndex:MIN(line.length,(NSUInteger)200)]];}
 }
 static NSString *LRTail(NSURL *url,NSUInteger lines){
-    NSString *text=[NSString stringWithContentsOfURL:url encoding:NSUTF8StringEncoding error:nil];if(!text.length)return nil;
+    NSData *data=LRReadDiagnosticTail(url,128*1024);NSString *text=LRDiagnosticTailString(data);if(!text.length)return nil;
     NSArray *all=[text componentsSeparatedByString:@"\n"];return [[all subarrayWithRange:NSMakeRange(all.count>lines?all.count-lines:0,MIN(all.count,lines))] componentsJoinedByString:@"\n"];
 }
 - (NSString *)reportControllerState{
@@ -945,8 +1123,8 @@ static NSString *LRTail(NSURL *url,NSUInteger lines){
         [text appendFormat:@"\n== guest state\n%@\n",guest?:@"(not collected)"];
         for(NSString *name in @[@"profile-check.result",@"install-result"]){NSString *t=LRTail([support URLByAppendingPathComponent:name],10);if(t)[text appendFormat:@"\n== %@\n%@\n",name,t];}
         NSString *profile=LRTail([support URLByAppendingPathComponent:@"desktop-profile.sh.log"],40);if(profile)[text appendFormat:@"\n== desktop-profile.sh.log (last 40 lines)\n%@\n",profile];
-        if(session)for(NSString *name in @[@"desktop-state",@"session.log",@"application.log",@"xvfb.log",@"display.log",@"wm.log",@"panel.log",@"desktop.log"]){
-            NSString *t=LRTail([session URLByAppendingPathComponent:name],name.length>12?25:40);if(t.length)[text appendFormat:@"\n== %@ (tail)\n%@\n",name,t];}
+        if(session)for(NSString *name in @[@"desktop-state",@"session.log",@"application.log",@"xvfb.log",@"display.log",@"wm.log",@"panel.log",@"desktop.log",@"plasma.log"]){
+            NSString *t=LRTail([session URLByAppendingPathComponent:name],name.length>12?25:40);if([name isEqual:@"plasma.log"])t=[LRRuntimeBridge redactDiagnosticText:t?:@"" application:YES];if(t.length)[text appendFormat:@"\n== %@ (tail)\n%@\n",name,t];}
         NSString *saved=LRRuntimeBridge.desktopTraceSavedText;NSArray *savedLines=[saved componentsSeparatedByString:@"\n"];
         [text appendFormat:@"\n== earlier attempts (saved timeline, last 150 records)\n%@\n",[[savedLines subarrayWithRange:NSMakeRange(savedLines.count>150?savedLines.count-150:0,MIN(savedLines.count,(NSUInteger)150))] componentsJoinedByString:@"\n"]];
         completion([LRRuntimeBridge redactDiagnosticText:text application:NO]);
@@ -1210,12 +1388,13 @@ static NSString *LRSessionGraphicsMode(void){
         if(afd>=0&&!bind(afd,(struct sockaddr *)&a2,sizeof a2)&&!getsockname(afd,(struct sockaddr *)&a2,&l2)&&ntohs(a2.sin_port)!=port)_audioPort=ntohs(a2.sin_port);if(afd>=0)close(afd);}
     if(_desktopMode){NSString *key=[@"LinuxRunnerDesktop.resolution." stringByAppendingString:LRRuntimeBridge.activeRootName];id saved=[NSUserDefaults.standardUserDefaults objectForKey:key];_resolution.selectedSegmentIndex=saved?MAX(0,MIN(4,[saved integerValue])):3;}
     NSString *geometry=_desktopMode&&_resolution.selectedSegmentIndex==4?[self fitScreenGeometry]:@[@"640x480",@"800x600",@"1024x768",@"960x540"][_resolution.selectedSegmentIndex];
+    {unsigned gw=0,gh=0;if(sscanf(geometry.UTF8String,"%ux%u",&gw,&gh)==2)[LRRuntimeBridge setDesktopDisplayWidth:gw height:gh];}   // KMS compositors use exactly this size
     [LRRuntimeBridge logCategory:@"GUI_SESSION" event:[NSString stringWithFormat:@"root=%@ distribution=%@ geometry=%@ mode=%@ GLX=%@ (server capability; application renderer is independent)",LRRuntimeBridge.activeRootName,[LRRuntimeBridge activeEnvironmentIsDebian]?@"debian":@"alpine",geometry,mode,glxMode]];
     _sessionGuestUser=[LRRuntimeBridge.defaultLinuxUser copy];
     NSString *desktopKey=[@"LinuxRunnerDesktop.environment." stringByAppendingString:LRRuntimeBridge.activeRootName];
     NSString *selectedDesktop=[NSUserDefaults.standardUserDefaults stringForKey:desktopKey];
     if(!selectedDesktop && LRRuntimeBridge.activeEnvironmentIsDebian)selectedDesktop=[NSUserDefaults.standardUserDefaults stringForKey:@"LinuxRunnerDesktop.environment"];
-    NSDictionary *files=@{@"desktop-environment":[selectedDesktop isEqual:@"plasma"]?@"plasma":@"linuxrunner",@"guest-user":_sessionGuestUser,@"geometry":geometry,@"glx-mode":glxMode,@"gpu-mode":LRSessionGraphicsMode(),@"input-mode":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUIEagerInput"]?@"eager":@"legacy",@"shm-mode":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUISharedImages"]?@"sysv":@"off",@"vnc-timing":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUILowLatencyInput"]?@"threads":@"default",@"password":password,@"cookie":cookie,@"port":[NSString stringWithFormat:@"%u",port],@"audio-port":_audioPort?[NSString stringWithFormat:@"%u",_audioPort]:@"",@"display":[NSString stringWithFormat:@"%u",display]};
+    NSDictionary *files=@{@"desktop-environment":([selectedDesktop isEqual:@"plasma"]||[selectedDesktop isEqual:@"lxqt"]||[selectedDesktop isEqual:@"enlightenment"]||[selectedDesktop isEqual:@"wayfire"]||[selectedDesktop isEqual:@"hyprland"])?selectedDesktop:@"linuxrunner",@"guest-user":_sessionGuestUser,@"geometry":geometry,@"glx-mode":glxMode,@"gpu-mode":LRSessionGraphicsMode(),@"input-mode":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUIEagerInput"]?@"eager":@"legacy",@"shm-mode":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUISharedImages"]?@"sysv":@"off",@"vnc-timing":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUILowLatencyInput"]?@"threads":@"default",@"password":password,@"cookie":cookie,@"port":[NSString stringWithFormat:@"%u",port],@"audio-port":_audioPort?[NSString stringWithFormat:@"%u",_audioPort]:@"",@"display":[NSString stringWithFormat:@"%u",display]};
     for(NSString *name in files){NSURL *url=[_sessionURL URLByAppendingPathComponent:name];if(![files[name] writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:&error]||![NSFileManager.defaultManager setAttributes:@{NSFilePosixPermissions:@0600} ofItemAtPath:url.path error:&error]){[self message:error.localizedDescription];return;}}
     NSString *xkb=[NSUserDefaults.standardUserDefaults stringForKey:@"LinuxRunnerGUIXKBMode"]?:@"xkb";
     [xkb writeToURL:[_sessionURL URLByAppendingPathComponent:@"xkb-mode"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -1272,11 +1451,9 @@ static NSString *DesktopDegradedNotice(NSString *state){
 // on the short side for usable Linux UIs and capped at 1600x1200 to bound the
 // software-rendering and x11vnc cost. Multiples of 8; session.sh validates it.
 - (NSString *)fitScreenGeometry{
-    UIWindow *target=LRCurrentExternalDisplay.view.window?:self.view.window;   // a connected monitor wins
+    UIWindow *target=([self externalOutputActive]?LRCurrentExternalDisplay.view.window:nil)?:self.view.window;   // a connected monitor wins
     CGSize s=target?target.bounds.size:self.view.bounds.size;
-    if(s.width<1||s.height<1)return @"960x540";
-    double scale=MAX(1.0,540.0/MIN(s.width,s.height)),w=s.width*scale,h=s.height*scale,cap=MIN(1.0,MIN(1600.0/w,1200.0/h));
-    unsigned W=MAX(320u,(unsigned)(w*cap)/8*8),H=MAX(240u,(unsigned)(h*cap)/8*8);
+    uint16_t W,H;lr_desktop_geometry(s.width,s.height,&W,&H);
     return [NSString stringWithFormat:@"%ux%u",W,H];
 }
 // iPad / hardware keyboard: app actions on Control-Option-Command, a combination
@@ -1320,7 +1497,8 @@ static NSString *DesktopDegradedNotice(NSString *state){
         if(_desktopMode&&!_desktopPainted){_desktopPainted=YES;
             [LRRuntimeBridge desktopTrace:@"13 first-frame" result:@"ok" detail:@"frame submitted to the native surface; component readiness checked separately (GPU completion unmeasured)"];
         }
-            if(_desktopMode&&LRCurrentExternalDisplay)[LRCurrentExternalDisplay presentFrame:_surface.latestPixels width:w height:h damage:damage];
+            if(_desktopMode&&[self externalOutputActive])[LRCurrentExternalDisplay presentFrame:_surface.latestPixels width:w height:h damage:damage];
+        if(_desktopMode)[self resumeRequestedTrackpad];
         if(received&&_surface.traceInput&&_transportDiagnosticEvents<96){_transportDiagnosticEvents++;
             [LRRuntimeBridge logCategory:@"GUI_TRANSPORT" event:[NSString stringWithFormat:@"stage=native_present_submit frame=%llu native_monotonic_ms=%.3f newest_frame_queue_ms=%.3f submit_cpu_ms=%.3f patch_bytes=%lu (submission, not GPU completion)",(unsigned long long)_frames,submitted*1000,(submitted-received)*1000,(LRGUIClock()-submitted)*1000,(unsigned long)patch.length]];
             if(_transportDiagnosticEvents==96)_client.transportMetricsHandler=nil;
@@ -1397,7 +1575,10 @@ static NSString *DesktopDegradedNotice(NSString *state){
         if([desktopState containsString:@"ready=1"]&&_desktopPainted&&_startState==LRStartSession){_startState=LRStartIdle;[self hideStartPanel];[self desktopStartLog:@"stage=painted components=verified"];}
         if(DesktopDegradedNotice(desktopState))progress=DesktopDegradedNotice(desktopState);
         if([desktopState containsString:@"ready=1"]&&_queuedDesktopApplication){NSDictionary *app=_queuedDesktopApplication;_queuedDesktopApplication=nil;[self launchDesktopApplication:app];}}
-    _status.text=[NSString stringWithFormat:@"%@ · %.0fs · frames %llu",progress,elapsed,(unsigned long long)_frames];
+    double now=LRGUIClock();
+    if(_rateTime>0&&now-_rateTime>=0.9){_updateRate=(double)(_frames-_rateFrames)/(now-_rateTime);_rateFrames=_frames;_rateTime=now;}
+    else if(_rateTime<=0||_frames<_rateFrames){_rateFrames=_frames;_rateTime=now;}
+    _status.text=[NSString stringWithFormat:@"%@ · %.0fs · %.1f display updates/s",progress,elapsed,_updateRate];
 }
 - (void)metrics{
     [LRRuntimeBridge logCategory:@"GUI_PRESENTATION" event:[NSString stringWithFormat:@"component counters (guest rendering unchanged): %@",[self.surface presentationStatistics]]];
@@ -1482,64 +1663,106 @@ static NSString *DesktopDegradedNotice(NSString *state){
     if(_desktopMode){id automatic=[NSUserDefaults.standardUserDefaults objectForKey:@"LinuxRunnerDesktop.autoFullscreen"];
         if(!automatic||[automatic boolValue])[coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext>c){[self setImmersive:size.width>size.height];} completion:nil];}
 }
-- (void)desktopOptions:(UIBarButtonItem *)sender{
-    UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"LinuxRunner Desktop" message:@"One persistent Linux display for this environment. Pinch to zoom; two fingers pan when zoomed, scroll when fitted. Returning retains windows; iOS may suspend the runtime." preferredStyle:UIAlertControllerStyleActionSheet];
-    [menu addAction:[UIAlertAction actionWithTitle:@"Start or Reconnect Desktop" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){if(!self.client)[self run:@"desktop"];}]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"Install Desktop Support" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){[self installScript:@"install-desktop.sh"];}]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"Hide Viewer Controls" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){[self toggleImmersive];}]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"Type Text from iPhone Clipboard" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){NSString *text=UIPasteboard.generalPasteboard.string;if(!text.length){[self message:@"The clipboard contains no text."];return;}if([text lengthOfBytesUsingEncoding:NSUTF8StringEncoding]>16384){[self message:@"Clipboard text exceeds the 16 KiB input limit."];return;}[self.surface insertText:text];}]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"Fit to Screen" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){[self.surface fitViewport];}]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"Actual Size" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){[self.surface actualViewport];}]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"Toggle Linux Window Fullscreen" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){[self.client key:0xffeb down:YES];[self.surface stroke:'f'];[self.client key:0xffeb down:NO];}]];
-    for(NSUInteger i=0;i<5;i++){NSString *title=@[@"640×480",@"800×600",@"1024×768",@"960×540",@"Fit Screen"][i];[menu addAction:[UIAlertAction actionWithTitle:[title stringByAppendingString:@" (next desktop start)"] style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){self.resolution.selectedSegmentIndex=i;[NSUserDefaults.standardUserDefaults setInteger:i forKey:[@"LinuxRunnerDesktop.resolution." stringByAppendingString:LRRuntimeBridge.activeRootName]];}]];}
-    [menu addAction:[UIAlertAction actionWithTitle:@"GUI Logs" style:UIAlertActionStyleDefault handler:^(UIAlertAction*a){[self logs];}]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"Stop Desktop" style:UIAlertActionStyleDestructive handler:^(UIAlertAction*a){UIAlertController *confirm=[UIAlertController alertControllerWithTitle:@"Stop Desktop?" message:@"This closes applications in this desktop. Save documents first. The CLI and persistent files remain." preferredStyle:UIAlertControllerStyleAlert];[confirm addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];[confirm addAction:[UIAlertAction actionWithTitle:@"Stop" style:UIAlertActionStyleDestructive handler:^(UIAlertAction*b){[self stop];[self message:@"Desktop stopped. Use Start or Reconnect Desktop to open it again."];}]];[self presentViewController:confirm animated:YES completion:nil];}]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];menu.popoverPresentationController.barButtonItem=sender;[self presentViewController:menu animated:YES completion:nil];
+- (NSDictionary *)desktopControlState {
+    NSMutableDictionary *state=[[self desktopSessionSummary] mutableCopy];
+    state[@"externalConnected"]=@(LRCurrentExternalDisplay!=nil);
+    state[@"externalEnabled"]=@(LRExternalOutputEnabled());
+    state[@"touchpad"]=@(_surface.relativeTouchpad);
+    state[@"trackpadRequested"]=@(_trackpadRequested);
+    state[@"trackpadReady"]=@([self trackpadReady]);
+    state[@"externalAvailable"]=@([self externalDisplayAvailable]);
+    state[@"presenter"]=_surface.metal?@"Metal framebuffer presenter":@"Core Graphics framebuffer presenter";
+    state[@"immersive"]=@(_inputToolbar.hidden);
+    state[@"framebuffer"]=_surface.pixelWidth?[NSString stringWithFormat:@"%u × %u",_surface.pixelWidth,_surface.pixelHeight]:@"No frames received";
+    state[@"fitGeometry"]=[self fitScreenGeometry];
+    UIScreen *screen=LRCurrentExternalDisplay.view.window.screen?:self.view.window.screen;
+    state[@"screenMaximumRefresh"]=screen?@(screen.maximumFramesPerSecond):@0;
+    NSMutableSet *modes=[NSMutableSet new];for(UIScreenMode *mode in screen.availableModes)[modes addObject:[NSString stringWithFormat:@"%.0f × %.0f",mode.size.width,mode.size.height]];
+    state[@"screenModes"]=[[modes allObjects] sortedArrayUsingSelector:@selector(compare:)];
+    state[@"displayServer"]=[state[@"alive"] boolValue]?@"X11 / Xvfb":@"No running display";
+    NSString *readiness=LRDiagnosticTailString(LRReadDiagnosticTail([_sessionURL URLByAppendingPathComponent:@"desktop-state"],8192));
+    NSString *environment=@"Not reported";
+    for(NSString *line in [readiness componentsSeparatedByString:@"\n"])if([line hasPrefix:@"environment="])environment=[line substringFromIndex:12];
+    state[@"desktopEnvironment"]=environment;
+    state[@"statusDetail"]=_status.text?:@"";
+    return state;
 }
-- (void)logs{
-    NSError *error=nil;NSURL *startup=[LRRuntimeBridge exportLogs:&error];NSMutableString *text=[[NSString stringWithContentsOfURL:startup encoding:NSUTF8StringEncoding error:&error] mutableCopy];
-    if(!text){[self message:error.localizedDescription];return;}
-    if(!_supportURL)_supportURL=[[LRRuntimeBridge exchangeURL:LRRuntimeBridge.activeRootName] URLByAppendingPathComponent:LRGUIFolder isDirectory:YES];
-    for(NSString *name in @[@"install.sh.log",@"install-qt.sh.log",@"install-browser.sh.log",@"install-desktop.sh.log",@"resource-check.log",@"package-operation.log",@"package-result",@"install-result",@"browser-support.meta"]){
-        NSURL *log=[_supportURL URLByAppendingPathComponent:name];NSNumber *symlink=nil;[log getResourceValue:&symlink forKey:NSURLIsSymbolicLinkKey error:nil];
-        NSData *data=symlink.boolValue?nil:[NSData dataWithContentsOfURL:log options:NSDataReadingMappedIfSafe error:nil];
-        if(data.length>256*1024)data=[data subdataWithRange:NSMakeRange(data.length-256*1024,256*1024)];
-        NSString *tail=data?[[NSString alloc]initWithData:data encoding:NSUTF8StringEncoding]:nil;
-        [text appendFormat:@"\n=== SUPPORT %@ ===\n%@",name,tail?:@"unavailable\n"];
+- (void)performDesktopAction:(NSString *)action {
+    if(!NSThread.isMainThread){__weak typeof(self) weak=self;dispatch_async(dispatch_get_main_queue(),^{[weak performDesktopAction:action];});return;}
+    if([action isEqual:@"start"]){
+        _resolution.selectedSegmentIndex=MAX(0,MIN(4,[NSUserDefaults.standardUserDefaults objectForKey:[@"LinuxRunnerDesktop.resolution." stringByAppendingString:LRRuntimeBridge.activeRootName]]?[NSUserDefaults.standardUserDefaults integerForKey:[@"LinuxRunnerDesktop.resolution." stringByAppendingString:LRRuntimeBridge.activeRootName]]:3));
+        if(!_client)[self run:@"desktop"];
+    } else if([action isEqual:@"stop"]){_trackpadRequested=NO;[_restartTimer invalidate];_restartTimer=nil;[self stop];[self message:@"Stopping desktop. Saved files remain in Linux."];}
+    else if([action isEqual:@"restart"]){
+        if(_restartTimer)return;
+        [self stop];[self message:@"Waiting for the existing desktop to stop before restarting…"];
+        __weak typeof(self) weak=self;NSDate *began=NSDate.date;
+        _restartTimer=[NSTimer scheduledTimerWithTimeInterval:.25 repeats:YES block:^(NSTimer *timer){
+            typeof(self) self=weak;if(!self){[timer invalidate];return;}
+            if(self.sessionTerminal.sessionPid<=0){[timer invalidate];self.restartTimer=nil;[self performDesktopAction:@"start"];}
+            else if(-[began timeIntervalSinceNow]>20){[timer invalidate];self.restartTimer=nil;[self message:@"The desktop is still stopping. Reconnect after it exits; another display server was not started."];}
+        }];
+    } else if([action isEqual:@"fit"])[_surface fitViewport];
+    else if([action isEqual:@"actual"])[_surface actualViewport];
+    else if([action isEqual:@"fullscreen"])[self toggleImmersive];
+    else if([action isEqual:@"touchpad"]){
+        if(_surface.relativeTouchpad||_trackpadRequested){_trackpadRequested=NO;[_surface releaseInput];[self resetModifierButtons];_surface.relativeTouchpad=NO;[self setImmersive:NO];return;}
+        _trackpadRequested=YES;
+        [NSUserDefaults.standardUserDefaults setBool:YES forKey:LRExternalDisplayEnabledKey];
+        [self resumeRequestedTrackpad];
+        if(!_surface.relativeTouchpad)[self message:[self externalDisplayAvailable]?@"External output is enabled. Starting or reconnecting your desktop; trackpad controls will open when its first frame arrives.":@"External output is enabled. Connect a USB-C display, or choose an AirPlay receiver in Control Center → Screen Mirroring. Trackpad controls will open when iOS provides a separate desktop output and the desktop is ready. Ordinary mirroring alone cannot show different content on the phone and receiver. Tap Cancel Trackpad Connection to cancel waiting."];
     }
-    // Keep the latest three session tails so a later launch does not hide
-    // the stderr preceding an earlier guest fault. Only read owned log names;
-    // never include command scripts, X authority, passwords or profile data.
-    NSArray<NSURL *> *entries=[NSFileManager.defaultManager contentsOfDirectoryAtURL:_supportURL includingPropertiesForKeys:@[NSURLIsDirectoryKey,NSURLIsSymbolicLinkKey,NSURLCreationDateKey] options:NSDirectoryEnumerationSkipsHiddenFiles error:nil];
-    NSMutableArray<NSURL *> *sessions=[NSMutableArray array];
-    for(NSURL *entry in entries){
-        NSNumber *directory=nil,*symlink=nil;
-        [entry getResourceValue:&directory forKey:NSURLIsDirectoryKey error:nil];
-        [entry getResourceValue:&symlink forKey:NSURLIsSymbolicLinkKey error:nil];
-        if(directory.boolValue&&!symlink.boolValue&&[entry.lastPathComponent hasPrefix:@"session-"]) [sessions addObject:entry];
+    else if([action isEqual:@"wireless"])[self wirelessDisplayHelp];
+    else if([action isEqual:@"install"])[self installScript:@"install-desktop.sh"];
+    else if([action isEqual:@"clipboard"]){
+        NSString *text=UIPasteboard.generalPasteboard.string;
+        if(!text.length){[self message:@"The clipboard contains no text."];return;}
+        if([text lengthOfBytesUsingEncoding:NSUTF8StringEncoding]>16384){[self message:@"Clipboard text exceeds the 16 KiB input limit."];return;}
+        [_surface insertText:text];
     }
-    [sessions sortUsingComparator:^NSComparisonResult(NSURL *a,NSURL *b){
-        NSDate *ad=nil,*bd=nil;
-        [a getResourceValue:&ad forKey:NSURLCreationDateKey error:nil];
-        [b getResourceValue:&bd forKey:NSURLCreationDateKey error:nil];
-        return [(bd?:NSDate.distantPast) compare:(ad?:NSDate.distantPast)];
-    }];
-    for(NSUInteger i=0;i<MIN(sessions.count,3);i++){
-        NSURL *session=sessions[i];
-        [text appendFormat:@"\n=== GUI session %@ ===\n",session.lastPathComponent];
-        for(NSString *name in @[@"session.log",@"xvfb.log",@"bus.log",@"display.log",@"focus.log",@"window.log",@"keymap.log",@"wm.log",@"panel.log",@"desktop.log",@"xfconf.log",@"desktop-state",@"application.log"]){
-            NSURL *log=[session URLByAppendingPathComponent:name];
-            NSNumber *symlink=nil;
-            [log getResourceValue:&symlink forKey:NSURLIsSymbolicLinkKey error:nil];
-            NSData *data=symlink.boolValue?nil:[NSData dataWithContentsOfURL:log options:NSDataReadingMappedIfSafe error:nil];
-            if(data.length>128*1024)data=[data subdataWithRange:NSMakeRange(data.length-128*1024,128*1024)];
-            NSString *tail=data?[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]:nil;
-            // A bounded tail can start inside a UTF-8 sequence.
-            if(!tail&&data)for(NSUInteger skip=1;skip<MIN((NSUInteger)4,data.length)&&!tail;skip++)tail=[[NSString alloc] initWithData:[data subdataWithRange:NSMakeRange(skip,data.length-skip)] encoding:NSUTF8StringEncoding];
-            [text appendFormat:@"\n--- GUI %@ ---\n%@",name,tail?:@"unavailable\n"];
-        }
+}
+- (BOOL)externalDisplayAvailable {
+    if(LRCurrentExternalDisplay)return YES;
+    for(UIScene *scene in UIApplication.sharedApplication.connectedScenes)
+        if([scene.session.role isEqual:UIWindowSceneSessionRoleExternalDisplay]||[scene.session.role isEqual:UIWindowSceneSessionRoleExternalDisplayNonInteractive])return YES;
+    return NO;
+}
+- (BOOL)trackpadReady {
+    return [self externalOutputActive]&&_client&&_surface.pixelWidth&&_surface.pixelHeight;
+}
+- (void)resumeRequestedTrackpad {
+    if(!_trackpadRequested)return;
+    if([self trackpadReady]){_trackpadRequested=NO;[_surface releaseInput];[self resetModifierButtons];_surface.relativeTouchpad=YES;[self setImmersive:NO];}
+    else if([self externalOutputActive]&&!_client&&_startState==LRStartIdle)[self performDesktopAction:@"start"];
+}
+- (UIAlertController *)desktopOptionsMenu {
+    NSString *hint=_trackpadRequested?@"Waiting for external desktop output. You can cancel below.":nil;
+    UIAlertController *menu=[UIAlertController alertControllerWithTitle:nil message:hint preferredStyle:UIAlertControllerStyleActionSheet];
+    [menu addAction:[UIAlertAction actionWithTitle:@"Start / Reconnect Desktop" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performDesktopAction:@"start"];}]];
+    [menu addAction:[UIAlertAction actionWithTitle:_surface.relativeTouchpad?@"Show Desktop on This Device":_trackpadRequested?@"Cancel Trackpad Connection":@"Use iPhone as Trackpad" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performDesktopAction:@"touchpad"];}]];
+    for(NSArray *item in @[@[@"Wireless Display",@"wireless"],@[@"Paste Clipboard Text",@"clipboard"]]){
+        UIAlertAction *action=[UIAlertAction actionWithTitle:item[0] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performDesktopAction:item[1]];}];
+        if([item[1] isEqual:@"clipboard"])action.enabled=_client&&_surface.pixelWidth&&_surface.pixelHeight;
+        [menu addAction:action];
     }
-    NSURL *url=[NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"LinuxRunner-GUI-logs.txt"]];if(![text writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:&error]){[self message:error.localizedDescription];return;}
-    UIActivityViewController *share=[[UIActivityViewController alloc] initWithActivityItems:@[url] applicationActivities:nil];share.popoverPresentationController.barButtonItem=self.navigationItem.rightBarButtonItem;[self presentViewController:share animated:YES completion:nil];
+    [menu addAction:[UIAlertAction actionWithTitle:@"Task Manager" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){UIViewController *tasks=[LinuxRunnerShell makeTaskManagerController];tasks.modalPresentationStyle=UIModalPresentationPageSheet;[self presentViewController:tasks animated:YES completion:nil];}]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"Desktop Settings…" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){UIViewController *settings=[LinuxRunnerShell makeDesktopSettingsWithController:self];settings.modalPresentationStyle=UIModalPresentationPageSheet;[self presentViewController:settings animated:YES completion:nil];}]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    return menu;
+}
+- (void)desktopOptions:(UIBarButtonItem *)sender {
+    [self.view endEditing:YES];[_surface releaseInput];[self resetModifierButtons];
+    UIAlertController *menu=[self desktopOptionsMenu];menu.popoverPresentationController.barButtonItem=sender;[self presentViewController:menu animated:YES completion:nil];
+}
+- (void)wirelessDisplayHelp {
+    UIAlertController *help=[UIAlertController alertControllerWithTitle:@"Wireless Linux Desktop" message:@"Connect this device and an AirPlay-compatible TV, Apple TV or Mac to the same Wi-Fi. Open iOS Control Center → Screen Mirroring and choose the receiver. Enter any passcode in iOS.\n\nWhen iOS supplies a separate display, enable External Desktop Output in Settings → Devices and use this menu’s touchpad option. Otherwise, use full-screen mirroring: the receiver shows this device’s view. Miracast-only receivers are not supported." preferredStyle:UIAlertControllerStyleAlert];
+    [help addAction:[UIAlertAction actionWithTitle:@"Use Full-Screen Desktop" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){self.trackpadRequested=NO;self.surface.relativeTouchpad=NO;[self.surface fitViewport];[self setImmersive:YES];}]];
+    [help addAction:[UIAlertAction actionWithTitle:@"Close" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:help animated:YES completion:nil];
+}
+- (void)logs {
+    [self.view endEditing:YES];[_surface releaseInput];[self resetModifierButtons];
+    UIViewController *logs=[LinuxRunnerShell makeDesktopLogsController];logs.modalPresentationStyle=UIModalPresentationPageSheet;
+    [self presentViewController:logs animated:YES completion:nil];
 }
 @end

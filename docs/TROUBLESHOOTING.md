@@ -36,9 +36,9 @@ Only one modifying package operation should run in an environment. If a lock is 
 
 ## Desktop Installation Problems or Missing Dependencies
 
-Use **Set Up Linux… → Install Desktop Components**, or the viewer's **Desktop → Install Desktop Support**. Keep the app open during installation. **Details** and **GUI Logs** show the failing component/package step.
+Use **Set Up Linux… → Install Desktop Components**, or **Desktop → Desktop Settings… → Desktop Session → Install / Repair Desktop Components**. Keep the app open during installation. **Details** and **GUI Logs** show the failing component/package step.
 
-On Arch, use LinuxRunner Desktop (Openbox/LXQt components). Current Arch Plasma requires Wayland and is unavailable. On Debian, try LinuxRunner Desktop before experimental KDE Plasma. Alpine's desktop path remains experimental.
+Try LinuxRunner Desktop or LXQt before a more demanding desktop. **Settings → Desktop Environment** offers the current installation controls. Arch Plasma is not validated; Debian Enlightenment is disabled because it stops at the splash screen. Alpine's desktop path has less coverage.
 
 If dependencies are missing, use **Check Dependencies** and the package manager's supported repair flow. Do not download unrelated libraries from arbitrary sites or globally replace system libraries.
 
@@ -47,7 +47,7 @@ If dependencies are missing, use **Check Dependencies** and the package manager'
 Distinguish a black Linux desktop from the entire native app failing to open. An X11 window manager can be alive even if the panel or desktop surface has failed.
 
 1. Read the startup status and **Details** before restarting.
-2. Try **Desktop → Start or Reconnect Desktop**, or **Sessions → Resume Desktop**, if the session is alive.
+2. Try **Desktop → Start / Reconnect Desktop**, or **Sessions → Resume Desktop**, if the session is alive.
 3. If only a panel/surface failed, open applications may still work. Components restart a bounded number of times; repeated failures are reported as degraded rather than silently marked ready.
 4. Save work, then use **Stop Desktop** and start it again if reconnecting does not resolve the issue. Stopping closes applications in that desktop.
 5. Export the report with `panel.log`, `desktop.log` and Qt diagnostics when present.
@@ -60,7 +60,7 @@ Check [Compatibility](COMPATIBILITY.md). Telegram login, messaging and calls hav
 
 Launch through **Home → Applications** with a regular Linux user. If using a shell, open a fresh terminal after starting Desktop so it can adopt the current session context. A shell opened earlier cannot inherit later environment changes.
 
-Try **Settings → Graphics → Software (Mesa)** and reopen the application if the problem is specific to experimental Metal graphics. Close other heavy applications if memory is tight. Record the program/package version, exact action and whether the whole app closed or just the Linux program.
+For a problem specific to Metal, select **Settings → Graphics → Linux GPU Device → GPU → Software Rendering**, then fully close/reopen LinuxRunner. Record **Active renderer** before and after. The separate Linux Applications Renderer control does not select the virtual GPU. Close other heavy applications if memory is tight. Record the program/package version, exact action and whether the whole app closed or just the Linux program.
 
 ## Terminal Does Not Start or Uses the Wrong Environment
 
@@ -76,7 +76,7 @@ iOS/iPadOS may suspend or terminate LinuxRunner. Keep Screen Awake prevents idle
 
 ## Input or iPad Display Problems
 
-Try **Fit to Screen** and **Actual Size** for viewer scaling. **Fit Screen (next desktop start)** chooses a Linux resolution when a new session starts; save work before restarting. Use the on-screen keyboard/modifier bar to distinguish accessory input problems from Linux application behavior.
+Try **Fit to Screen** and **Actual Size** for viewer scaling. **Desktop Settings… → Display → Resolution & Viewer Preferences** chooses a Linux resolution when a new session starts; save work before restarting. Use the on-screen keyboard/modifier bar to distinguish accessory input problems from Linux application behavior.
 
 For pointer issues, inspect **Settings → Devices** and its mouse settings. Report whether input came from touch, mouse, trackpad or a hardware keyboard. iPad support has been physically tested. Include model, iPadOS version, orientation and window size when reporting a layout problem.
 
@@ -101,3 +101,19 @@ The app may use an App Group container or private application storage, depending
 Review exported files before sharing. Automatic redaction is useful but cannot guarantee that logs, filenames, screenshots or program output contain no private information. Remove messages, account identifiers, addresses, tokens and sensitive paths. Keep the original privately if further diagnosis is needed.
 
 Open a [GitHub issue](https://github.com/mxhm11cr/LinuxRunner/issues/new/choose) with device/OS, app version/build/source identity, distribution, package version, desktop/graphics mode, steps, expected/actual behavior and the first relevant error. State whether an app merely launched or was actually used. Use the [private security channel](../SECURITY.md) for vulnerabilities.
+
+## Hyprland or Wayfire Startup Fails
+
+Hyprland is experimental, Arch-only and requires at least 8 GB RAM; Metal is recommended. If the first launch reports an error, select **Retry** when offered. Check that desktop package installation completed. Save work before stopping/restarting a session; try LinuxRunner Desktop or LXQt if failures persist. Do not remove the root filesystem. Include the selected environment, renderer, memory and first compositor error in the report.
+
+## Metal Is Selected but Rendering Is Still Software
+
+Use **Settings → Graphics → Linux GPU Device → GPU → Metal GPU · Experimental**, then fully close and reopen the app. Check **Active renderer** and its reason. Automatic uses software in Build 900. A Metal viewer/presentation label alone does not mean the Linux application used GPU rendering. A workload can use an unsupported API or fall back even with Metal selected.
+
+## JIT Is Unavailable
+
+JIT is optional. Keep using Interpreter if iOS refuses executable memory. Under **Settings → Advanced**, enable **Developer Mode**, then inspect **Execution Engine / StikDebug → JIT Status** and the running backend. Debugger attachment and a JIT-capable build alone do not prove translated blocks are running. Signing, OS and activation-method restrictions apply; do not remove the app or its Linux data to obtain JIT.
+
+## External Display Shows the Wrong View
+
+Enable **Settings → Devices → External Desktop Output**, connect a supported display/receiver and use **Desktop → Use iPhone as Trackpad**. A separate iOS external scene and the first desktop frame are required. Plain mirroring shows the phone's view and cannot provide independent controls. Cancel a waiting trackpad connection if needed, then check the receiver/platform connection. [External display guide](NETWORKING_AND_DISPLAYS.md)

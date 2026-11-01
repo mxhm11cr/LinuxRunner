@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Subset of KDE plasma-wayland-protocols zkde-screencast-unstable-v1 (LGPL-2.1-or-later),
+     transcribed for a test client; request/event order as upstream. -->
+<protocol name="zkde_screencast_unstable_v1">
+  <interface name="zkde_screencast_unstable_v1" version="3">
+    <enum name="pointer">
+      <entry name="hidden" value="1"/>
+      <entry name="embedded" value="2"/>
+      <entry name="metadata" value="4"/>
+    </enum>
+    <request name="stream_output">
+      <arg name="stream" type="new_id" interface="zkde_screencast_stream_unstable_v1"/>
+      <arg name="output" type="object" interface="wl_output"/>
+      <arg name="pointer" type="uint"/>
+    </request>
+    <request name="stream_window">
+      <arg name="stream" type="new_id" interface="zkde_screencast_stream_unstable_v1"/>
+      <arg name="window_uuid" type="string"/>
+      <arg name="pointer" type="uint"/>
+    </request>
+    <request name="destroy" type="destructor"/>
+    <request name="stream_virtual_output" since="2">
+      <arg name="stream" type="new_id" interface="zkde_screencast_stream_unstable_v1"/>
+      <arg name="name" type="string"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+      <arg name="scale" type="fixed"/>
+      <arg name="pointer" type="uint"/>
+    </request>
+    <request name="stream_region" since="3">
+      <arg name="stream" type="new_id" interface="zkde_screencast_stream_unstable_v1"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="uint"/>
+      <arg name="height" type="uint"/>
+      <arg name="scale" type="fixed"/>
+      <arg name="pointer" type="uint"/>
+    </request>
+  </interface>
+  <interface name="zkde_screencast_stream_unstable_v1" version="1">
+    <request name="close" type="destructor"/>
+    <event name="closed"/>
+    <event name="created">
+      <arg name="node" type="uint"/>
+    </event>
+    <event name="failed">
+      <arg name="error" type="string"/>
+    </event>
+  </interface>
+</protocol>

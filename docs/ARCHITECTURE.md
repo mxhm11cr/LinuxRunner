@@ -1,56 +1,62 @@
 # How LinuxRunner Works
 
-LinuxRunner hosts ARM64 Linux userspace inside an iOS/iPadOS application. It combines instruction interpretation with a Linux ABI compatibility layer. The normal **LinuxRunner** release scheme disables JIT and does not boot a Linux kernel or use hardware virtualization.
+LinuxRunner hosts ARM64 Linux userspace inside an iOS/iPadOS application. It combines instruction interpretation, optional block translation and a Linux ABI compatibility layer. It does not boot a Linux kernel or use hardware virtualization.
 
 ```text
-iOS / iPadOS application
-  Setup, environments, terminal, files, diagnostics, desktop viewer
-        |                                        |
-  Pseudo-terminal                         Display / input forwarding
-        |                                        |
-  ARM64 interpreter + Linux syscall compatibility layer
-  Executable loader | processes / threads | memory | filesystem | sockets
-        |
-  Debian / Arch Linux ARM / Alpine userspace
-  Shells, package managers, X11 server, desktops and applications
+Debian / Arch Linux ARM / Alpine programs and libraries
+       │ ELF loading, guest address spaces
+       ▼
+ARM64 interpreter ─── optional JIT, when iOS permits executable memory
+       │
+Linux syscall compatibility: processes, threads, signals, memory, files, sockets
+       │                                      │
+Host platform APIs                     Linux graphics/display services
+       │                               X11 / supported Wayland compositors
+       │                                      │
+iOS/iPadOS storage and network          Mesa virgl → virglrenderer
+                                              → ANGLE → Metal
+                                       or software rendering
+                                              │
+                                Native viewer / external scene / input
 ```
 
-## 1. Load Linux Executables
+## Load and Execute ARM64 Programs
 
-The runtime's ELF loader maps ARM64 Linux executables and their libraries into guest address spaces, sets up process state and transfers control to the interpreter. Executable availability does not imply that every required instruction or system call is supported.
+The ELF loader maps ARM64 Linux executables and shared libraries into guest address spaces, prepares process state and transfers control to the runtime. The Asbestos interpreter decodes supported instructions into cached sequences of precompiled host routines (gadgets). A shared ARM64 architecture does not make this native execution of arbitrary Linux programs.
 
-## 2. Interpret ARM64 Instructions
+The optional JIT translates supported guest blocks into host machine code. Its region must pass iOS executable-memory permission checks; without permission the interpreter remains usable. The default source configuration disables JIT compilation, while the selected Build 900 IPA includes it. Runtime status distinguishes compiled capability, debugger attachment and actual execution. [JIT implementation](engine/IOS_JIT.md)
 
-The Asbestos interpreter decodes guest instructions into cached sequences of precompiled host routines, often called gadgets. Those routines implement guest instruction semantics. The release does not generate executable guest code at runtime. This is interpreted Linux execution, even though the device and guest both use ARM64.
+## Supply Linux Semantics
 
-Developer-only execution-engine/bootstrap targets are separate from the release configuration. Their presence in the source does not make JIT or a debugger a normal installation requirement.
+The compatibility layer handles files, memory mappings, pseudo-terminals, sockets, process/thread state, signals, synchronization and guest `fork`/`clone`/`execve` behavior. These are userspace implementations and translations onto platform operations, not system calls into a guest Linux kernel. Coverage is incomplete.
 
-## 3. Implement Linux System Calls
+Each environment has its own root filesystem and package database. `fakefs` combines real backing files with SQLite-held Linux ownership/mode metadata. Import/export and per-environment shared folders provide selected file access. Storage uses the optional App Group when provisioned and a private fallback otherwise.
 
-A userspace compatibility layer handles Linux calls for files, memory, processes, signals, synchronization, pseudo-terminals, sockets and related facilities. It uses platform operations and runtime bookkeeping rather than a running Linux kernel. Coverage is incomplete; unsupported semantics can prevent a program from working even after it loads.
+Guest processes remain within LinuxRunner's application lifecycle. They do not become independent iOS applications or secure containers. The host sandbox remains the security boundary.
 
-## 4. Manage Guest Filesystems
+## Integrate Linux Desktops
 
-Each environment has its own root filesystem and package database. `fakefs` combines real backing files with Linux metadata held in SQLite, including ownership and modes. Import/export and optional security-scoped shared folders connect selected device files to the environment. App Group availability determines whether storage uses that shared container or the application's private fallback.
+X11 sessions use Xvfb and x11vnc to feed the native RFB viewer. Managed launchers provide the selected user's display authorization and session variables. The default lightweight session uses Openbox, a panel and a file manager; LXQt, Enlightenment and Debian KDE use their own components where supported.
 
-## 5. Run Linux Processes and Threads
+Experimental Wayfire/Hyprland sessions use LinuxRunner's virtual DRM/KMS display path. Compatible guest Mesa/virgl workloads send rendering commands to the app's virglrenderer integration, which uses ANGLE's Metal backend. Software rendering remains available. This is distinct from the earlier selective graphics interposer and from Metal presentation of an already-rendered framebuffer.
 
-The runtime implements guest process/thread state, address spaces, scheduling interactions, signals and synchronization, including the Linux-facing behavior required by `fork`, `clone` and `execve`. These guest processes remain inside the application and its lifecycle. They do not become independently managed iOS applications or secure containers.
+Metal is not universal graphics API support. The application, guest Mesa driver, compositor, memory limits and display path all matter. [Performance and activation](PERFORMANCE.md)
 
-## 6. Integrate a Graphical Desktop
+## Forward Display and Input
 
-X11 applications connect to Xvfb. The desktop session starts its window manager, panel, file manager and services under the selected Linux account. x11vnc transports the display to the native RFB viewer. Managed launchers supply session-local display authorization and environment variables.
+UIKit/Metal presentation shows frames in the app or an external scene. Touch, keyboard and supported pointer events are forwarded to Linux. DeX Mode adds a relative phone touchpad when a separate external scene is available. One guest desktop is displayed; this does not implement multiple independently extended Linux monitors. [Display controls](NETWORKING_AND_DISPLAYS.md)
 
-Arch uses Openbox, LXQt Panel and PCManFM-Qt. Debian also offers experimental KDE Plasma. A Wayland desktop/compositor session is not implemented.
+## Network Through the Host
 
-## 7. Forward Display and Input
+Linux sockets use platform networking. Interface/address/route queries translate available host information into Linux-facing forms, including netlink and proc views. There is no independent Linux network namespace or unrestricted radio/raw-device access. Bluetooth networking is unsupported.
 
-The viewer presents frames with UIKit/Metal and forwards touch, keyboard and pointer events. Window-aware initial sizing and hardware keyboard shortcuts support larger iPad layouts. Viewer scaling and Linux display resolution are separate controls.
+## Implementation Map
 
-Mesa supplies software OpenGL. The experimental guest Metal bridge forwards supported rendering operations to the platform GPU path; Metal presentation of a framebuffer alone is not evidence of Linux GPU API compatibility. Unsupported rendering/workloads can fail, and full API conformance is not claimed.
+- `asbestos/guest-arm64/`: interpreter gadgets, decoding and optional JIT.
+- `emu/`, `kernel/`, `fs/`: execution state, syscall compatibility and filesystems.
+- `graphics/`: guest graphics bridge and helpers.
+- `app/LinuxRunner/`: environment/setup UI, native runtime bridge, desktop/viewer integration.
+- `scripts/gpu/`, `scripts/build-gpu-deps.sh`: graphics dependency integration/builds.
+- `tests/linuxrunner/`: runtime, graphics and compatibility contracts.
 
-## Boundaries
-
-A full-system emulator would include machine/boot/kernel behavior. A virtual machine would use a virtualized machine and guest kernel. LinuxRunner instead supplies a userspace Linux ABI and interprets guest instructions within one app. It does not expose general Linux hardware access.
-
-The iOS/iPadOS sandbox is the security boundary. Linux user accounts and permissions do not isolate hostile code from the app or other environments. See [Security](../SECURITY.md), [Compatibility](COMPATIBILITY.md) and [Known limitations](KNOWN_LIMITATIONS.md). Developers can inspect `asbestos/`, `emu/`, `kernel/`, `fs/` and `app/LinuxRunner/` for the implementation.
+A full-system emulator models a machine and its kernel; a conventional VM runs a guest kernel through virtualization. LinuxRunner instead supplies Linux userspace compatibility with instruction interpretation/translation. [Limitations](KNOWN_LIMITATIONS.md) · [Security](../SECURITY.md)

@@ -1,49 +1,48 @@
-# Compatibility
+# Compatibility — LinuxRunner 1.1.0 (900)
 
-LinuxRunner targets ARM64 Linux userspace on iPhone and iPad. Compatibility depends on the distribution, package version, operation and device resources. A package appearing in the catalog is not a successful test.
+Compatibility depends on the distribution, package version, device memory, OS and execution/graphics path. Installing a package does not establish that every feature works.
 
-## How to Read the Status
+## Devices and Distributions
 
-**Launch reported** means a program opened; it does not validate all features. **Basic interaction** applies only to the listed actions. **Experimental** means incomplete or variable compatibility. No application below is represented as fully tested across devices and workloads.
+The retained IPA is ARM64, device families iPhone/iPad, minimum OS metadata 15.0. Physical iPhone and iPad use is confirmed by the maintainer; no universal model/OS qualification is implied. Older OS testing is limited, with an unresolved earlier iPhone 11/iOS 17 launch-black-screen report. [Requirements](../README.md#supported-devices-and-requirements)
 
-The maintainer identifies the latest physical-iPhone Arch/graphical/Telegram tests as **build 897**. The maintainer also confirms physical-iPad testing and Telegram login, messaging and calls on Arch. Exact device model, OS and artifact checksum were not supplied. Earlier screenshots were explicitly confirmed by the maintainer as physical-iPhone captures. They illustrate the experience rather than a full current-build regression test.
+Debian 13 ARM64 and Arch Linux ARM are recommended for desktop applications. Alpine 3.24 ARM64 supplies a small `apk` terminal environment with less desktop integration coverage. Only one installed environment is active per application launch. Switching uses **Use on Next Launch** and a full app relaunch.
 
-## Devices
+## Desktop Combinations
 
-| Area | Current status |
+| Desktop | Debian | Arch | Alpine |
+| --- | --- | --- | --- |
+| LinuxRunner Desktop | Main lightweight path | Openbox / LXQt components | Experimental desktop path |
+| LXQt | Available | Available | Lower coverage; prefer Debian/Arch |
+| Enlightenment | Disabled: splash/black-screen startup problem | Available | Not qualified |
+| Wayfire | Experimental | Experimental; GPU path implemented | Not offered |
+| Hyprland | Not offered | Experimental, 8 GB RAM minimum; Metal recommended | Not offered |
+| KDE Plasma | Experimental X11 session | Current Plasma not validated | Not offered |
+
+Hyprland's first launch can need **Retry**. LinuxRunner Desktop remains the fallback. Experimental Wayland support does not establish complete Wayland/KWin compatibility.
+
+## Application Results
+
+| Application | Current evidence and scope |
 | --- | --- |
-| iPhone | Physical-device use reported by the maintainer, including Arch desktop on build 897. |
-| iPad | Device family 2, four orientations, window-aware viewer sizing, keyboard shortcuts and pointer handling are implemented. The maintainer confirms testing on a physical iPad. |
-| OS | Deployment target iOS/iPadOS 15.0. Every supported-looking version/model is not automatically qualified. An older iPhone 11/iOS 17 launch-black-screen report remains open. |
-| Input | Touch, on-screen keyboard, hardware keyboard and pointer paths exist. iPad support has been physically tested; accessory behavior can vary with the device and platform settings. |
+| Vesktop / Discord | Maintainer reports full functionality tested in the new release. Supplied capture shows its interface; login QR is redacted. Exact distro/package version was not supplied. |
+| Telegram Desktop | Maintainer tested login, messages and calls on Arch using Build 897. New release does not imply every package version has been retested. |
+| Firefox | New supplied capture shows browsing the LinuxRunner GitHub repository. Complete browser/media/site compatibility has not been established. |
+| Visual Studio Code | New supplied capture shows its editor opening a C project. Extensions/debuggers are not thereby qualified. |
+| FreeCAD | New supplied capture shows its modeling interface with Metal selected. Full CAD workflows are not established by this image. |
+| ONLYOFFICE | New external-display photo shows its document editor, controlled by the phone. Full office-suite feature coverage is not established. |
+| Blender | Earlier supplied capture shows the 3D viewport. Rendering, plugins and all tools are not thereby qualified. |
+| Dolphin / Konsole | Included in the experimental Debian Plasma path; Dolphin appears in the retained desktop capture. |
+| Terminal tools | Shell/package-manager functionality is supported; individual programs remain subject to syscall/instruction coverage. |
 
-## Distributions and Desktops
+The maintainer identifies all supplied app captures as physical-device use. Hyprland and FreeCAD captures used GPU acceleration. These facts do not turn separate development-host benchmarks into phone performance measurements.
 
-| Environment | Status | Limits |
-| --- | --- | --- |
-| Debian 13 ARM64 | Terminal, `apt` and LinuxRunner Desktop available | Recommended starting point; incomplete Linux ABI coverage. |
-| Debian KDE Plasma | Experimental; shown in supplied physical-iPhone captures | Higher memory use; no claim of a full v1.0.1 regression pass. |
-| Arch Linux ARM | Terminal/`pacman` integrated; desktop success reported on iPhone build 897 | Rolling packages can change compatibility; signed recovery covers specific supported damage patterns. |
-| Arch Openbox + LXQt Panel + PCManFM-Qt | Experimental; basic desktop/graphical launch success reported | Full LXQt session not claimed; preserve first-use launcher trust prompts. |
-| Arch Plasma / Wayland | Unavailable | No supported Wayland session integration. |
-| Alpine 3.24 ARM64 | Terminal and `apk` available | Desktop path remains experimental; no stable graphical claim. |
+## Graphics and Execution
 
-## Applications
+Metal requires **Settings → Graphics → Linux GPU Device → GPU → Metal GPU · Experimental** and a full app restart. Check **Active renderer**. Software and accelerated paths support different workloads; Vulkan and arbitrary host graphics APIs are not universally available.
 
-| Application or group | Evidence | What remains unverified |
-| --- | --- | --- |
-| Shell and package tools | Available across the three environments; retained regression records cover package/filesystem/terminal operations | All tools and every installation/upgrade scenario on devices. |
-| PCManFM-Qt / Arch desktop components | Maintainer reports working Arch desktop and graphical launches on iPhone build 897; retained focused tests cover file-manager navigation, windows and reconnect | Exact device action checklist, long sessions and every file operation. |
-| Telegram Desktop | Maintainer-tested on Arch Linux ARM / physical-iPhone build 897: launch, login, sending messages and calls; supplied welcome-screen capture | Results apply to the tested configuration; other package/device combinations can vary. |
-| Dolphin / Konsole | Supplied KDE capture shows these applications | Complete v1.0.1 device regression coverage. |
-| Firefox | Supplied capture shows a public page | Broad website support, media, extensions and long sessions. |
-| Chromium | Available through supported distribution/package paths; experimental | A current build/device feature checklist. |
-| Blender | Supplied physical-iPhone capture shows the viewport | Rendering/export workflows, broad workloads and stability. |
-| Text editors and other catalog applications | Some focused development checks exist; the catalog distinguishes its evidence | Current physical-device validation for each application. |
-| Some Arch GTK/glycin applications | Known write-seal compatibility failures remain | Do not generalize Qt success to GTK compatibility. |
+The interpreter remains the default. The selected Build 900 IPA includes optional JIT code, but iOS must grant executable memory before translated blocks can run. Debugger attachment alone is not proof of active JIT; inspect the app's actual backend/status. Physical-device JIT qualification is not established by the available engineering test record.
 
-## Graphics, Storage and Networking
+Linux networking exposes a bounded compatibility view of iOS-provided interfaces and routes. It does not grant radio control, unrestricted raw networking or Bluetooth networking. External output depends on receiver/platform scene support; screen mirroring cannot provide independent phone controls.
 
-Mesa software rendering is the reference path. Metal acceleration supports selected OpenGL operations and remains experimental; full OpenGL/Vulkan compatibility is not claimed. Networking uses platform sockets and restrictions, not direct hardware access. File import/export and shared-folder integration exist; access is limited by selected permissions and the app's storage container.
-
-Linux accounts and permissions are not a sandbox for hostile software. See [Known limitations](KNOWN_LIMITATIONS.md), [Security](../SECURITY.md) and [Troubleshooting](TROUBLESHOOTING.md).
+[Limitations](KNOWN_LIMITATIONS.md) · [Troubleshooting](TROUBLESHOOTING.md) · [Measured performance](PERFORMANCE.md)

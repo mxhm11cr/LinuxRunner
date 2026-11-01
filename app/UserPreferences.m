@@ -171,7 +171,7 @@ bool (*remove_user_default)(const char *name);
             kPreferenceCursorStyleKey: @(CursorStyleBlock),
             kPreferenceHideStatusBarKey: @(NO),
             kPreferenceColorSchemeKey: @(ColorSchemeMatchSystem),
-            kPreferenceThemeKey: @"xterm",
+            kPreferenceThemeKey: @"linuxrunner",
             kHostnameOverrideKey: UIDevice.currentDevice.name,
         }];
         [_defaults registerDefaults:@{

@@ -1,0 +1,27 @@
+/* LinuxRunner Waybar preset 2: Nord, floating rounded groups. Yours to edit. */
+* {
+    font-family: "Inter", "Font Awesome 7 Free", "Font Awesome 7 Brands", sans-serif;
+    font-size: 13px;
+    min-height: 0;
+    border: none;
+}
+window#waybar { background: transparent; color: #e5e9f0; }
+.modules-left, .modules-center, .modules-right {
+    background: rgba(30, 35, 45, 0.90);
+    border: 1px solid rgba(136, 192, 208, 0.18);
+    border-radius: 12px;
+    padding: 0 6px;
+}
+#custom-launcher { color: #88c0d0; font-size: 16px; padding: 0 10px 0 8px; }
+#workspaces button {
+    color: #7b8394;
+    background: transparent;
+    padding: 0 9px;
+    margin: 5px 2px;
+    border-radius: 8px;
+}
+#workspaces button.active { color: #2e3440; background: #88c0d0; }
+#workspaces button:hover { color: #eceff4; background: rgba(136, 192, 208, 0.22); box-shadow: none; }
+#clock { padding: 0 14px; font-weight: 600; letter-spacing: 0.3px; }
+#cpu { padding: 0 8px; color: #a3be8c; }
+#memory { padding: 0 10px 0 8px; color: #ebcb8b; }

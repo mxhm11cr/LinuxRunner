@@ -249,6 +249,10 @@ static inline int sock_flags_from_real(int real) {
 #define SO_DOMAIN_ 39
 #define SO_RCVTIMEO_ 66
 #define SO_SNDTIMEO_ 67
+// 64-bit glibc and musl use the original numbers (SO_RCVTIMEO_OLD); the
+// struct timeval layout is the same on AArch64 for both.
+#define SO_RCVTIMEO_OLD_ 20
+#define SO_SNDTIMEO_OLD_ 21
 #define IP_TOS_ 1
 #define IP_TTL_ 2
 #define IP_HDRINCL_ 3
@@ -288,8 +292,8 @@ static inline int sock_opt_to_real(int fake, int level) {
             case SO_RCVBUF_: return SO_RCVBUF;
             case SO_OOBINLINE_: return SO_OOBINLINE;
             case SO_TIMESTAMP_: return SO_TIMESTAMP;
-            case SO_RCVTIMEO_: return SO_RCVTIMEO;
-            case SO_SNDTIMEO_: return SO_SNDTIMEO;
+            case SO_RCVTIMEO_: case SO_RCVTIMEO_OLD_: return SO_RCVTIMEO;
+            case SO_SNDTIMEO_: case SO_SNDTIMEO_OLD_: return SO_SNDTIMEO;
             case SO_REUSEPORT_: return SO_REUSEPORT;
         } break;
         case IPPROTO_TCP: switch (fake) {

@@ -1233,6 +1233,9 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
     }
     frame->last_block = NULL;
     frame->cpu = *cpu;
+#ifdef GUEST_ARM64
+    frame->cpu.segfault_was_exec = false;
+#endif
     assert(asbestos->mmu == cpu->mmu);
 
     int interrupt = INT_NONE;

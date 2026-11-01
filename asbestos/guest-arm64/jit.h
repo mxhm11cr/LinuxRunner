@@ -134,9 +134,23 @@ size_t jit_layout_describe(char *buf, size_t size); // bounded JSON, no initiali
 
 // Human-readable state for /proc/ish/jit (mode, AOT images, hits per module).
 size_t jit_describe(char *buf, size_t size);
+// Translator counters since start: blocks translated, native segments
+// installed into block code streams (the dispatcher runs them whenever the
+// guest reaches those blocks) and native code bytes. Any pointer may be NULL.
+void jit_counters(uint64_t *blocks, uint64_t *segments, uint64_t *code_bytes);
 // Writes to /proc/ish/jit: "off" / "on" stop / resume installing AOT images
 // in blocks compiled afterwards (for A/B timing on a device). -1: unknown.
 int jit_control(const char *cmd, size_t len);
+#if defined(__APPLE__) && !defined(ISH_JIT_NO_EMIT)
+#include <TargetConditionals.h>
+#if !TARGET_OS_OSX
+// iOS: make the translator's code region executable once iOS allows it (an
+// attached debugger). txm selects StikDebug's prepared-region protocol, which
+// requires its script to be attached. 0 on success; detail says what happened.
+// Translation starts with the next block compiled; never called otherwise.
+int jit_ios_acquire(bool txm, char *detail, size_t size);
+#endif
+#endif
 
 #endif
 #endif

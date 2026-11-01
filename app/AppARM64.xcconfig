@@ -3,8 +3,8 @@
 #include "XtermRenderer.xcconfig"
 
 // ARM64 app release version, independent of inherited non-ARM64 targets.
-MARKETING_VERSION = 1.0.1
-CURRENT_PROJECT_VERSION = 897
+MARKETING_VERSION = 1.1.0
+CURRENT_PROJECT_VERSION = 900
 LINUXRUNNER_DIAGNOSTIC = NO
 
 // LinuxRunner identity and native environment manager. Override root bundle
@@ -15,13 +15,37 @@ IPHONEOS_DEPLOYMENT_TARGET = 15.0
 ARCHS = arm64
 SWIFT_VERSION = 5.0
 SWIFT_OBJC_BRIDGING_HEADER = $(SRCROOT)/app/LinuxRunner/BridgingHeader.h
-GCC_PREPROCESSOR_DEFINITIONS = $(inherited) LINUXRUNNER=1
+// LINUXRUNNER_JIT=YES builds the JIT-capable variant (app/xcode-meson.sh);
+// the translator still runs only after iOS grants executable memory. ISH_JIT
+// must match the runtime library (it changes shared structure layouts).
+LINUXRUNNER_JIT = NO
+LINUXRUNNER_JIT_DEFINES_YES = LINUXRUNNER_JIT_BUILD=1 ISH_JIT=1
+// LINUXRUNNER_VIRGL=YES links the GPU acceleration dependencies built by
+// scripts/build-gpu-deps.sh (upstream virglrenderer, libepoxy, ANGLE/Metal,
+// static) and the virtio-gpu host renderer; Settings › Graphics then offers it.
+LINUXRUNNER_VIRGL = NO
+LINUXRUNNER_VIRGL_DEFINES_YES = LINUXRUNNER_VIRGL_BUILD=1 EGL_EGLEXT_PROTOTYPES=1
+LINUXRUNNER_GPU_DEPS = $(SRCROOT)/build/gpu/$(PLATFORM_NAME)
+LINUXRUNNER_VIRGL_LDFLAGS_YES = "$(LINUXRUNNER_GPU_DEPS)/lib/libvirglrenderer.a" "$(LINUXRUNNER_GPU_DEPS)/lib/libepoxy.a" -Wl,-force_load,"$(LINUXRUNNER_GPU_DEPS)/lib/libangle.a" -Wl,-export_dynamic -framework IOSurface -framework QuartzCore -framework CoreGraphics
+// libepoxy resolves EGL/GLES entry points with dlsym at run time, so nothing
+// references them at link time: keep the linker from dead-stripping them.
+LINUXRUNNER_VIRGL_DEAD_CODE_STRIPPING_NO = YES
+LINUXRUNNER_VIRGL_DEAD_CODE_STRIPPING_YES = NO
+DEAD_CODE_STRIPPING = $(LINUXRUNNER_VIRGL_DEAD_CODE_STRIPPING_$(LINUXRUNNER_VIRGL))
+// Release stripping of an executable keeps only dynamically referenced
+// symbols, which removes those exports too; strip local symbols only.
+LINUXRUNNER_VIRGL_STRIP_STYLE_NO = all
+LINUXRUNNER_VIRGL_STRIP_STYLE_YES = non-global
+STRIP_STYLE = $(LINUXRUNNER_VIRGL_STRIP_STYLE_$(LINUXRUNNER_VIRGL))
+LINUXRUNNER_VIRGL_HEADERS_YES = "$(LINUXRUNNER_GPU_DEPS)/include/angle" "$(LINUXRUNNER_GPU_DEPS)/include"
+GCC_PREPROCESSOR_DEFINITIONS = $(inherited) LINUXRUNNER=1 $(LINUXRUNNER_JIT_DEFINES_$(LINUXRUNNER_JIT)) $(LINUXRUNNER_VIRGL_DEFINES_$(LINUXRUNNER_VIRGL))
+HEADER_SEARCH_PATHS = $(inherited) $(LINUXRUNNER_VIRGL_HEADERS_$(LINUXRUNNER_VIRGL))
 
 // Separate original LinuxRunner icon; inherited assets/licenses remain intact.
 ASSETCATALOG_COMPILER_APPICON_NAME = LinuxRunnerAppIcon
 
 // Optional public-API framebuffer presentation, not guest GPU translation.
-OTHER_LDFLAGS = $(inherited) -framework Metal -framework MetalKit -lc++ "$(SRCROOT)/build/shader-compiler/$(PLATFORM_NAME)/liblrshader.a"
+OTHER_LDFLAGS = $(inherited) -framework Metal -framework MetalKit -lc++ "$(SRCROOT)/build/shader-compiler/$(PLATFORM_NAME)/liblrshader.a" $(LINUXRUNNER_VIRGL_LDFLAGS_$(LINUXRUNNER_VIRGL))
 
 LINUXRUNNER_LAUNCH_STORYBOARD = LinuxRunnerLaunch
 

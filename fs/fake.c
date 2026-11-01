@@ -107,7 +107,7 @@ static struct fakefs_bind_mount g_bind_mounts[FAKEFS_MAX_BIND_MOUNTS];
 struct mount *g_fakefs_mount = NULL;
 
 /* Translate a resolved host path back to a Linux path for bind mounts.
- * e.g. "<application-data>/sessions/<sid>/attachments/file.mp4"
+ * e.g. "/Users/.../MinisChat/minis/<sid>/attachments/file.mp4"
  *   -> "/var/minis/attachments/file.mp4"
  * Returns true and writes to out_path if a match was found. */
 bool fakefs_bind_mount_resolve_path(const char *resolved, char *out_path, size_t out_size) {

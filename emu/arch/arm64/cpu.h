@@ -76,6 +76,8 @@ struct cpu_state {
     // For the page fault handler
     addr_t segfault_addr;
     bool segfault_was_write;
+    // Occupies existing padding before trapno; preserve crash-handler offsets.
+    bool segfault_was_exec;
 
     dword_t trapno;
 
@@ -101,6 +103,8 @@ struct cpu_state {
 
 static_assert(CPU_OFFSET(x0) == CPU_OFFSET(regs[0]), "register order");
 static_assert(CPU_OFFSET(x30) == CPU_OFFSET(regs[30]), "register order");
+static_assert(CPU_OFFSET(trapno) == CPU_OFFSET(segfault_was_write) + 4,
+              "fetch-fault marker must occupy padding without moving crash offsets");
 static_assert(sizeof(struct cpu_state) < 0xffff, "cpu struct is too big for vector gadgets");
 
 // PSTATE flag helpers

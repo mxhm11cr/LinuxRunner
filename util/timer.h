@@ -59,6 +59,7 @@ struct timer {
     bool active;
     bool thread_running;
     pthread_t thread;
+    pthread_cond_t wake; // timer_set/timer_free wake the sleeping thread through this, under lock
     timer_callback_t callback;
     void *data;
     lock_t lock;
@@ -77,5 +78,13 @@ struct timer_spec {
     struct timespec interval;
 };
 int timer_set(struct timer *timer, struct timer_spec spec, struct timer_spec *oldspec);
+// Relative value for an absolute deadline. A deadline that has already passed
+// must still fire (immediately); only a zero request disarms a timer.
+static inline struct timespec timespec_until_deadline(struct timespec deadline, clockid_t clockid) {
+    if (timespec_is_zero(deadline)) return deadline;
+    struct timespec value = timespec_subtract(deadline, timespec_now(clockid));
+    if (!timespec_positive(value)) value = (struct timespec) {0, 1};
+    return value;
+}
 
 #endif

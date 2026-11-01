@@ -28,9 +28,10 @@ struct mmu {
 #define MEM_READ 0
 #define MEM_WRITE 1
 #define MEM_WRITE_PTRACE 2
+#define MEM_EXEC 3
 
 struct mmu_ops {
-    // type is MEM_READ or MEM_WRITE
+    // type is MEM_READ, MEM_WRITE, MEM_WRITE_PTRACE or MEM_EXEC
     void *(*translate)(struct mmu *mmu, addr_t addr, int type);
     // Like translate(MEM_WRITE) but returns NULL instead of triggering CoW/GROWSDOWN.
     // Used by TLB to speculatively populate write permission on read miss.

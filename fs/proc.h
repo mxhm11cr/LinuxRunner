@@ -70,6 +70,7 @@ struct proc_children {
 #define PROC_CHILDREN(...) { .count = sizeof((struct proc_dir_entry[])__VA_ARGS__) / sizeof(struct proc_dir_entry), .entries = __VA_ARGS__ }
 
 extern struct proc_dir_entry proc_root;
+extern struct proc_dir_entry sys_root; // fs/sys.c
 extern struct proc_dir_entry proc_pid;
 extern struct proc_children proc_ish_children;
 

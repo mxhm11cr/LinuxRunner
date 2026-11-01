@@ -16,6 +16,7 @@
 #ifdef LINUXRUNNER
 #import "LinuxRunner/RuntimeBridge.h"
 #import "LinuxRunner/BootLog.h"
+#import "LinuxRunner/HostNameConfiguration.h"
 #endif
 #import "AppDelegate.h"
 #import "AppGroup.h"
@@ -251,6 +252,13 @@ static int bootError;
     generic_mknodat(AT_PWD, "/dev/location", S_IFCHR|0666, dev_make(DYN_DEV_MAJOR, DEV_LOCATION_MINOR));
 
     do_mount(&procfs, "proc", "/proc", "", 0);
+#ifdef LINUXRUNNER
+    // Software KMS device (fs/drm.c) and the sysfs entries describing it:
+    // CPU rendering only. Its /dev nodes exist only while a Hyprland desktop
+    // runs (session.sh), so other desktops see no DRM device.
+    setenv("ISH_SOFTWARE_DRM", "1", 0);
+    do_mount(&sysfs, "sysfs", "/sys", "", 0);
+#endif
     do_mount(&devptsfs, "devpts", "/dev/pts", "", 0);
 
 #ifdef LINUXRUNNER
@@ -341,6 +349,52 @@ void SyncHostname(void) {
 }
 #endif
 
+#if !ISH_LINUX && defined(LINUXRUNNER)
+// uname reports the configured host name (often "iPhone"), while a rootfs may
+// only map "linuxrunner". sudo resolves uname's name, not /etc/hostname.
+// Preserve user mappings and replace only our own marked alias. Never replace
+// symlinks, hard-linked configuration or an oversized/non-text hosts file.
+static void configureGuestHostAlias(void) {
+    struct uname identity; do_uname(&identity);
+    NSString *name=[NSString stringWithUTF8String:identity.hostname];
+    struct statbuf before;
+    if (generic_statat(AT_PWD,"/etc/hosts",&before,false)<0 ||
+        !S_ISREG(before.mode) || before.nlink!=1 || before.size>65536) return;
+    struct fd *input=generic_open("/etc/hosts",O_RDONLY_|O_NOFOLLOW_,0);
+    if (IS_ERR(input)) return;
+    NSMutableData *data=[NSMutableData dataWithLength:before.size];
+    size_t read=0; BOOL valid=YES;
+    while(read<data.length) {
+        ssize_t n=input->ops->read(input,(char *)data.mutableBytes+read,data.length-read);
+        if(n<=0) {valid=NO;break;} read+=n;
+    }
+    fd_close(input);
+    if(!valid) return;
+    NSString *old=[[NSString alloc]initWithData:data encoding:NSUTF8StringEncoding];
+    NSString *updated=LRHostsForName(old,name);
+    if(!updated || [updated isEqual:old]) return;
+    NSString *path=[NSString stringWithFormat:@"/etc/.linuxrunner-hosts-%@",NSUUID.UUID.UUIDString];
+    struct fd *output=generic_open(path.UTF8String,O_WRONLY_|O_CREAT_|O_EXCL_|O_NOFOLLOW_,before.mode&0777);
+    if(IS_ERR(output)) return;
+    NSData *bytes=[updated dataUsingEncoding:NSUTF8StringEncoding];size_t written=0;
+    while(written<bytes.length) {
+        ssize_t n=output->ops->write(output,(const char *)bytes.bytes+written,bytes.length-written);
+        if(n<=0) break; written+=n;
+    }
+    int sync=output->ops->fsync?output->ops->fsync(output):0;
+    fd_close(output);
+    int owner=generic_setattrat(AT_PWD,path.UTF8String,make_attr(uid,before.uid),false);
+    if(!owner) owner=generic_setattrat(AT_PWD,path.UTF8String,make_attr(gid,before.gid),false);
+    struct statbuf now;
+    BOOL same=generic_statat(AT_PWD,"/etc/hosts",&now,false)==0 &&
+        now.inode==before.inode && now.size==before.size && now.mtime==before.mtime && now.mtime_nsec==before.mtime_nsec;
+    if(written==bytes.length && sync==0 && owner==0 && same &&
+        generic_renameat(AT_PWD,path.UTF8String,AT_PWD,"/etc/hosts")==0)
+        [LRRuntimeBridge logCategory:@"NETWORK" event:@"Local hostname alias updated; existing hosts mappings preserved"];
+    else generic_unlinkat(AT_PWD,path.UTF8String);
+}
+#endif
+
 - (void)configureDns {
 #if !ISH_LINUX
 #ifdef LINUXRUNNER
@@ -389,6 +443,9 @@ void SyncHostname(void) {
 #endif
     
     current = pid_get_task(1);
+#ifdef LINUXRUNNER
+    configureGuestHostAlias();
+#endif
     struct fd *fd = generic_open("/etc/resolv.conf", O_WRONLY_ | O_CREAT_ | O_TRUNC_, 0666);
     if (!IS_ERR(fd)) {
         fd->ops->write(fd, resolvConf.UTF8String, [resolvConf lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
@@ -437,6 +494,8 @@ void SyncHostname(void) {
 #ifdef LINUXRUNNER
 - (int)startLinuxRuntime {
     if (![LRRuntimeBridge beginBoot]) return bootError;
+    // Before the first guest block: the JIT starts only if iOS already allows it.
+    [LRRuntimeBridge prepareExecutionBackendAtLaunch];
     CFAbsoluteTime start = CFAbsoluteTimeGetCurrent();
     bootError = [self boot];
     if (bootError == 0) [LRRuntimeBridge applySharedFolderOwnership];
@@ -492,6 +551,11 @@ void NetworkReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReach
     if (hostnameOverride) {
         uname_hostname_override = strdup(hostnameOverride.UTF8String);
     }
+#ifdef LINUXRUNNER
+    // Automatic boot runs before this preference is applied. Refresh the
+    // rootfs alias after choosing the final uname hostname as well.
+    [self configureDns];
+#endif
 #endif
     
     [UserPreferences.shared observe:@[@"shouldDisableDimming"] options:NSKeyValueObservingOptionInitial

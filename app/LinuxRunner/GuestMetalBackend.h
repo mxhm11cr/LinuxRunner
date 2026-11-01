@@ -718,6 +718,7 @@ static int LRGuestMetalDrawProgramIndexed(void *context,const struct lr_gl_draw 
       if(f!=UINT32_MAX){[e setFragmentTexture:complete?t.texture:c.incompleteTexture atIndex:f];[e setFragmentSamplerState:complete?t.sampler:c.incompleteSampler atIndex:f];}
     }else{const void *data=r->uniform[i];unsigned char boolean[64]={0};
       if(lr_gl_type_kind(reflection.uniform[i].type)==3){for(unsigned j=0;j<lr_gl_type_components(reflection.uniform[i].type);j++){uint32_t b;memcpy(&b,r->uniform[i]+j,4);boolean[j]=!!b;}data=boolean;}
+      float columns[16]={0};if(reflection.uniform[i].type==0x8b5b){for(unsigned col=0;col<3;col++)memcpy(columns+col*4,r->uniform[i]+col*3,12);data=columns;}   // GL mat3 is 9 packed floats; MSL float3x3 columns are 16 bytes
       if(v!=UINT32_MAX)[e setVertexBytes:data length:64 atIndex:v];if(f!=UINT32_MAX)[e setFragmentBytes:data length:64 atIndex:f];}
   }
   if(indices){NSUInteger offset=(c.vertexOffset+255)&~(NSUInteger)255;memcpy((char *)c.vertexArena.contents+offset,indices,indexBytes);c.vertexOffset=offset+indexBytes;

@@ -1,6 +1,42 @@
 # Changelog
 
-User-visible changes follow the Added / Changed / Fixed structure. Unreleased entries remain drafts until the maintainer approves publication; use the actual publication date when releasing.
+User-visible changes follow Added / Changed / Fixed / Known Issues.
+
+## [1.1.0] — 2026-11-01 (Build 900)
+
+### Added
+
+- External desktop output with compatible wired/AirPlay receivers and an iPhone touchpad control surface.
+- Metal-backed virtual GPU integration through Mesa/virgl, virglrenderer and ANGLE.
+- LXQt, Arch Enlightenment, Wayfire and experimental Arch Hyprland desktop selection/installation.
+- Optional iOS ARM64 JIT build and execution-status/activation controls, with interpreter fallback.
+- Host network diagnostics, Linux interface/address/route compatibility and per-environment file sharing.
+
+### Changed
+
+- ARM64 NEON comparisons/pairwise operations, exclusive stores, memory dispatch and dirty-page filtering.
+- JIT register checkpoint handling and ARMv8 AES/SHA translation; validated PMULL, SHA1/SHA2 and CRC32 capability reporting.
+- Desktop controls, landscape 960 × 540 defaults, resolution preferences and reconnection behavior.
+- Graphical application launch contexts and compatibility, including maintainer-tested Vesktop functionality.
+- Documentation, requirements, installation and screenshots for the major release.
+
+### Fixed
+
+- Vector RBIT incorrectly behaving as NOT and JIT out-of-range LDUR guest-PC corruption.
+- signalfd poll/epoll readiness, concurrent close and shared memfd mapping-growth cases covered by runtime contracts.
+- Batched/malformed netlink route replies and fabricated/empty network reports.
+- Wayland application launch context and Arch Wayfire GPU startup integration.
+- Hyprland's duplicate pointer overlay and saved Fit preferences retaining an unwanted portrait size.
+- Release stripping removing dynamically resolved EGL exports from the GPU-enabled executable.
+
+### Known Issues
+
+- Hyprland is experimental, requires at least 8 GB RAM and Arch, and can need Retry on first launch. Metal is recommended.
+- Metal must be explicitly selected and followed by a full app restart. GPU/API coverage is incomplete.
+- JIT activation is restricted by the host platform and can make short programs slower.
+- Alpine desktop coverage is limited; Debian Enlightenment and Arch Plasma are not validated working paths.
+- Bluetooth networking is unsupported. Receiver-specific external-output behavior and older OS compatibility vary.
+- iOS termination ends Linux processes; demanding applications can exceed memory limits.
 
 ## [1.0.1] — 2026-10-27
 

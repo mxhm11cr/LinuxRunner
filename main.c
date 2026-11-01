@@ -277,6 +277,10 @@ int main(int argc, char *const argv[]) {
         return err;
     }
     do_mount(&procfs, "proc", "/proc", "", 0);
+    // sysfs describes only the software DRM device (fs/sys.c).
+    const char *software_drm = getenv("ISH_SOFTWARE_DRM");
+    if (software_drm && !strcmp(software_drm, "1"))
+        do_mount(&sysfs, "sysfs", "/sys", "", 0);
     do_mount(&devptsfs, "devpts", "/dev/pts", "", 0);
     // Same guest Metal device node the app creates at boot (app/AppDelegate.m):
     // isolated per-open contexts, usable by ordinary desktop users.

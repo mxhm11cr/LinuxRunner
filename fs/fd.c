@@ -752,9 +752,15 @@ static dword_t fcntl_description(struct fd *fd, fd_t f, dword_t cmd, addr_t arg)
             int result = fd->memfd->seals;
             if (cmd == 1033) {
                 uint_t requested = (uint_t)arg;
-                if (requested & ~(F_SEAL_SEAL_ | F_SEAL_SHRINK_ | F_SEAL_GROW_)) result = _EINVAL;
+                if (requested & ~(F_SEAL_SEAL_ | F_SEAL_SHRINK_ | F_SEAL_GROW_ | F_SEAL_ANY_WRITE_)) {
+                    result = _EINVAL;
+                    const char *trace = getenv("ISH_DMABUF_TRACE");
+                    if (trace && trace[0] == '1') printk("MEMFD_SEAL_REFUSED requested=%#x pid=%d\n", requested, current->pid);
+                }
                 else if ((fd_getflags(fd) & O_ACCMODE_) == O_RDONLY_ ||
                          (fd->memfd->seals & F_SEAL_SEAL_)) result = _EPERM;
+                // Linux mapping_deny_writable: no shared mapping may still write.
+                else if ((requested & F_SEAL_WRITE_) && fd->memfd->maywrite_maps) result = _EBUSY;
                 else { fd->memfd->seals |= requested; result = 0; }
             }
             unlock(&fd->memfd->lock);

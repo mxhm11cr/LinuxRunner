@@ -19,6 +19,9 @@ struct memfd_state {
     lock_t lock;
     unsigned seals;
     atomic_uint descriptions;
+    // Shared mappings that are or may become writable (Linux i_mmap_writable).
+    // F_SEAL_WRITE is refused (EBUSY) while any exist. Changed under lock.
+    unsigned maywrite_maps;
     int backing_fd;
     struct statbuf stat;
     char name[256];
@@ -26,6 +29,9 @@ struct memfd_state {
 #define F_SEAL_SEAL_ 1U
 #define F_SEAL_SHRINK_ 2U
 #define F_SEAL_GROW_ 4U
+#define F_SEAL_WRITE_ 8U
+#define F_SEAL_FUTURE_WRITE_ 16U
+#define F_SEAL_ANY_WRITE_ (F_SEAL_WRITE_ | F_SEAL_FUTURE_WRITE_)
 
 struct fd {
     atomic_uint refcount;
@@ -83,9 +89,13 @@ struct fd {
             _Atomic bool unix_passcred; // locked by peer_lock
             lock_t unix_send_lock; // orders native ancillary markers and metadata
             // Opt-in route-netlink state (socketpair reply endpoint).
+            struct uevent_socket *uevent; // protocol-15 state, independent of route dumps
             int netlink_peer_fd;
             uint32_t netlink_port, netlink_groups;
             bool netlink_bound;
+            struct lr_netlink_replies *netlink_replies;
+            struct lr_netlink_replies *netlink_replies_tail;
+            size_t netlink_reply_bytes;
             struct list netlink_link;
             cond_t unix_got_peer;
             // Queue of struct scm for sending file descriptors

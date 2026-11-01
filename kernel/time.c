@@ -500,10 +500,8 @@ int_t sys_timer_settime(dword_t timer_id, int_t flags, addr_t new_value_addr, ad
     struct posix_timer *timer = &current->group->posix_timers[timer_id];
     struct timer_spec spec = timer_spec_to_real(value);
     struct timer_spec old_spec;
-    if (flags & TIMER_ABSTIME_) {
-        struct timespec now = timespec_now(timer->timer->clockid);
-        spec.value = timespec_subtract(spec.value, now);
-    }
+    if (flags & TIMER_ABSTIME_)
+        spec.value = timespec_until_deadline(spec.value, timer->timer->clockid);
     int err = timer_set(timer->timer, spec, &old_spec);
     unlock(&current->group->lock);
     if (err < 0)
@@ -614,12 +612,11 @@ int_t sys_timerfd_settime(fd_t f, int_t flags, addr_t new_value_addr, addr_t old
         return _EFAULT;
     struct timer_spec spec = timer_spec_to_real(value);
     struct timer_spec old_spec;
-    if (flags & TIMER_ABSTIME_) {
-        struct timespec now = timespec_now(fd->timerfd.timer->clockid);
-        spec.value = timespec_subtract(spec.value, now);
-    }
+    if (flags & TIMER_ABSTIME_)
+        spec.value = timespec_until_deadline(spec.value, fd->timerfd.timer->clockid);
 
     lock(&fd->lock);
+    fd->timerfd.expirations = 0; // arming or disarming discards unread expirations, as on Linux
     int err = timer_set(fd->timerfd.timer, spec, &old_spec);
     unlock(&fd->lock);
     if (err < 0)

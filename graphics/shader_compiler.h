@@ -47,6 +47,8 @@ static inline unsigned lr_gl_type_kind(unsigned type){
 }
 static inline unsigned lr_gl_type_components(unsigned type){
  if(type==0x8b5c)return 16;
+ if(type==0x8b5b)return 9;   // mat3: three packed vec3 columns (MSL pads each to 16 bytes)
+ if(type==0x8b5a)return 4;
  if(type>=0x8b50&&type<=0x8b52)return type-0x8b50+2;
  if(type>=0x8b53&&type<=0x8b55)return type-0x8b53+2;
  if(type>=0x8dc6&&type<=0x8dc8)return type-0x8dc6+2;

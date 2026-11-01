@@ -2,6 +2,6 @@
 <Workspace
    version = "1.0">
    <FileRef
-      location = "self:">
+      location = "self:/Users/tbodt/Developer/projects/ish/deps/libarchive-asdfasdfasdf/libarchive.xcodeproj">
    </FileRef>
 </Workspace>

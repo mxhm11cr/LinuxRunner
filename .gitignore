@@ -28,7 +28,7 @@ e2e_out/
 # Legacy bench scripts (replaced by benchmark/)
 /bench/
 
-# Release preparation (1.0.0): never commit build outputs, signing material or local data
+# Never commit build outputs, signing material or local data
 DerivedData/
 *.xcarchive
 *.ipa

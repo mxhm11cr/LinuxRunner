@@ -44,7 +44,7 @@
     },
     {
       "name": "desktop-components.sh",
-      "sha256": "ce566c57a2d1ff0d35fffaa2d7e300aa0ee561ae9e8ea08b2cd14adc4cdb2cd3",
+      "sha256": "70d3176a1d7b0ddc12a4df4906c05f5abaa5d4b3999a4bf66c60dbbb49e0f26c",
       "mode": "0755"
     },
     {
@@ -54,7 +54,7 @@
     },
     {
       "name": "desktop-env.sh",
-      "sha256": "182d7b1225728db5e944c1b79446e0a9be6769aea329db8f476cedb2b2112503",
+      "sha256": "48d8ffa622aa05058d6379c0f7b298d6a69e44775510bab8c99dcb9da9df44e2",
       "mode": "0755"
     },
     {
@@ -84,7 +84,7 @@
     },
     {
       "name": "desktop-profile.sh",
-      "sha256": "848780e2afe46b2852da846d4956369a4f32831e162bc142d0643d3b41c81d6a",
+      "sha256": "a5ca752fae6083c67680f5d194f2972c54971b982f2f04a4abe0c50bff8699c6",
       "mode": "0755"
     },
     {
@@ -288,6 +288,11 @@
       "mode": "0644"
     },
     {
+      "name": "hyprland-preset.lua",
+      "sha256": "8590ce1eacf0da1f6ad03a3c1dc659a4080e29d8c2baf8d25f28a4eaa1c76f7b",
+      "mode": "0644"
+    },
+    {
       "name": "install-browser.sh",
       "sha256": "0da2591d7a81f506375d3dd3461e87f67df8aaf76a9ef4a7330d5388a55b7583",
       "mode": "0755"
@@ -309,12 +314,12 @@
     },
     {
       "name": "installer-run.sh",
-      "sha256": "214fb1947abe313d018e59f1c43976e7c4298b6ed65d800e92516688e3d1c889",
+      "sha256": "02f0d885bd489f862d9b27842495bfc6bf487514926dc8a3ad4ab25fe77280b7",
       "mode": "0755"
     },
     {
       "name": "launch.sh",
-      "sha256": "f99477ea215599ae4ff142c5fec379b8e7fb0559c9040fa5887914d20683a335",
+      "sha256": "8652865d53054795c8313e368b77e72aeb06e7f598642af3a78aed8265cb8d8f",
       "mode": "0755"
     },
     {
@@ -350,6 +355,16 @@
     {
       "name": "linuxrunner-mesa-glxheads",
       "sha256": "299019974eae2b7b076e00d1c73f201e23f703c1f7d837808cf9b991da598aed",
+      "mode": "0644"
+    },
+    {
+      "name": "linuxrunner-wallpaper.png",
+      "sha256": "d6de26ecd9d157ccb3d3ea11d21a574f93b74960f846427a6ccd48c983685b51",
+      "mode": "0644"
+    },
+    {
+      "name": "lr-kms-bridge.c",
+      "sha256": "9b1916f9c7efc4ba17623004f25457e9d2ed32d97a6eaff7e75ee2c0dfcbdd7f",
       "mode": "0644"
     },
     {
@@ -394,7 +409,7 @@
     },
     {
       "name": "session.sh",
-      "sha256": "43db899d928dac3810c89d9b6ef897d9e023689a791fdb09f707814244a55e45",
+      "sha256": "7d33bc02a949ae221e24f9bf5861a8fb0238211b3c125d2f1d1a2bb46bd60ba0",
       "mode": "0755"
     },
     {
@@ -420,6 +435,16 @@
     {
       "name": "terminal-notices.txt",
       "sha256": "eb8209ed950389276daab13795cfbe3dd4c214865ce2a7478c60136bee838ac3",
+      "mode": "0644"
+    },
+    {
+      "name": "waybar-config.jsonc",
+      "sha256": "20a56dd60d2cfeaadbe075992f86e504801a2ef1293ac912413c1270b422b119",
+      "mode": "0644"
+    },
+    {
+      "name": "waybar-style.css",
+      "sha256": "5375b791950468ebdd4059acbbbd1bb89db7f76d7662e63cc9231bb41ee8eebb",
       "mode": "0644"
     },
     {

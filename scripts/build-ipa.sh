@@ -42,6 +42,13 @@ args=("LINUXRUNNER_CMAKE=$cmake_path" -project iSH.xcodeproj -scheme LinuxRunner
       IPHONEOS_DEPLOYMENT_TARGET=15.0 "LINUXRUNNER_DIAGNOSTIC=$diagnostic"
       "ROOT_BUNDLE_IDENTIFIER=${BUNDLE_ID:-dev.linuxrunner.app}")
 if [[ $diagnostic == YES ]]; then args+=(CODE_SIGN_ENTITLEMENTS=app/LinuxRunner/PrivateContainer.entitlements); fi
+# Optional variants (app/AppARM64.xcconfig): JIT-capable runtime, GPU device
+# (needs scripts/build-gpu-deps.sh iphoneos first). Both stay off until enabled in Settings.
+if [[ ${LINUXRUNNER_JIT:-NO} == YES ]]; then args+=(LINUXRUNNER_JIT=YES); fi
+if [[ ${LINUXRUNNER_VIRGL:-NO} == YES ]]; then
+    test -f build/gpu/iphoneos/lib/libangle.a || { echo "GPU dependencies missing: run scripts/build-gpu-deps.sh iphoneos" >&2; exit 1; }
+    args+=(LINUXRUNNER_VIRGL=YES)
+fi
 if [[ $mode == unsigned ]]; then
     args+=(CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO)
 else

@@ -72,6 +72,51 @@ pair above measures that implementation and records the changed integration
 source hashes, unchanged control hashes, standalone runtime source hashes and
 applied runtime patch hash, together with both binary UUIDs.
 
+## Supported Arch reference
+
+A second paired physical-device run used the installed **Arch Linux ARM**
+reference on the same iPad. Its supported default desktop is Openbox, LXQt
+panel and PCManFM-Qt, using Xvfb/RFB at **960 × 540**, the Core Graphics
+presenter, socket image capture and default VNC timing. Both runs passed
+desktop readiness, a managed xterm launch, synthesized touch/text input and
+visible `aarch64` output. The Arch terminal separately reported `ID=archarm`,
+glibc `2.43+r22+g8362e8ce10b2-2`, Bash `5.3.20-1` and Pacman
+`7.1.0.r9.g54d9411-3`. No test password or regular account was created.
+
+The before build reverses the three-file storage runtime diff from `d141978`
+to `0d015d3`; the after build restores it. The same integration sources and
+build settings hold the native Unix-socket path fix, graphics code and test
+instrumentation fixed. That socket fix was required for Arch's D-Bus desktop
+startup and is outside this storage PR. Comparing 676 source/control file
+hashes found differences only in the three storage runtime files. This
+checks source identity; it is not a binary-equivalence proof.
+
+The second through fourth fifteen-second native samples cover approximately
+30–60 seconds after sampling starts. The test holds interaction for 70 seconds
+after readiness, and its xterm broker waits 75 seconds. The selected windows
+contain no pointer/key events, no display updates and nominal thermal state.
+
+| Storage policy | Window | CPU seconds | CPU use (100% = one core) |
+| --- | ---: | ---: | ---: |
+| Background walk continues | 30.000 s | 34.377 s | 114.6% |
+| Shared activity pauses the walk | 30.004 s | 9.893 s | 33.0% |
+
+This is **71.2% less process CPU time** in one sequential paired quiet window.
+The same Arch, SteamOS and Alpine installations remained present in both runs.
+Since storage accounting walks every environment, this measures Arch desktop
+use with those coinstalled roots, **not an Arch-only filesystem**. It does not
+establish an FPS, interaction-latency, sustained-performance, battery-life or
+hardware-keyboard improvement. The different desktops and graphics settings
+also prevent treating the Arch and SteamOS numbers as an apples-to-apples
+graphics comparison. There were no randomized or repeated trials.
+
+[Allowlisted Arch counters and provenance](../tests/linuxrunner/diagnostics/storage-scan-arch-ipad-2026-11-02.json)
+record the binary UUIDs, selected raw counters, changed/runtime control hashes,
+source-manifest fingerprints and applied runtime patch hash. Raw device logs
+and integration source snapshots remain private. This PR is not a standalone
+public integration reproduction kit. Runtime code remains unchanged from
+`0d015d3`; this addition records supported-distribution evidence.
+
 ## Recalculate and reproduce
 
 The fresh [allowlisted snapshots](../tests/linuxrunner/diagnostics/storage-scan-ipad-shared-activity-2026-11-02.json)
@@ -82,6 +127,7 @@ From the repository root:
 python3 - <<'PY'
 import json
 from pathlib import Path
+# Use storage-scan-arch-ipad-2026-11-02.json for the supported Arch pair.
 path = Path('tests/linuxrunner/diagnostics/storage-scan-ipad-shared-activity-2026-11-02.json')
 for name, run in json.loads(path.read_text())['runs'].items():
     first, last = run['samples'][0], run['samples'][-1]

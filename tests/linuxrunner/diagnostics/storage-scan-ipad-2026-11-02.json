@@ -4,7 +4,7 @@
   "hardware": "iPad Air 13-inch (M4)",
   "os": "iPadOS 27.2",
   "workload": "Idle KDE Plasma X11 desktop, 1560x1112, ARM64 interpreter, virgl/ANGLE/Metal; before scripted interaction",
-  "provenance": "Paired local SteamOS integration builds based on d141978. Graphics and UI workload held fixed; after adds only the storage-lifecycle patch in this PR. Integration support and temporary sampling instrumentation are outside this PR.",
+  "provenance": "Paired local SteamOS integration builds based on d141978. Graphics and UI workload held fixed; after adds the initial cover-based storage-lifecycle patch at 554949d1a001699d4af8237ff8a03a8c75dcdf15. The subsequent shared-activity fix is not measured here. Integration support and temporary sampling instrumentation are outside this PR.",
   "sampling": "Cumulative getrusage(RUSAGE_SELF) user+system CPU seconds and CLOCK_MONOTONIC snapshots. Three samples, 30-60 seconds after metrics began. thermal_state 0 means nominal. No typed input, device identifiers, paths or raw logs included.",
   "runs": {
     "before": {

@@ -584,7 +584,9 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
 @property LRAudioBridge *audio; // session sound; lives as long as the session, not the viewer
 @property uint16_t audioPort;
 @property BOOL viewerVisible;
+@property NSUUID *storageActivitySource;
 @property BOOL trackpadRequested;
+- (void)updateStorageActivity;
 @end
 enum { LRStartIdle, LRStartChecking, LRStartRepairing, LRStartSession, LRStartFailed };
 // ---- External display (second screen) ----------------------------------
@@ -767,8 +769,14 @@ static NSString *DesktopDegradedNotice(NSString *state);
 - (instancetype)initDesktop{if((self=[super init])){_desktopMode=YES;_autoLaunchPending=YES;}return self;}
 + (NSURL *)prepareSupport:(NSError **)error { return PrepareSupport(error); }
 - (instancetype)initWithLaunchConfiguration:(NSDictionary *)configuration{if((self=[super init])){_launchConfiguration=[configuration copy];_autoLaunchPending=YES;}return self;}
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    if(!_storageActivitySource)_storageActivitySource=[NSUUID UUID];
+    [LRGraphicalActivity.shared setActive:YES forSource:_storageActivitySource];
+}
 - (void)viewDidAppear:(BOOL)animated{[super viewDidAppear:animated];
     _viewerVisible=YES;_surface.presentationSuppressed=_surface.relativeTouchpad;
+    [self updateStorageActivity];
     if(_surface.latestPixels)[_surface presentPixels:_surface.latestPixels width:_surface.pixelWidth height:_surface.pixelHeight];
     if(_desktopMode)[LRRuntimeBridge desktopTrace:@"02 view" result:@"ok" detail:[NSString stringWithFormat:@"viewDidAppear controller=desktop auto-launch=%d window=%d size=%.0fx%.0f",_autoLaunchPending,self.view.window!=nil,self.view.bounds.size.width,self.view.bounds.size.height]];
     else [LRRuntimeBridge desktopTrace:@"02 view" result:@"info" detail:[NSString stringWithFormat:@"viewDidAppear controller=%@",_launchConfiguration?@"application":@"gui-test"]];
@@ -780,6 +788,12 @@ static NSString *DesktopDegradedNotice(NSString *state);
     if(self.presentedViewController&&!self.isBeingDismissed&&!self.navigationController.isBeingDismissed)return;
     _viewerVisible=NO;
     if(_desktopMode){_surface.presentationSuppressed=YES;[_surface.metal clearFrame];_surface.image.image=nil;[self externalDisplayChanged:nil];}
+    [self updateStorageActivity];
+}
+- (void)updateStorageActivity {
+    BOOL active=_viewerVisible||(_desktopMode&&_client&&[self externalOutputActive]);
+    if(!_storageActivitySource){if(!active)return;_storageActivitySource=[NSUUID UUID];}
+    [LRGraphicalActivity.shared setActive:active forSource:_storageActivitySource];
 }
 - (BOOL)externalOutputActive{return lr_external_output(LRExternalOutputEnabled(),LRCurrentExternalDisplay!=nil);}
 // Reuse the same RFB transport, never launch a second server for a monitor.
@@ -797,6 +811,7 @@ static NSString *DesktopDegradedNotice(NSString *state);
     if(!_client&&_sessionTerminal.sessionPid>0&&_startState!=LRStartFailed)[self connectDesktopViewer];
     if(active&&_surface.latestPixels)[LRCurrentExternalDisplay presentFrame:_surface.latestPixels width:_surface.pixelWidth height:_surface.pixelHeight damage:(LRFrameDamage){0,0,_surface.pixelWidth,_surface.pixelHeight}];
     [self resumeRequestedTrackpad];
+    [self updateStorageActivity];
 }
 - (void)viewDidLoad{
     [super viewDidLoad];if(_desktopMode){[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(externalDisplayChanged:) name:LRExternalDisplayChangedNotification object:nil];[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(externalDisplayChanged:) name:NSUserDefaultsDidChangeNotification object:nil];}[LRRuntimeBridge desktopTrace:@"02 view" result:@"start" detail:[NSString stringWithFormat:@"viewDidLoad controller=%@",_desktopMode?@"desktop":_launchConfiguration?@"application":@"gui-test"]];self.view.backgroundColor=UIColor.systemBackgroundColor;self.title=[LRRuntimeBridge activeEnvironmentIsDebian]?@"Debian Applications":[LRRuntimeBridge activeEnvironmentIsArch]?@"Arch Applications":@"Alpine Applications";_frameLock=[NSLock new];_compactControls=[NSMutableArray new];if(_desktopMode)self.title=@"LinuxRunner Desktop";
@@ -884,7 +899,7 @@ static NSString *DesktopDegradedNotice(NSString *state);
             }
         }}}];
 }
-- (void)dealloc{[NSNotificationCenter.defaultCenter removeObserver:self];if(_exitObserver)[NSNotificationCenter.defaultCenter removeObserver:_exitObserver];[_client stop];[_metricsTimer invalidate];[_restartTimer invalidate];}
+- (void)dealloc{NSUUID *source=_storageActivitySource;if(source)dispatch_async(dispatch_get_main_queue(),^{[LRGraphicalActivity.shared setActive:NO forSource:source];});[NSNotificationCenter.defaultCenter removeObserver:self];if(_exitObserver)[NSNotificationCenter.defaultCenter removeObserver:_exitObserver];[_client stop];[_metricsTimer invalidate];[_restartTimer invalidate];}
 - (void)message:(NSString *)text{_status.text=text;[LRRuntimeBridge logCategory:@"GUI" event:text];if(_desktopMode)[LRRuntimeBridge desktopTrace:@"status" result:@"info" detail:text];}
 #if TARGET_OS_SIMULATOR
 - (void)simulatorClose{if(self.viewIfLoaded.window)[self done];}
@@ -1512,6 +1527,7 @@ static NSString *DesktopDegradedNotice(NSString *state){
     if(_desktopMode){[LRRuntimeBridge desktopTrace:@"11 viewer" result:@"ok" detail:[NSString stringWithFormat:@"RFB client created port=%u",port]];
         [LRRuntimeBridge desktopTrace:@"12 renderer" result:_surface?@"ok":@"fail" detail:[NSString stringWithFormat:@"surface=%d metal=%d hidden=%d in-window=%d size=%.0fx%.0f",_surface!=nil,_surface.metal!=nil,_surface.hidden,_surface.window!=nil,_surface.bounds.size.width,_surface.bounds.size.height]];}
     _client=[[LRRFBClient alloc] initWithPort:port password:password];_surface.client=_client;_startedAt=NSDate.date;_frames=0;_bytes=0;_applicationWindowMapped=NO;
+    [self updateStorageActivity];
     __weak typeof(self) weak=self;
     __weak LRRFBClient *thisClient=_client;
     _client.patchFrameHandler=^(NSData *patch,uint16_t w,uint16_t h,uint64_t frames,uint64_t bytes,LRFrameDamage damage){
@@ -1593,6 +1609,7 @@ static NSString *DesktopDegradedNotice(NSString *state){
     if(_client)[self metrics];
     if(_sessionURL)[[NSData data] writeToURL:[_sessionURL URLByAppendingPathComponent:@"stop"] atomically:YES];
     [_surface releaseInput];[self resetModifierButtons];[_client stop];_client.frameHandler=nil;_client.damageFrameHandler=nil;_client.patchFrameHandler=nil;_client.statusHandler=nil;_client=nil;_surface.client=nil;
+    [self updateStorageActivity];
     [_metricsTimer invalidate];_metricsTimer=nil;
     [_surface resignFirstResponder];
     [_frameLock lock];_pendingFrame=nil;_pendingDamage=(LRFrameDamage){0};_pendingWidth=_pendingHeight=0;_presentationPending=NO;[_frameLock unlock];
@@ -1618,6 +1635,7 @@ static NSString *DesktopDegradedNotice(NSString *state){
 - (void)detachViewer{
     [_surface releaseInput];[self resetModifierButtons];[_surface resignFirstResponder];
     _client.frameHandler=nil;_client.damageFrameHandler=nil;_client.patchFrameHandler=nil;_client.statusHandler=nil;[_client stop];_client=nil;_surface.client=nil;
+    [self updateStorageActivity];
     [_metricsTimer invalidate];_metricsTimer=nil;[_frameLock lock];_pendingFrame=nil;_pendingDamage=(LRFrameDamage){0};_pendingWidth=_pendingHeight=0;_presentationPending=NO;[_frameLock unlock];
     [LRRuntimeBridge logCategory:@"DESKTOP" event:@"viewer detached; owned guest desktop retained within iOS lifecycle limits"];
 }

@@ -6,6 +6,22 @@ import AVFoundation
 import Network
 import Darwin
 
+// One process-wide gate: scenes and desktop File Sharing own separate managers.
+// Each native viewer owns a token, including while its external transport is
+// retained after dismissal. Releasing one viewer cannot unpause another one.
+@MainActor @objc(LRGraphicalActivity) final class GraphicalActivity: NSObject {
+    @objc static let shared = GraphicalActivity()
+    @Published private(set) var active = false
+    private var sources = Set<UUID>()
+
+    @objc(setActive:forSource:) func setActive(_ active: Bool, forSource source: UUID) {
+        if active { sources.insert(source) } else { sources.remove(source) }
+        let next = !sources.isEmpty
+        if next != self.active { self.active = next }
+    }
+}
+
+
 @MainActor final class EnvironmentManager: ObservableObject {
     @Published var environments: [LinuxEnvironment] = []
     @Published var storage: [UUID: Int64] = [:]
@@ -22,6 +38,7 @@ import Darwin
     private var storageMeasurement: Task<Void, Never>?
     private var storageGeneration = UUID()
     private var graphicalForeground = false
+    private var graphicalActivityObserver: AnyCancellable?
     private var catalogWritable = true
     private var observers: [NSObjectProtocol] = []
 
@@ -53,6 +70,7 @@ import Darwin
         observers.append(NotificationCenter.default.addObserver(forName: NSNotification.Name("ProcessExitedNotification"), object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         })
+        graphicalActivityObserver = GraphicalActivity.shared.$active.sink { [weak self] in self?.setGraphicalForeground($0) }
         refresh()
     }
     deinit { storageMeasurement?.cancel(); observers.forEach(NotificationCenter.default.removeObserver) }
@@ -104,7 +122,7 @@ import Darwin
             await self?.setStorage(measured, generation: generation)
         }
     }
-    func setGraphicalForeground(_ active: Bool) {
+    private func setGraphicalForeground(_ active: Bool) {
         guard active != graphicalForeground else { return }
         graphicalForeground = active
         if active {
@@ -413,7 +431,6 @@ struct ManagerView: View {
             Button("Stop", role: .destructive) { LRRuntimeBridge.stopDesktopSession(); desktopSummary = LRRuntimeBridge.desktopSessionSummary() }
         } message: { Text("Save documents first. This closes applications owned by the desktop; persistent files and the terminal environment remain.") }
         .fullScreenCover(item: $graphical) { request in NativeController(controller: presentedController(request)) }
-        .onChange(of: graphical != nil) { manager.setGraphicalForeground($0) }
         .sheet(isPresented: $diagnostics) { DeveloperDiagnosticsView() }
         .sheet(isPresented: $desktopSettings) {
             if let navigation = LRRuntimeBridge.desktopController() as? UINavigationController,

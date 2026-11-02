@@ -32,6 +32,11 @@ import Foundation
     let before = StorageUsage.bytes(root)
     try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("alias"), withDestinationURL: other)
     let after = StorageUsage.bytes(root); print("storage before=\(before) after=\(after)"); precondition(after == before)
+    precondition(StorageUsage.measuredBytes(root, isCancelled: { true }) == nil)
+    var visited = 0
+    let interrupted = StorageUsage.measuredBytes(root, isCancelled: { visited += 1; return visited >= 5 })
+    precondition(interrupted == nil && visited == 5)
+    precondition(StorageUsage.measuredBytes(root, isCancelled: { false }) == after)
     let crashes = root.appendingPathComponent("crashes")
     let crashStore = try GuestCrashStore(directory: crashes)
     for n in 0..<25 {

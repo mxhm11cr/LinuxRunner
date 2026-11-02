@@ -200,12 +200,19 @@ struct StorageUsage: Codable {
     var temporary: Int64 = 0
     var total: Int64 { rootfs + exchange + diagnostics + downloads + temporary }
     static func bytes(_ root: URL) -> Int64 {
+        measuredBytes(root, isCancelled: { false }) ?? 0
+    }
+    // A cancelled scan has no result: callers must retain their last complete
+    // measurement instead of publishing a partial/zero storage total.
+    static func measuredBytes(_ root: URL, isCancelled: () -> Bool) -> Int64? {
+        guard !isCancelled() else { return nil }
         var sum: Int64 = 0
         var visited = Set<String>()
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileAllocatedSizeKey, .fileResourceIdentifierKey]
         guard (try? root.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
               let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: Array(keys)) else { return 0 }
         for case let url as URL in files {
+            guard !isCancelled() else { return nil }
             guard let values = try? url.resourceValues(forKeys: keys), values.isSymbolicLink != true else { continue }
             if values.isRegularFile == true {
                 let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
@@ -213,7 +220,7 @@ struct StorageUsage: Codable {
                 if visited.insert(id).inserted { sum += Int64(values.fileAllocatedSize ?? 0) }
             }
         }
-        return sum
+        return isCancelled() ? nil : sum
     }
 }
 #if canImport(UIKit)

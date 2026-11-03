@@ -25,6 +25,9 @@
 		1C1100000000000000000004 /* DebianSupport.bundle */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000004; };
 		1C1100000000000000000003 /* DebianInstaller.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000003; };
 		1C1100000000000000000A01 /* ArchInstaller.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000A01; };
+		1C1100000000000000000B03 /* SteamOSSupport.bundle */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000B03; };
+		1C1100000000000000000B02 /* SteamOSInstaller.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000B02; };
+		1C1100000000000000000B01 /* SteamOSManifest.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000B01; };
 		1C1100000000000000000002 /* DebianBootstrap.c */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000002; };
 		AABBCCDD1122334455667701 /* netlink.c in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD1122334455667702 /* netlink.c */; };
 		0FC2383C2991FBA6004C09EC /* mmx.c in Sources */ = {isa = PBXBuildFile; fileRef = 0FC2383B2991FB82004C09EC /* mmx.c */; };
@@ -556,6 +559,9 @@
 		1C1200000000000000000004 /* DebianSupport.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = app/LinuxRunner/DebianSupport.bundle; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000003 /* DebianInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/DebianInstaller.swift; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000A01 /* ArchInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/ArchInstaller.swift; sourceTree = SOURCE_ROOT; };
+		1C1200000000000000000B03 /* SteamOSSupport.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = app/LinuxRunner/SteamOSSupport.bundle; sourceTree = SOURCE_ROOT; };
+		1C1200000000000000000B02 /* SteamOSInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/SteamOSInstaller.swift; sourceTree = SOURCE_ROOT; };
+		1C1200000000000000000B01 /* SteamOSManifest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/SteamOSManifest.swift; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000002 /* DebianBootstrap.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = app/LinuxRunner/DebianBootstrap.c; sourceTree = SOURCE_ROOT; };
 		AABBCCDD1122334455667702 /* netlink.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = netlink.c; sourceTree = "<group>"; };
 		0FC2383B2991FB82004C09EC /* mmx.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = mmx.c; sourceTree = "<group>"; };
@@ -1214,6 +1220,9 @@
 				1C1200000000000000000004 /* DebianSupport.bundle */,
 				1C1200000000000000000003 /* DebianInstaller.swift */,
 				1C1200000000000000000A01 /* ArchInstaller.swift */,
+				1C1200000000000000000B03 /* SteamOSSupport.bundle */,
+				1C1200000000000000000B02 /* SteamOSInstaller.swift */,
+				1C1200000000000000000B01 /* SteamOSManifest.swift */,
 				1C1200000000000000000002 /* DebianBootstrap.c */,
 				BB792B521F96D90D00FFB7A4 /* app */,
 				BB9C7B88240A343400F5D4F0 /* iSH.xcconfig */,
@@ -2044,6 +2053,7 @@
 				1F5300000000000000000048 /* LinuxRunnerLaunch.storyboard in Resources */,
 				1B1100000000000000000004 /* GUISupport.bundle in Resources */,
 				1C1100000000000000000004 /* DebianSupport.bundle */,
+				1C1100000000000000000B03 /* SteamOSSupport.bundle */,
 				CC000002AF96D90D00FFB7A4 /* RootfsPatch.bundle in Resources */,
 				JB000001AF96D90D00FFB7A4 /* JetBrainsMonoNerdFontMono-Regular.ttf in Resources */,
 				JB000002AF96D90D00FFB7A4 /* JetBrainsMonoNerdFontMono-Bold.ttf in Resources */,
@@ -2596,6 +2606,8 @@
                 1C1100000000000000000001 /* Diagnostics.swift in Sources */,
 				1C1100000000000000000003 /* DebianInstaller.swift */,
 				1C1100000000000000000A01 /* ArchInstaller.swift */,
+				1C1100000000000000000B02 /* SteamOSInstaller.swift */,
+				1C1100000000000000000B01 /* SteamOSManifest.swift */,
 				1C1100000000000000000002 /* DebianBootstrap.c */,
 				AA000020AF96D90D00FFB7A4 /* main.m in Sources */,
 				AA000021AF96D90D00FFB7A4 /* LocationDevice.m in Sources */,

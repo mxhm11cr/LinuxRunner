@@ -291,7 +291,7 @@ static int bootError;
     NSArray<NSString *> *command;
     command = UserPreferences.shared.bootCommand;
 #ifdef LINUXRUNNER
-    if ([LRRuntimeBridge activeEnvironmentIsDebian] || [LRRuntimeBridge activeEnvironmentIsArch]) command = @[@"/bin/sh", @"/usr/lib/linuxrunner/init.sh"];
+    if ([LRRuntimeBridge activeEnvironmentIsDebian] || [LRRuntimeBridge activeEnvironmentIsArch] || [LRRuntimeBridge activeEnvironmentIsSteamOS]) command = @[@"/bin/sh", @"/usr/lib/linuxrunner/init.sh"];
 #endif
     if (command.count == 0) {
         NSLog(@"boot command is empty");

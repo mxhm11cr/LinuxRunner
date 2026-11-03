@@ -57,6 +57,39 @@ if [ "$environment" = plasma ]; then
  # password prompt over the desktop after a few idle minutes. First start of an
  # account only; a kscreenlockerrc the user already has is left as it is.
  plasma_config="${XDG_CONFIG_HOME:-$HOME/.config}"
+ if [ "$(sed -n 's/^ID=//p' /etc/os-release | tr -d '\"')" = steamos ]; then
+  export KWIN_COMPOSE=N
+  if [ "${LR_STEAMOS_GPU:-0}" = 1 ]; then
+   unset QT_QUICK_BACKEND QT_OPENGL LIBGL_ALWAYS_SOFTWARE
+   export QT_XCB_GL_INTEGRATION=xcb_egl QSG_RHI_BACKEND=opengl QSG_RHI_GL_USE_GLES=1
+  else
+   export QT_XCB_GL_INTEGRATION=none QT_QUICK_BACKEND=software QT_OPENGL=software
+  fi
+  mkdir -p "$plasma_config/autostart"
+  /bin/sh ./steamos-fonts.sh || echo 'STEAMOS_FONTS: optional default unavailable; desktop startup continues'
+  if [ ! -e "$plasma_config/startkderc" ] && [ ! -L "$plasma_config/startkderc" ]; then
+   printf '[General]\nsystemdBoot=false\n' > "$plasma_config/startkderc"
+  fi
+  if [ ! -e "$plasma_config/autostart/steam.desktop" ] && [ ! -L "$plasma_config/autostart/steam.desktop" ]; then
+   printf '[Desktop Entry]\nType=Application\nHidden=true\n' > "$plasma_config/autostart/steam.desktop"
+  fi
+  # The milestone is a desktop and terminal, without system services or updates.
+  # Discover's Flatpak notifier crashes; Baloo reserves a 256 GiB index mapping;
+  # the image's Python firewall/IBus applets also fail and consume address space.
+  # XDG overrides apply to existing accounts too, preserving explicit choices.
+  # iPadOS owns power, display brightness and authentication; their Linux
+  # agents repeatedly query a system bus that this userspace does not provide.
+  for applet in org.kde.discover.notifier baloo_file firewall-applet ibus powerdevil polkit-kde-authentication-agent-1; do
+   if [ ! -e "$plasma_config/autostart/$applet.desktop" ] && [ ! -L "$plasma_config/autostart/$applet.desktop" ]; then
+    printf '[Desktop Entry]\nType=Application\nHidden=true\n' > "$plasma_config/autostart/$applet.desktop"
+   fi
+  done
+  # Tell KDE's Places model that indexing is disabled too. Merely suppressing
+  # the daemon leaves it trying to enumerate the unavailable tags:/ location.
+  if grep -qx 'Hidden=true' "$plasma_config/autostart/baloo_file.desktop" && command -v kwriteconfig6 >/dev/null; then
+   kwriteconfig6 --file baloofilerc --group 'Basic Settings' --key Indexing-Enabled false
+  fi
+ fi
  if mkdir -p "$plasma_config" && [ ! -e "$plasma_config/kscreenlockerrc" ]; then
   printf '[Daemon]\nAutolock=false\nLockOnResume=false\n' > "$plasma_config/kscreenlockerrc" && echo 'DESKTOP_STARTUP: plasma screen locker defaults written (autolock off; iOS locks the device)'
  fi

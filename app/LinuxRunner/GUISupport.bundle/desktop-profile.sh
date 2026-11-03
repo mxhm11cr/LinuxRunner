@@ -19,6 +19,7 @@ cd "$(dirname "$0")"
 . ./support-common.sh
 mode=${1:-check}
 distro=$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | tr -d '"')
+if [ "$distro" = steamos ]; then exec /bin/sh ./steamos-profile.sh "$@"; fi
 have() { command -v "$1" >/dev/null 2>&1; }
 helper_key() { { cat support-version; sha256sum "$@"; } | sha256sum | awk '{print $1}'; }
 

@@ -102,7 +102,7 @@ import Darwin
             environments[index].storageBytes = measured[environments[index].id]
             if active(environments[index]) {
                 environments[index].lastBootResult = "Runtime running; application acceptance recorded separately"
-                if ["debian", "arch"].contains(environments[index].distributionID ?? "") {
+                if ["debian", "arch", "steamos"].contains(environments[index].distributionID ?? "") {
                     environments[index].installationState = FileManager.default.fileExists(atPath: LRRuntimeBridge.rootURL(environments[index].rootfsName).appendingPathComponent("data/var/lib/linuxrunner/initialized").path) ? "Base packages configured" : "First-start configuration pending; setup may require repair"
                     let support = LRRuntimeBridge.exchangeURL(environments[index].rootfsName).appendingPathComponent(".linuxrunner/gui")
                     if let profile = try? String(contentsOf: support.appendingPathComponent("profile-check.result"), encoding: .utf8) {
@@ -871,6 +871,7 @@ struct PackageView: View {
                 Text(environment.distribution + " · " + environment.architecture)
                 Text(enabled ? "Operations use this running environment's real package manager." : "Select this environment for the next launch, then reopen LinuxRunner.").font(.caption)
                 Text(status).font(.caption).textSelection(.enabled)
+                if environment.distributionID == "steamos" { Text("Prepared SteamOS image experiment: installed-package inspection is available. Repository updates and package changes are not enabled.").font(.caption) }
             }
             if environment.distributionID == "debian" {
                 Section {
@@ -887,11 +888,11 @@ struct PackageView: View {
                 Button("Refresh Repository Indexes") { execute("update") }
                 Button("Available Updates") { execute("updates") }
                 TextField("Package name or search term", text: $query).autocorrectionDisabled().textInputAutocapitalization(.never)
-                Button("Search") { execute("search") }.disabled(!PackageOperation.validName(query))
+                Button("Search") { execute("search") }.disabled(environment.distributionID == "steamos" || !PackageOperation.validName(query))
                 Button("Package Details") { execute("details") }.disabled(!PackageOperation.validName(query))
-                Button("Install Package") { confirm("install") }.disabled(!PackageOperation.validName(query))
-                Button("Review Package Upgrade") { confirm("upgrade") }.disabled(!PackageOperation.validName(query))
-                Button("Review Removal", role: .destructive) { confirm("remove") }.disabled(!PackageOperation.validName(query))
+                Button("Install Package") { confirm("install") }.disabled(environment.distributionID == "steamos" || !PackageOperation.validName(query))
+                Button("Review Package Upgrade") { confirm("upgrade") }.disabled(environment.distributionID == "steamos" || !PackageOperation.validName(query))
+                Button("Review Removal", role: .destructive) { confirm("remove") }.disabled(environment.distributionID == "steamos" || !PackageOperation.validName(query))
                 Text("Output, dependency plans and progress open in a Linux terminal. Removal asks for confirmation there. Close the terminal when finished, then refresh the installed list. Cancellation during configuration may require Repair Center.").font(.caption)
             }.disabled(!enabled)
             if !packages.isEmpty {
@@ -917,7 +918,7 @@ struct PackageView: View {
                 Button("Diagnose Package State") { execute("diagnose") }
                 Button("Check Dependencies") { execute("dependencies") }
                 if environment.distributionID == "debian" { Button("Configure Interrupted Debian Packages") { confirm("configure") } }
-                Button("Check / Repair Package State") { confirm("repair") }
+                Button("Check / Repair Package State") { confirm("repair") }.disabled(environment.distributionID == "steamos")
                 Button("Reset GUI Sessions") { LRRuntimeBridge.resetGraphicalSessions(); refreshApplications() }
                 Text("Repair runs native maintainer scripts and keeps a package-database metadata checkpoint inside Linux. It is not a full snapshot or automatic rollback. APT dependency repair asks for confirmation before changing packages. Safe diagnostic mode: use Diagnose and Check Dependencies before repair.").font(.caption)
             }.disabled(!enabled)
@@ -2188,7 +2189,7 @@ private struct GraphicsSettingsView: View {
                     Text("Takes effect after LinuxRunner restarts.").font(.caption).foregroundColor(.orange)
                 }
             } header: { Text("Linux GPU Device") } footer: {
-                Text("Metal GPU gives Linux a virtual GPU: Mesa's own virgl driver renders on the iPhone GPU through Metal (ANGLE). Today Hyprland composites on it; other desktops keep software rendering. If the GPU does not start, LinuxRunner falls back to software and shows why. Automatic uses software rendering until Metal is validated on iPhone.")
+                Text("Metal GPU gives Linux a virtual GPU through Mesa virgl and ANGLE. Hyprland can composite on it. Prepared SteamOS uses it for Xorg and Qt rendering, with KWin window effects disabled. Restart LinuxRunner after changing this setting. Automatic currently uses software rendering.")
             }
         }
         Section("Current Session") {

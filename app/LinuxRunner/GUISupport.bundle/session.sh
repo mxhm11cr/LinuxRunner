@@ -57,7 +57,24 @@ if [ "$(id -u)" = 0 ] && [ "$guest_user" != root ]; then
         [ -c /dev/dri/card1 ] || mknod -m 660 /dev/dri/card1 c 226 1
         if (exec 3<>/dev/dri/card1) 2>/dev/null; then kms_desktop=wayfire-gpu; else rm -f /dev/dri/card1; fi
     fi
-    if [ "$mode" = desktop ] && { [ "$kms_desktop" = hyprland ] || [ "$kms_desktop" = wayfire-gpu ]; } && command -v seatd >/dev/null; then
+    if [ "$mode" = desktop ] && [ "$kms_desktop" = plasma ] &&
+        [ "$(sed -n 's/^ID=//p' /etc/os-release | tr -d '\"')" = steamos ]; then
+        /bin/sh ./steamos-desktop.sh tags-policy "$guest_user" || echo 'STEAMOS_TAGS: optional workaround unavailable; custom paths preserved, desktop startup continues'
+        rm -f /dev/dri/card0 /dev/dri/renderD128
+        mkdir -p /dev/dri
+        [ -c /dev/dri/card1 ] || mknod -m 660 /dev/dri/card1 c 226 1
+        [ -c /dev/dri/renderD129 ] || mknod -m 660 /dev/dri/renderD129 c 226 129
+        if (exec 3<>/dev/dri/card1) 2>/dev/null && [ -x /usr/lib/Xorg ] &&
+            /bin/sh ./steamos-gpu.sh; then
+            chown "root:$gid" /dev/dri/card1 /dev/dri/renderD129
+            chmod 660 /dev/dri/card1 /dev/dri/renderD129
+            printf 'enabled\n' > "$session/steamos-gpu"
+            echo 'GUI_SESSION: SteamOS gpu=virgl-metal (Xorg glamor and Qt; KWin effects off)'
+        else
+            rm -f /dev/dri/card1 /dev/dri/renderD129
+            echo 'GUI_SESSION: SteamOS gpu=software (GPU device or overlay unavailable)'
+        fi
+    elif [ "$mode" = desktop ] && { [ "$kms_desktop" = hyprland ] || [ "$kms_desktop" = wayfire-gpu ]; } && command -v seatd >/dev/null; then
         mkdir -p /dev/dri /run/udev/data
         [ -c /dev/dri/card0 ] || mknod -m 660 /dev/dri/card0 c 226 0
         [ -c /dev/dri/renderD128 ] || mknod -m 666 /dev/dri/renderD128 c 226 128
@@ -166,6 +183,11 @@ export DISPLAY=:$display
 # Debian Mesa needs server GLX for real desktop OpenGL contexts. This is
 # software rendering, independent of optional Metal framebuffer presentation.
 distro=$(sed -n 's/^ID=//p' /etc/os-release | tr -d '"')
+if [ "$distro" = steamos ]; then
+    # Breeze's QWidget painter crashed in the supplied image. Fusion keeps
+    # both direct children and D-Bus-activated Qt applications on one style.
+    export QT_STYLE_OVERRIDE=Fusion
+fi
 # Session graphics default chosen in Settings; a launcher's own
 # LR_GUI_GPU_MODE (command.sh) takes precedence for that application.
 gpu_mode=mesa
@@ -177,6 +199,15 @@ desktop_environment=linuxrunner
 [ ! -f "$session/desktop-environment" ] || desktop_environment=$(cat "$session/desktop-environment")
 case "$desktop_environment" in linuxrunner|plasma|lxqt|enlightenment|wayfire|hyprland) ;; *) desktop_environment=linuxrunner;; esac
 export LR_DESKTOP_ENVIRONMENT="$desktop_environment"
+steamos_gpu=0
+if [ "$distro" = steamos ] && [ "$mode" = desktop ] && [ "$desktop_environment" = plasma ] &&
+    [ "$(cat "$session/steamos-gpu" 2>/dev/null || true)" = enabled ] && [ -c /dev/dri/card1 ]; then
+    steamos_gpu=1
+    export LD_LIBRARY_PATH=/opt/linuxrunner/steamos-gpu/lib
+    export LIBGL_DRIVERS_PATH=/opt/linuxrunner/steamos-gpu/lib/dri
+    export __EGL_VENDOR_LIBRARY_FILENAMES=/opt/linuxrunner/steamos-gpu/share/glvnd/egl_vendor.d/50_mesa.json
+    export MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu GALLIUM_DRIVER=virgl LR_STEAMOS_GPU=1
+fi
 glx_mode=off
 [ "$distro" != debian ] || glx_mode=software
 [ ! -f "$session/glx-mode" ] || glx_mode=$(cat "$session/glx-mode")
@@ -204,6 +235,17 @@ export QT_QPA_PLATFORM=${QT_QPA_PLATFORM:-xcb}
 export QT_FORCE_STDERR_LOGGING=${QT_FORCE_STDERR_LOGGING:-1}
 export QT_WIDGETS_RHI=${QT_WIDGETS_RHI:-0} QT_QUICK_BACKEND=${QT_QUICK_BACKEND:-software}
 export QT_OPENGL=${QT_OPENGL:-software} LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-1}
+if [ "$steamos_gpu" = 1 ]; then
+    unset LIBGL_ALWAYS_SOFTWARE QT_QUICK_BACKEND QT_OPENGL
+    export QT_XCB_GL_INTEGRATION=xcb_egl QSG_RHI_BACKEND=opengl QSG_RHI_GL_USE_GLES=1 QSG_INFO=1
+fi
+steamos_software_fallback() {
+    steamos_gpu=0
+    unset LD_LIBRARY_PATH LIBGL_DRIVERS_PATH __EGL_VENDOR_LIBRARY_FILENAMES MESA_LOADER_DRIVER_OVERRIDE GALLIUM_DRIVER LR_STEAMOS_GPU
+    unset QSG_RHI_BACKEND QSG_RHI_GL_USE_GLES QSG_INFO
+    export QT_QUICK_BACKEND=software QT_OPENGL=software LIBGL_ALWAYS_SOFTWARE=1 QT_XCB_GL_INTEGRATION=none
+    echo 'GUI_SESSION: SteamOS GPU check failed; starting the software desktop (see graphics.log and xorg.log)'
+}
 # A fresh X server belongs to this guest root; DISPLAY is session-scoped.
 width=640 height=480
 if [ -f "$session/geometry" ]; then
@@ -213,12 +255,24 @@ if [ -f "$session/geometry" ]; then
     width=${geometry%x*};height=${geometry#*x}
     if [ "$width" -lt 320 ] || [ "$width" -gt 2560 ] || [ "$height" -lt 240 ] || [ "$height" -gt 1600 ] || [ $((width % 2)) -ne 0 ] || [ $((height % 2)) -ne 0 ]; then echo 'GUI_SESSION: invalid display geometry'; exit 2; fi
 fi
+if [ "$steamos_gpu" = 1 ] && ! /opt/linuxrunner/steamos-gpu/bin/graphics-check > "$session/graphics.log" 2>&1; then
+    steamos_software_fallback
+fi
 export XAUTHORITY="$session/authority"
 umask 077
 xauth -f "$XAUTHORITY" add "$DISPLAY" . "$(cat "$session/cookie")"
-echo "GUI_SESSION: root=${LINUXRUNNER_ENVIRONMENT:-current} distribution=$distro DISPLAY=$DISPLAY geometry=${width}x${height} backend=xvfb-rfb interpreter-baseline"
-echo "GUI_SESSION: starting X.Org software display, ${width}x${height}, no JIT"
-Xvfb "$DISPLAY" -screen 0 "${width}x${height}x24" -nolisten tcp -auth "$XAUTHORITY" "$shm_switch" MIT-SHM "$glx_switch" GLX > "$session/xvfb.log" 2>&1 & xpid=$!
+echo "GUI_SESSION: root=${LINUXRUNNER_ENVIRONMENT:-current} distribution=$distro DISPLAY=$DISPLAY geometry=${width}x${height} backend=$([ "$steamos_gpu" = 1 ] && echo xorg-virgl-rfb || echo xvfb-rfb) interpreter-baseline"
+if [ "$steamos_gpu" = 1 ]; then
+    cp ./steamos-xorg.conf "$session/xorg.conf"
+    echo 'xorg-virgl' > "$session/display-backend"
+    echo "GUI_SESSION: starting Xorg modesetting/glamor on virgl/Metal, ${width}x${height}, no JIT"
+    /usr/lib/Xorg "$DISPLAY" -config "$session/xorg.conf" -logfile "$session/xorg.log" -noreset -nolisten tcp \
+        -novtswitch -sharevts -auth "$XAUTHORITY" > "$session/xvfb.log" 2>&1 & xpid=$!
+else
+    echo 'xvfb-software' > "$session/display-backend"
+    echo "GUI_SESSION: starting X.Org software display, ${width}x${height}, no JIT"
+    Xvfb "$DISPLAY" -screen 0 "${width}x${height}x24" -nolisten tcp -auth "$XAUTHORITY" "$shm_switch" MIT-SHM "$glx_switch" GLX > "$session/xvfb.log" 2>&1 & xpid=$!
+fi
 i=0
 while [ ! -S "/tmp/.X11-unix/X$display" ]; do
     [ ! -f "$session/stop" ] || exit 0
@@ -245,7 +299,7 @@ xmodmap -pm >> "$session/keymap.log" 2>&1 || true
 xkb=-xkb
 if [ -f "$session/xkb-mode" ] && [ "$(cat "$session/xkb-mode")" = noxkb ]; then xkb=-noxkb; fi
 focus_policy=managed; [ "$mode" != desktop ] || focus_policy=window-manager
-echo "GUI_SESSION: keyboard=$xkb focus=$focus_policy encoding=Hextile/Raw software-rendering"
+echo "GUI_SESSION: keyboard=$xkb focus=$focus_policy encoding=Hextile/Raw renderer=$([ "$steamos_gpu" = 1 ] && echo virgl-metal || echo software)"
 # A Linux sockaddr_un path holds at most 107 bytes. A support-directory UUID
 # path plus GVFS/Qt socket suffix exceeds it. Use a uniquely owned short path
 # for every GUI mode, with restrictive permissions and no preexisting reuse.
@@ -271,6 +325,11 @@ if command -v dbus-daemon >/dev/null; then
             if dbus-update-activation-environment DISPLAY XAUTHORITY XDG_RUNTIME_DIR HOME PATH DBUS_SESSION_BUS_ADDRESS; then
                 echo 'GUI_SESSION: dbus_activation_environment=PASS (explicit session variables, no systemd required)'
             else echo 'GUI_SESSION: dbus_activation_environment=FAIL; inspect bus.log'; fi
+            if [ "$steamos_gpu" = 1 ]; then
+                dbus-update-activation-environment LD_LIBRARY_PATH LIBGL_DRIVERS_PATH __EGL_VENDOR_LIBRARY_FILENAMES \
+                    MESA_LOADER_DRIVER_OVERRIDE GALLIUM_DRIVER LR_STEAMOS_GPU QT_STYLE_OVERRIDE \
+                    QT_XCB_GL_INTEGRATION QSG_RHI_BACKEND QSG_RHI_GL_USE_GLES || true
+            fi
         fi;;
         *) echo 'GUI_SESSION: dbus_session=unavailable; inspect bus.log (applications still attempted)';;
     esac
@@ -313,7 +372,9 @@ echo "GUI_INPUT: mode=$input_mode experimental=$([ "$input_mode" = eager ] && ec
 # autocomplete splice typed URLs (2 of 5 gate runs), so it stays opt-in.
 # The others are latency experiments.
 vnc_timing=default
+[ "$steamos_gpu" != 1 ] || vnc_timing=adaptive
 [ ! -f "$session/vnc-timing" ] || vnc_timing=$(cat "$session/vnc-timing")
+if [ "$vnc_timing" = default ] && [ "$steamos_gpu" = 1 ]; then vnc_timing=adaptive; fi
 case "$vnc_timing" in
  default|legacy) vnc_timing_options="-noxdamage -defer 16 -wait 25";;
  threads) vnc_timing_options="-noxdamage -defer 16 -wait 25 -threads";;

@@ -23,6 +23,11 @@ if command -v apt-get >/dev/null; then distro=debian
 elif command -v pacman >/dev/null; then distro=archarm
 elif command -v apk >/dev/null; then distro=alpine
 else echo 'PACKAGE_OPERATION: unsupported distribution'; exit 2; fi
+if [ "$(sed -n 's/^ID=//p' /etc/os-release | tr -d '\"')" = steamos ]; then
+ case "$operation" in installed|details|diagnose|dependencies) ;;
+  *) echo 'PACKAGE_OPERATION: The SteamOS image experiment supports installed-package inspection. Package changes and repository updates are not enabled for this prepared image.'; exit 2;;
+ esac
+fi
 printf 'operation=%s\ndistribution=%s\nstarted=%s\n' "$operation" "$distro" "$(date +%s)" > package-interrupted
 printf 'running\n' > package-result
 rm -f package-state.tsv.new package-details.txt.new

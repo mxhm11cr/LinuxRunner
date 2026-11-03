@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "architecture": "arm64",
+  "version": "0.3.0",
+  "sourceImageSHA256": "3a4a077f1b1f40688ab3279affcb56776bd97c54db1573e7c65fc52a97106676",
+  "archiveSHA256": "d8683fd3d18f15cdb75fae5dcda8b06f21dd5376abe8eb14565d5b90505dd86a",
+  "archiveBytes": 3883082382,
+  "installedBytes": 8870355438,
+  "entries": 226112
+}

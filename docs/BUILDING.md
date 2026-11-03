@@ -89,3 +89,7 @@ python3 scripts/generate-gui-support-manifest.py --check
 ```
 
 Use disposable fixtures for mutating tests. [Architecture](ARCHITECTURE.md) · [Third-party notices](../THIRD_PARTY_NOTICES.md)
+
+For the optional local SteamFrame image exporter and prepared ARM64 installer,
+see [SteamOS userspace experiment](STEAMOS_EXPERIMENT.md). The archive is supplied
+separately from the IPA and must match the bundled manifest.

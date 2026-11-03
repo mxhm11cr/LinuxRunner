@@ -1123,7 +1123,7 @@ static NSString *LRTail(NSURL *url,NSUInteger lines){
         [text appendFormat:@"\n== guest state\n%@\n",guest?:@"(not collected)"];
         for(NSString *name in @[@"profile-check.result",@"install-result"]){NSString *t=LRTail([support URLByAppendingPathComponent:name],10);if(t)[text appendFormat:@"\n== %@\n%@\n",name,t];}
         NSString *profile=LRTail([support URLByAppendingPathComponent:@"desktop-profile.sh.log"],40);if(profile)[text appendFormat:@"\n== desktop-profile.sh.log (last 40 lines)\n%@\n",profile];
-        if(session)for(NSString *name in @[@"desktop-state",@"session.log",@"application.log",@"xvfb.log",@"display.log",@"wm.log",@"panel.log",@"desktop.log",@"plasma.log"]){
+        if(session)for(NSString *name in @[@"desktop-state",@"session.log",@"application.log",@"xvfb.log",@"xorg.log",@"graphics.log",@"display.log",@"wm.log",@"panel.log",@"desktop.log",@"plasma.log"]){
             NSString *t=LRTail([session URLByAppendingPathComponent:name],name.length>12?25:40);if([name isEqual:@"plasma.log"])t=[LRRuntimeBridge redactDiagnosticText:t?:@"" application:YES];if(t.length)[text appendFormat:@"\n== %@ (tail)\n%@\n",name,t];}
         NSString *saved=LRRuntimeBridge.desktopTraceSavedText;NSArray *savedLines=[saved componentsSeparatedByString:@"\n"];
         [text appendFormat:@"\n== earlier attempts (saved timeline, last 150 records)\n%@\n",[[savedLines subarrayWithRange:NSMakeRange(savedLines.count>150?savedLines.count-150:0,MIN(savedLines.count,(NSUInteger)150))] componentsJoinedByString:@"\n"]];

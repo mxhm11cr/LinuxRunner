@@ -407,7 +407,7 @@ static NSString *desktopRoot;
     NSMutableArray<NSURL *> *sessions=[NSMutableArray new];
     for(NSURL *child in children){NSNumber *link=nil,*directory=nil;[child getResourceValue:&link forKey:NSURLIsSymbolicLinkKey error:nil];[child getResourceValue:&directory forKey:NSURLIsDirectoryKey error:nil];if([child.lastPathComponent hasPrefix:@"session-"]&&directory.boolValue&&!link.boolValue)[sessions addObject:child];}
     [sessions sortUsingComparator:^NSComparisonResult(NSURL *a,NSURL *b){NSDate *ad=nil,*bd=nil;[a getResourceValue:&ad forKey:NSURLContentModificationDateKey error:nil];[b getResourceValue:&bd forKey:NSURLContentModificationDateKey error:nil];return [(bd?:NSDate.distantPast) compare:ad?:NSDate.distantPast];}];
-    NSDictionary *components=@{@"session.log":@"Session",@"xvfb.log":@"X11",@"display.log":@"Display",@"bus.log":@"D-Bus",@"wm.log":@"Window Manager",@"panel.log":@"Panel",@"desktop.log":@"Desktop",@"plasma.log":@"Plasma",@"application.log":@"Application",@"focus.log":@"Input",@"window.log":@"Windows",@"desktop-state":@"Status"};
+    NSDictionary *components=@{@"session.log":@"Session",@"xvfb.log":@"X11",@"xorg.log":@"Xorg",@"graphics.log":@"Graphics",@"display.log":@"Display",@"bus.log":@"D-Bus",@"wm.log":@"Window Manager",@"panel.log":@"Panel",@"desktop.log":@"Desktop",@"plasma.log":@"Plasma",@"application.log":@"Application",@"focus.log":@"Input",@"window.log":@"Windows",@"desktop-state":@"Status"};
     for(NSURL *session in [sessions subarrayWithRange:NSMakeRange(0,MIN(sessions.count,3))]) {
         for(NSString *name in [components.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
             NSURL *url=[session URLByAppendingPathComponent:name];
@@ -753,6 +753,10 @@ static NSString *LRJITLastFailure;   // reason of the last refused or failed act
     for(NSDictionary *e in catalog[@"environments"])if([e[@"rootfsName"] isEqual:self.activeRootName])return [e[@"distributionID"] isEqual:@"arch"];
     NSDictionary *installation=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:[[self rootURL:self.activeRootName] URLByAppendingPathComponent:@"environment-install.json"]]?:[NSData data] options:0 error:nil];
     return [installation[@"distributionID"] isEqual:@"arch"];
+}
++ (BOOL)activeEnvironmentIsSteamOS {
+    NSDictionary *installation=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:[[self rootURL:self.activeRootName] URLByAppendingPathComponent:@"environment-install.json"]]?:[NSData data] options:0 error:nil];
+    return [installation[@"distributionID"] isEqual:@"steamos"];
 }
 + (BOOL)importVerifiedEnvironment:(NSURL *)archive root:(NSString *)root sha256:(NSString *)sha256 progress:(void (^)(double,NSString *))progress cancel:(BOOL (^)(void))cancel error:(NSError **)error {
     LRInstallProgress *reporter=[LRInstallProgress new];reporter.progress=progress;reporter.cancel=cancel;
@@ -1114,7 +1118,7 @@ static NSArray<NSString *> *LRLoginCommand(NSString *name, NSError **error) {
     // locking and duplicate-name checks are authoritative, not this UI list.
     NSString *passwd=LRAccountTool(@[@"/usr/bin/passwd", @"/bin/passwd"]);
     // shadow's useradd on glibc distributions (Debian, Arch Linux ARM); BusyBox adduser on Alpine.
-    NSString *create=LRAccountTool(self.activeEnvironmentIsDebian || self.activeEnvironmentIsArch ? @[@"/usr/sbin/useradd", @"/usr/bin/useradd"] : @[@"/usr/sbin/adduser", @"/sbin/adduser", @"/usr/bin/adduser", @"/bin/adduser"]);
+    NSString *create=LRAccountTool(self.activeEnvironmentIsDebian || self.activeEnvironmentIsArch || self.activeEnvironmentIsSteamOS ? @[@"/usr/sbin/useradd", @"/usr/bin/useradd"] : @[@"/usr/sbin/adduser", @"/sbin/adduser", @"/usr/bin/adduser", @"/bin/adduser"]);
     if (!passwd || !create) { if(error)*error=lrError(ENOENT, @"Account tools are not installed yet. Use Create Account in Linux Users; it installs them automatically."); return nil; }
     // Administrator: the distribution's sudo group (sudo on Debian, wheel on
     // Alpine); sudo then asks for the user's own password.
@@ -1122,12 +1126,12 @@ static NSArray<NSString *> *LRLoginCommand(NSString *name, NSError **error) {
     if (administrator) {
         if (!self.canGrantAdministrator) { if(error)*error=lrError(ENOENT, @"sudo is not installed in this environment; install it first, or create the user without administrator access."); return nil; }
         grant=self.activeEnvironmentIsDebian ? @" && { getent group sudo >/dev/null || groupadd --system sudo; } && usermod -aG sudo -- \"$1\"" :
-            self.activeEnvironmentIsArch ? @" && { getent group wheel >/dev/null || groupadd --system wheel; } && usermod -aG wheel -- \"$1\""
+            (self.activeEnvironmentIsArch || self.activeEnvironmentIsSteamOS) ? @" && { getent group wheel >/dev/null || groupadd --system wheel; } && usermod -aG wheel -- \"$1\""
              " && { [ -e /etc/sudoers.d/linuxrunner-wheel ] || { mkdir -p /etc/sudoers.d && printf '%%wheel ALL=(ALL:ALL) ALL\\n' > /etc/sudoers.d/linuxrunner-wheel && chmod 0440 /etc/sudoers.d/linuxrunner-wheel; }; }" :
             @" && { getent group wheel >/dev/null || addgroup -S wheel; } && addgroup \"$1\" wheel"
              " && { [ -e /etc/sudoers.d/linuxrunner-wheel ] || { mkdir -p /etc/sudoers.d && printf '%%wheel ALL=(ALL:ALL) ALL\\n' > /etc/sudoers.d/linuxrunner-wheel && chmod 0440 /etc/sudoers.d/linuxrunner-wheel; }; }";
     }
-    NSString *script=[NSString stringWithFormat:self.activeEnvironmentIsDebian || self.activeEnvironmentIsArch ?
+    NSString *script=[NSString stringWithFormat:self.activeEnvironmentIsDebian || self.activeEnvironmentIsArch || self.activeEnvironmentIsSteamOS ?
         @"\"$2\" --create-home --shell /bin/bash -- \"$1\"%@ && exec \"$3\" \"$1\"" :
         @"\"$2\" -D -h \"/home/$1\" -s /bin/sh \"$1\"%@ && exec \"$3\" \"$1\"", grant];
     return [self terminalForCommand:@[@"/bin/sh", @"-c", script, @"linuxrunner-create-user", name, create, passwd] directory:@"/"];
@@ -1169,7 +1173,7 @@ static void LRWaitForProcess(TerminalViewController *process, NSTimeInterval tim
     char salt[17], hash[160];
     if (lr_random_salt(salt) || lr_sha512_crypt(password.UTF8String, salt, hash, sizeof hash)) { completion(lrError(EIO, @"The password could not be prepared.")); return; }
     NSString *hashed = @(hash); memset(hash, 0, sizeof hash);
-    BOOL debian = self.activeEnvironmentIsDebian, arch = self.activeEnvironmentIsArch;
+    BOOL debian = self.activeEnvironmentIsDebian, arch = self.activeEnvironmentIsArch || self.activeEnvironmentIsSteamOS;
     void (^create)(void) = ^{
         progress(@"Creating your account");
         NSString *grant = !administrator ? @"" : debian ?
@@ -1421,7 +1425,7 @@ static NSCountedSet<NSString *> *LRAwakeSet;
         if(error)*error=lrError(EPERM,@"System accounts and the default login cannot be removed. Select a different default login first.");
         return nil;
     }
-    BOOL shadow = self.activeEnvironmentIsDebian || self.activeEnvironmentIsArch;
+    BOOL shadow = self.activeEnvironmentIsDebian || self.activeEnvironmentIsArch || self.activeEnvironmentIsSteamOS;
     NSString *remove = LRAccountTool(shadow ? @[@"/usr/sbin/userdel", @"/usr/bin/userdel"] :
         @[@"/usr/sbin/deluser", @"/sbin/deluser", @"/usr/bin/deluser", @"/bin/deluser"]);
     if (!remove) { if(error)*error=lrError(ENOENT,@"The distribution's account-removal tool is missing. Install it using Package Center."); return nil; }
@@ -1582,7 +1586,7 @@ static void LRDesktopTraceAppend(NSString *line) {
         NSMutableArray<NSURL *> *sessions=[NSMutableArray new];
         for(NSURL *u in children)if([u.lastPathComponent hasPrefix:@"session-"]){NSNumber *link=nil;[u getResourceValue:&link forKey:NSURLIsSymbolicLinkKey error:nil];if(!link.boolValue)[sessions addObject:u];}
         [sessions sortUsingComparator:^NSComparisonResult(NSURL *a,NSURL *b){NSDate *ad=nil,*bd=nil;[a getResourceValue:&ad forKey:NSURLContentModificationDateKey error:nil];[b getResourceValue:&bd forKey:NSURLContentModificationDateKey error:nil];return [(bd?:NSDate.distantPast) compare:(ad?:NSDate.distantPast)];}];
-        for(NSURL *session in [sessions subarrayWithRange:NSMakeRange(0,MIN(sessions.count,3))])for(NSString *name in @[@"session.log",@"application.log",@"focus.log",@"window.log",@"display.log",@"xvfb.log",@"bus.log",@"window-state",@"wm.log",@"panel.log",@"desktop.log",@"plasma.log",@"xfconf.log",@"desktop-state"]){
+        for(NSURL *session in [sessions subarrayWithRange:NSMakeRange(0,MIN(sessions.count,3))])for(NSString *name in @[@"session.log",@"application.log",@"focus.log",@"window.log",@"display.log",@"xvfb.log",@"xorg.log",@"graphics.log",@"bus.log",@"window-state",@"wm.log",@"panel.log",@"desktop.log",@"plasma.log",@"xfconf.log",@"desktop-state"]){
             NSURL *url=[session URLByAppendingPathComponent:name];int fd=open(url.fileSystemRepresentation,O_RDONLY|O_NOFOLLOW);if(fd<0)continue;struct stat st;if(fstat(fd,&st)||!S_ISREG(st.st_mode)){close(fd);continue;}
             off_t offset=st.st_size>1024*1024?st.st_size-1024*1024:0;NSMutableData *data=[NSMutableData dataWithLength:st.st_size-offset];ssize_t n=pread(fd,data.mutableBytes,data.length,offset);close(fd);if(n<0)continue;data.length=n;
             NSString *text=[[NSString alloc]initWithData:data encoding:NSUTF8StringEncoding]?:@"non-UTF8 application output omitted";

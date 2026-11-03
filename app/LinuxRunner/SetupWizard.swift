@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // Guided setup: Welcome → Distribution → Install Linux → (restart into it) →
 // Account → Desktop → Finish → Open Desktop. Uses the verified installers, the
@@ -17,6 +18,8 @@ struct SetupWizardView: View {
     @AppStorage("LinuxRunnerSetup.root") private var setupRoot = ""
     @StateObject private var debian = DebianInstaller()
     @StateObject private var arch = ArchInstaller()
+    @StateObject private var steamos = SteamOSInstaller()
+    @State private var steamOSImporter = false
     @State private var username = ""
     @State private var password = ""
     @State private var confirmation = ""
@@ -31,12 +34,18 @@ struct SetupWizardView: View {
         NavigationView {
             Form { content }
                 .navigationTitle(title)
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button(step == .done ? "Close" : "Later") { dismiss() }.disabled(working != nil || debian.running || arch.running || manager.busy) } }
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button(step == .done ? "Close" : "Later") { dismiss() }.disabled(working != nil || debian.running || arch.running || steamos.running || manager.busy) } }
         }
         .navigationViewStyle(.stack)
         .overlay(alignment: .bottom) { InstallProgressCard() }
-        .interactiveDismissDisabled(working != nil || debian.running || arch.running || manager.busy)
+        .interactiveDismissDisabled(working != nil || debian.running || arch.running || steamos.running || manager.busy)
         .onAppear(perform: resume)
+        .fileImporter(isPresented: $steamOSImporter, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls): if let source = urls.first { installSteamOS(from: source) }
+            case .failure(let error): problem = error.localizedDescription
+            }
+        }
     }
 
     private var title: String {
@@ -55,7 +64,7 @@ struct SetupWizardView: View {
             Section { Button("Continue") { stepRaw = SetupStep.distribution.rawValue } }
         case .distribution:
             Section(footer: Text("Debian is recommended. Arch Linux ARM provides a rolling release with pacman and an experimental X11 desktop. Alpine is small and mainly for the terminal. Wayland is not supported.")) {
-                Picker("Distribution", selection: $distribution) { Text("Debian GNU/Linux 13 (ARM64) — recommended").tag("debian"); Text("Arch Linux ARM (ARM64) — experimental").tag("arch"); Text("Alpine Linux 3.24 (ARM64)").tag("alpine") }.pickerStyle(.inline).labelsHidden()
+                Picker("Distribution", selection: $distribution) { Text("Debian GNU/Linux 13 (ARM64) — recommended").tag("debian"); Text("Arch Linux ARM (ARM64) — experimental").tag("arch"); Text("Alpine Linux 3.24 (ARM64)").tag("alpine"); Text("SteamOS ARM64 — prepared image experiment").tag("steamos") }.pickerStyle(.inline).labelsHidden()
             }
             let installed = manager.environments.filter { ($0.distributionID ?? "alpine") == distribution }
             if !installed.isEmpty {
@@ -85,12 +94,13 @@ struct SetupWizardView: View {
     @ViewBuilder private var install: some View {
         let free = (try? LRRuntimeBridge.managedStorageURL().resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage) ?? 0
         let manifest = try? DebianManifest.load()
+        let steamManifest = try? SteamOSManifest.load()
         let alpineBytes = Int64((try? Bundle.main.url(forResource: "root", withExtension: "tar.gz")?.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
         let download = distribution == "debian" ? (manifest?.downloadBytes ?? 0) : 0
         let installed = distribution == "debian" ? (manifest?.installedBytes ?? 0) : alpineBytes * 3
         Section("Storage") {
-            row("Download", distribution == "arch" ? "Calculated from the signed package selection" : distribution == "debian" ? ByteCountFormatter.string(fromByteCount: download, countStyle: .file) : "None (included in the app)")
-            row(distribution == "debian" ? "Installed size" : "Installed size (estimate)", distribution == "arch" ? "At least 1.5 GB free for base installation" : ByteCountFormatter.string(fromByteCount: installed, countStyle: .file))
+            row("Download", distribution == "steamos" ? "Prepared archive from your Mac or Files" : distribution == "arch" ? "Calculated from the signed package selection" : distribution == "debian" ? ByteCountFormatter.string(fromByteCount: download, countStyle: .file) : "None (included in the app)")
+            row(distribution == "debian" || distribution == "steamos" ? "Installed size" : "Installed size (estimate)", distribution == "steamos" ? ByteCountFormatter.string(fromByteCount: steamManifest?.installedBytes ?? 0, countStyle: .file) : distribution == "arch" ? "At least 1.5 GB free for base installation" : ByteCountFormatter.string(fromByteCount: installed, countStyle: .file))
             row("Available", ByteCountFormatter.string(fromByteCount: free, countStyle: .file))
         }
         if distribution == "debian" {
@@ -105,6 +115,22 @@ struct SetupWizardView: View {
                 else { Button("Install Arch Linux ARM") { startInstall() }.disabled(free < Int64(1_500_000_000)) }
                 if let failure = arch.failure { Text(failure).foregroundStyle(.red); Button("Try Again") { startInstall() } }
             } footer: { Text("Official signed Arch Linux ARM packages. Verified downloads are kept for retry. First-start configuration finishes before desktop packages are installed.") }
+        } else if distribution == "steamos" {
+            Section {
+                Text(steamos.message)
+                if steamos.running {
+                    ProgressView(value: steamos.fraction)
+                    Button("Cancel Installation", role: .destructive) { steamos.cancel() }
+                } else {
+                    if FileManager.default.fileExists(atPath: SteamOSInstaller.preparedArchiveURL.path) {
+                        Button("Install Prepared SteamOS") { installSteamOS(from: SteamOSInstaller.preparedArchiveURL) }
+                            .disabled(steamManifest == nil || free < (steamManifest?.requiredFreeBytes ?? Int64.max))
+                    }
+                    Button("Choose Prepared SteamOS Archive…") { steamOSImporter = true }.disabled(steamManifest == nil)
+                }
+                if let failure = steamos.failure { Text(failure).foregroundStyle(.red) }
+                if steamManifest == nil { Text("This build has no supported prepared SteamOS image manifest.").foregroundStyle(.secondary) }
+            } footer: { Text("Experimental SteamFrame ARM64 userspace with a terminal and Plasma X11 desktop. The archive must match the image prepared for this build. Keep LinuxRunner open during installation.") }
         } else {
             Section { if manager.busy { ProgressView("Unpacking Alpine Linux…") } else { Button("Install Alpine") { startInstall() } }
                 if let error = manager.error { Text(error).foregroundStyle(.red) } }
@@ -134,6 +160,14 @@ struct SetupWizardView: View {
     }
 
     @ViewBuilder private var desktop: some View {
+        if LRRuntimeBridge.activeEnvironmentIsSteamOS() {
+            Section {
+                Label("SteamOS Plasma X11", systemImage: "desktopcomputer")
+                Text("The prepared image includes the desktop and display bridge. This experiment uses software rendering.")
+                if desktopReady { Label("Desktop components checked", systemImage: "checkmark"); Button("Continue") { stepRaw = SetupStep.done.rawValue } }
+                else { Button("Check SteamOS Desktop") { prepareDesktop() }.disabled(working != nil) }
+            }
+        } else {
         Section(footer: Text("Installs the display, window manager, panel, file manager and sound once (network needed). Existing settings are kept.")) {
             HStack { Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor); Text(LRRuntimeBridge.activeEnvironmentIsArch() ? "LinuxRunner Desktop (Openbox, LXQt panel, PCManFM-Qt)" : "LinuxRunner Desktop (Openbox, panel, file manager)") }
             HStack { Image(systemName: "circle").foregroundStyle(.secondary); VStack(alignment: .leading) { Text("LXQt · Enlightenment · Wayfire · Hyprland"); Text("Optional · install below once the desktop components are ready, or later in Settings › Desktop Environment").font(.caption).foregroundStyle(.secondary) } }
@@ -155,6 +189,7 @@ struct SetupWizardView: View {
                 }
             }
         }
+        }
     }
 
     private func row(_ title: String, _ value: String) -> some View { HStack { Text(title); Spacer(); Text(value).foregroundStyle(.secondary) } }
@@ -172,7 +207,7 @@ struct SetupWizardView: View {
     }
 
     private func startInstall() {
-        guard !debian.running, !arch.running, !manager.busy else { return }
+        guard !debian.running, !arch.running, !steamos.running, !manager.busy else { return }
         problem = nil
         let known = Set(manager.environments.map(\.rootfsName))
         let finish: (String) -> Void = { root in
@@ -189,6 +224,17 @@ struct SetupWizardView: View {
                 while manager.busy { try? await Task.sleep(nanoseconds: 300_000_000) }
                 if let created = manager.environments.first(where: { !known.contains($0.rootfsName) }) { finish(created.rootfsName) }
             }
+        }
+    }
+
+    private func installSteamOS(from source: URL) {
+        guard !debian.running, !arch.running, !steamos.running, !manager.busy else { return }
+        problem = nil
+        steamos.install(source: source) { environment in
+            manager.acceptInstalled(environment)
+            setupRoot = environment.rootfsName
+            LRRuntimeBridge.setNextRootName(environment.rootfsName)
+            stepRaw = SetupStep.relaunch.rawValue
         }
     }
 

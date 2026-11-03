@@ -77,7 +77,60 @@ static const char *schema = Q(
     pragma user_version=3;
 );
 
-bool fakefs_import(const char *archive_path, const char *fs, struct fakefsify_error *err_out, struct progress p) {
+struct import_resources {
+    int root_fd, entry_fd;
+    sqlite3 *db;
+    struct archive *archive;
+};
+
+static bool valid_utf8(const char *text) {
+    if (!text) return true;
+    const unsigned char *p = (const unsigned char *)text;
+    while (*p) {
+        unsigned char lead = *p++;
+        if (lead < 0x80) continue;
+        unsigned count, code, minimum;
+        if (lead >= 0xc2 && lead <= 0xdf) { count = 1; code = lead & 0x1f; minimum = 0x80; }
+        else if (lead >= 0xe0 && lead <= 0xef) { count = 2; code = lead & 0x0f; minimum = 0x800; }
+        else if (lead >= 0xf0 && lead <= 0xf4) { count = 3; code = lead & 7; minimum = 0x10000; }
+        else return false;
+        while (count--) {
+            unsigned char next = *p++;
+            if ((next & 0xc0) != 0x80) return false;
+            code = (code << 6) | (next & 0x3f);
+        }
+        if (code < minimum || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return false;
+    }
+    return true;
+}
+
+static bool pax_original_names(struct archive *archive, struct archive_entry *entry) {
+    int format = archive_format(archive);
+    if (format != ARCHIVE_FORMAT_TAR_PAX_INTERCHANGE && format != ARCHIVE_FORMAT_TAR_PAX_RESTRICTED) return false;
+    const char *warning = archive_error_string(archive);
+    if (!warning) return false;
+    // libarchive's PAX reader explicitly copies the original UTF-8 bytes back
+    // into the entry when native-locale conversion fails (pax_header()). Those
+    // bytes are the desired Linux names. Accept only this specific warning;
+    // malformed UTF-8, checksum/codec errors and every other warning still fail.
+    static const char *const messages[] = {
+        "Pathname can't be converted from UTF-8 to current locale.",
+        "Linkname can't be converted from UTF-8 to current locale.",
+        "Uname can't be converted from UTF-8 to current locale.",
+        "Gname can't be converted from UTF-8 to current locale.",
+    };
+    bool conversion = false;
+    for (size_t i = 0; i < sizeof messages / sizeof *messages; i++)
+        if (!strcmp(warning, messages[i])) conversion = true;
+    if (!conversion || !archive_entry_pathname(entry)) return false;
+    if (!valid_utf8(archive_entry_pathname(entry)) || !valid_utf8(archive_entry_symlink(entry)) ||
+        !valid_utf8(archive_entry_hardlink(entry)) || !valid_utf8(archive_entry_uname(entry)) || !valid_utf8(archive_entry_gname(entry))) return false;
+    if (!strncmp(warning, "Linkname", 8) && !archive_entry_symlink(entry) && !archive_entry_hardlink(entry)) return false;
+    archive_clear_error(archive);
+    return true;
+}
+
+static bool fakefs_import_contents(const char *archive_path, const char *fs, struct fakefsify_error *err_out, struct progress p, struct import_resources *resources) {
     int err = mkdir(fs, 0777);
     if (err < 0)
         POSIX_ERR();
@@ -87,13 +140,15 @@ bool fakefs_import(const char *archive_path, const char *fs, struct fakefsify_er
     snprintf(path_tmp, sizeof(path_tmp), "%s/data", fs);
     err = mkdir(path_tmp, 0777);
     int root_fd = open(path_tmp, O_RDONLY);
+    resources->root_fd = root_fd;
     if (root_fd < 0)
         POSIX_ERR();
 
     // open the database
     snprintf(path_tmp, sizeof(path_tmp), "%s/meta.db", fs);
-    sqlite3 *db;
+    sqlite3 *db = NULL;
     err = sqlite3_open_v2(path_tmp, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL);
+    resources->db = db;
     CHECK_ERR();
     EXEC("pragma journal_mode=wal")
     EXEC("begin");
@@ -101,6 +156,7 @@ bool fakefs_import(const char *archive_path, const char *fs, struct fakefsify_er
 
     // open the archive
     struct archive *archive = archive_read_new();
+    resources->archive = archive;
     if (archive == NULL)
         ARCHIVE_ERR(archive);
     archive_read_support_filter_gzip(archive);
@@ -121,7 +177,8 @@ bool fakefs_import(const char *archive_path, const char *fs, struct fakefsify_er
 
     // do actual shit
     struct archive_entry *entry;
-    while ((err = archive_read_next_header(archive, &entry)) == ARCHIVE_OK) {
+    while ((err = archive_read_next_header(archive, &entry)) == ARCHIVE_OK ||
+            (err == ARCHIVE_WARN && pax_original_names(archive, entry))) {
         char entry_path[MAX_PATH];
         if (!path_normalize(archive_entry_pathname(entry), entry_path)) {
             // Avoid pwnage
@@ -171,6 +228,7 @@ bool fakefs_import(const char *archive_path, const char *fs, struct fakefsify_er
             case AE_IFCHR:
             case AE_IFSOCK:
                 fd = openat(root_fd, fix_path(entry_path), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+                resources->entry_fd = fd;
                 if (fd < 0) {
                     if (errno == EISDIR) continue; // assuming it's case insensitivity
                     POSIX_ERR();
@@ -211,6 +269,7 @@ bool fakefs_import(const char *archive_path, const char *fs, struct fakefsify_er
         }
         if (fd != -1)
             close(fd);
+        resources->entry_fd = -1;
 
         struct timespec times[2] = {
             // for utimes, atime is first, mtime is second
@@ -255,12 +314,23 @@ bool fakefs_import(const char *archive_path, const char *fs, struct fakefsify_er
     FINALIZE(insert_path);
     FINALIZE(insert_hardlink);
     EXEC("commit");
-    sqlite3_close(db);
-    close(root_fd);
-
-    if (archive_read_free(archive) != ARCHIVE_OK)
+    if (archive_read_close(archive) != ARCHIVE_OK)
         ARCHIVE_ERR(archive);
     return true;
+}
+
+bool fakefs_import(const char *archive_path, const char *fs, struct fakefsify_error *err_out, struct progress p) {
+    struct import_resources resources = {.root_fd = -1, .entry_fd = -1};
+    bool result = fakefs_import_contents(archive_path, fs, err_out, p, &resources);
+    if (resources.entry_fd >= 0) close(resources.entry_fd);
+    if (resources.archive) archive_read_free(resources.archive);
+    if (resources.db) {
+        sqlite3_stmt *statement;
+        while ((statement = sqlite3_next_stmt(resources.db, NULL))) sqlite3_finalize(statement);
+        sqlite3_close(resources.db);
+    }
+    if (resources.root_fd >= 0) close(resources.root_fd);
+    return result;
 }
 
 bool fakefs_export(const char *fs, const char *archive_path, struct fakefsify_error *err_out, struct progress p) {

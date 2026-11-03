@@ -66,7 +66,17 @@ LINUXRUNNER_JIT=YES LINUXRUNNER_VIRGL=YES scripts/build-ipa.sh --unsigned
 LINUXRUNNER_JIT=YES python3 scripts/verify-ipa.py build/releases
 ```
 
-`GPU_DEPS` must already be exported. The script checks the recorded virglrenderer/ANGLE revisions but records rather than enforces libepoxy's current HEAD; explicitly check out the table's libepoxy revision. It applies the retained iOS process-image patch to a copy. Output includes `build/gpu/iphoneos/REVISIONS` and static libraries/headers.
+`GPU_DEPS` must already be exported. The script checks the recorded virglrenderer/ANGLE revisions but records rather than enforces libepoxy's current HEAD; explicitly check out the table's libepoxy revision. It applies the retained process-image patch to a copy on both iOS and macOS, where ANGLE is linked statically. The build disables ANGLE's WebGPU backend as well as its other non-Metal backends. Output includes `build/gpu/iphoneos/REVISIONS` and static libraries/headers.
+
+For native Apple Silicon GPU qualification, run `scripts/build-gpu-deps.sh macosx`.
+The archive helper supports both ANGLE's iOS framework and macOS dylib link
+rules. `tests/linuxrunner/gpu/run-virgl-sampler-probe.sh` then builds the
+current host renderer and checks sampler submission prerequisites. The build
+adds a private, validated transparent-zero border operation using Metal's
+clamp-to-zero; it does not advertise the full GLES border-color extension.
+The probe checks supported samplers and explicit rejection of nonzero borders.
+These checks alone do not qualify a SteamOS desktop; see
+[the GPU compatibility contract](GPU_SAMPLER_COMPATIBILITY.md).
 
 This preparation re-audited the retained archive; it did not perform a clean rebuild of all graphics dependencies. Clean-checkout qualification of the additional dependency/source bundle remains a release review item. The app's linker must keep dynamically resolved EGL exports: the verified IPA retains 44 EGL exports, including `eglGetProcAddress` and `eglGetCurrentDisplay`.
 

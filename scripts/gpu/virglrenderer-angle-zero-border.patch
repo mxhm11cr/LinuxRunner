@@ -1,0 +1,58 @@
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -2586,6 +2586,38 @@
+    }
+ }
+ 
++#ifdef LINUXRUNNER_ANGLE_ZERO_BORDER
++/* Private ANGLE/Metal embedder operation. It does not advertise the full
++ * GLES border-color extension: only an all-zero border is representable. */
++static GLboolean (*linuxrunner_zero_border)(GLuint sampler, GLenum pname);
++void lr_vrend_set_zero_border_sampler(GLboolean (*operation)(GLuint, GLenum));
++void lr_vrend_set_zero_border_sampler(GLboolean (*operation)(GLuint, GLenum))
++{
++   linuxrunner_zero_border = operation;
++}
++#endif
++
++static bool apply_sampler_wrap(struct vrend_context *ctx, GLuint sampler,
++                               GLenum pname, unsigned wrap,
++                               const union pipe_color_union *border)
++{
++#ifdef LINUXRUNNER_ANGLE_ZERO_BORDER
++   if (vrend_state.use_gles && !has_feature(feat_sampler_border_colors) &&
++       wrap == PIPE_TEX_WRAP_CLAMP_TO_BORDER) {
++      if (!border->ui[0] && !border->ui[1] && !border->ui[2] && !border->ui[3] &&
++          linuxrunner_zero_border &&
++          linuxrunner_zero_border(sampler, pname))
++         return true;
++      vrend_report_context_error(ctx, VIRGL_ERROR_CTX_UNSUPPORTED_TEX_WRAP, wrap);
++      return false;
++   }
++#else
++   (void)border;
++#endif
++   glSamplerParameteri(sampler, pname, convert_wrap(ctx, wrap));
++   return true;
++}
++
+ int vrend_create_sampler_state(struct vrend_context *ctx,
+                                uint32_t handle,
+                                struct pipe_sampler_state *templ)
+@@ -2602,9 +2634,13 @@
+       glGenSamplers(2, state->ids);
+ 
+       for (int i = 0; i < 2; ++i) {
+-         glSamplerParameteri(state->ids[i], GL_TEXTURE_WRAP_S, convert_wrap(ctx, templ->wrap_s));
+-         glSamplerParameteri(state->ids[i], GL_TEXTURE_WRAP_T, convert_wrap(ctx, templ->wrap_t));
+-         glSamplerParameteri(state->ids[i], GL_TEXTURE_WRAP_R, convert_wrap(ctx, templ->wrap_r));
++         if (!apply_sampler_wrap(ctx, state->ids[i], GL_TEXTURE_WRAP_S, templ->wrap_s, &templ->border_color) ||
++             !apply_sampler_wrap(ctx, state->ids[i], GL_TEXTURE_WRAP_T, templ->wrap_t, &templ->border_color) ||
++             !apply_sampler_wrap(ctx, state->ids[i], GL_TEXTURE_WRAP_R, templ->wrap_r, &templ->border_color)) {
++            glDeleteSamplers(2, state->ids);
++            FREE(state);
++            return EINVAL;
++         }
+          glSamplerParameterf(state->ids[i], GL_TEXTURE_MIN_FILTER, convert_min_filter(templ->min_img_filter, templ->min_mip_filter));
+          glSamplerParameterf(state->ids[i], GL_TEXTURE_MAG_FILTER, convert_mag_filter(templ->mag_img_filter));
+          glSamplerParameterf(state->ids[i], GL_TEXTURE_MIN_LOD, templ->min_lod);

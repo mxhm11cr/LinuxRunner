@@ -46,4 +46,10 @@ Debian and Arch Linux ARM packages and additional Alpine packages are downloaded
 
 ## Source availability
 
+The host GPU build applies `virglrenderer-angle-zero-border.patch` to a copied
+virglrenderer tree. `angle-zero-border.py` compiles replacement ANGLE objects
+from copied source files; upstream checkouts stay unchanged. Retain those
+modifications and the pinned dependency sources with corresponding-source
+distributions.
+
 The application source, build scripts and dependency revisions are retained in the repository. [SOURCE_ORIGIN.txt](SOURCE_ORIGIN.txt) records the release lineage and exact dependency commits. Submodule contents are not included in GitHub's automatic source archives; initialize the pinned submodules when building from a clone. Source-distribution requirements for bundled binaries apply separately from the licenses of packages downloaded later by users. The release source asset must include the matching application snapshot, pinned build dependencies, graphics source/patches, matching Alpine recipes and checksum-verified inputs, and matching Ghostty Web/Ghostty source. The unchanged bundled Alpine root archive can use the already retained matching source inputs. Preserve the complete notices asset alongside the IPA.

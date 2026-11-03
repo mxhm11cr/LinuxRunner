@@ -19,6 +19,12 @@
 #include <virgl/virglrenderer.h>
 #include "graphics/virgl_backend.h"
 
+// Private bridge for the transparent-zero border used by desktop samplers.
+// ANGLE keeps the full GLES border-color extension unadvertised. virglrenderer
+// validates that the border is zero before calling the Metal operation.
+extern GLboolean LinuxRunnerANGLESetSamplerZeroBorder(GLuint sampler, GLenum pname);
+void lr_vrend_set_zero_border_sampler(GLboolean (*operation)(GLuint, GLenum));
+
 // virglrenderer's public header declares the transfer box opaquely; this is
 // its layout (src/virgl_hw.h), part of the transfer ABI.
 struct virgl_box { uint32_t x, y, z, w, h, d; };
@@ -64,6 +70,7 @@ const char *lr_virgl_host_status(void) { return status; }
 
 static void *gpu_main(void *unused) {
     (void) unused;
+    lr_vrend_set_zero_border_sampler(LinuxRunnerANGLESetSamplerZeroBorder);
     display = eglGetPlatformDisplayEXT(EGL_PLATFORM_ANGLE_ANGLE, (void *) EGL_DEFAULT_DISPLAY,
         (const EGLint[]) {EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE, EGL_NONE});
     EGLint major = 0, minor = 0, count = 0;
@@ -95,6 +102,11 @@ static void *gpu_main(void *unused) {
         while (!job) pthread_cond_wait(&slot_cond, &slot_lock);
         void (*run)(void *) = job; void *arg = job_arg;
         pthread_mutex_unlock(&slot_lock);
+        // Context creation and global resource operations can change actual
+        // GL bindings without going through virglrenderer's guest-context
+        // cache. Start every embedder operation on its host context so later
+        // submissions switch to the right guest context and retain its FBOs.
+        virgl_renderer_force_ctx_0();
         run(arg);
         pthread_mutex_lock(&slot_lock);
         job = NULL; job_done = true;

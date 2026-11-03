@@ -1,0 +1,404 @@
+{
+  "schema": 1,
+  "date_local": "2026-11-02",
+  "timezone": "America/Toronto",
+  "scope": "Capture-scoped SysV resource recovery; no new performance claim or default promotion",
+  "environment": {
+    "device": "iPad Air 13-inch (M4)",
+    "os": "iPadOS 27.2",
+    "configuration": "Release",
+    "guest_architecture": "aarch64",
+    "jit": false,
+    "virgl_compiled": true
+  },
+  "provenance": {
+    "reviewed_product_candidate": "b9d457a77bbe6859f7127c1c193636eedf29e8f8",
+    "base": "051a4707a5cfe5ef0d858c69c6fed4e67098b1e3",
+    "app_uuid": "A64F1E96-6883-3C2C-B32E-202C3B564186",
+    "test_bundle_uuid": "CB8AFE83-DFE6-3246-AFE3-D9686E986CDB",
+    "source_sha256": {
+      "kernel/capture_shm.h": "c48b0d3193d5d6b288c75d1c423513507feece31e1eb3b30c9ace0dd940a5641",
+      "kernel/ipc.c": "ed8c924ee02045cf90922588ca8ae965f25ad273c5ccc70f5c2c889560b2e2ba",
+      "kernel/ipc.h": "c05792eef3207c541881f21ca9146f22ddbcb8e4ce04bae8897ebfc9aae56979",
+      "kernel/task.c": "c474ad307e09d14f90f893f0a0fbc7852e4011b11f554089ed0a28e1d83b4f3d",
+      "kernel/task.h": "798f20ef3b4fb44263f4f0a636f5b789321394895c8de17733578eb512701bd8",
+      "kernel/exit.c": "4d6667a1f9edc24a36420a6c08de8284bfc6abe37956733098391d275066e129",
+      "kernel/fork.c": "a2c14bf0494f73ad5d3747b6b375c3032c46d7b51eafbeedd6d26b97ebe73dd9",
+      "kernel/misc.c": "27ea99c53f8514c68a2e88339b291cd69207c3cbb915c2a1ba39bbf196511042",
+      "fs/proc/ish.c": "f4b416de11995563eb91b921ffb8c21c51e0ad24a8f0596607a12411a78d2c8e",
+      "app/LinuxRunner/GUISupport.bundle/capture-shm-guard.c": "495fc0f5a4034776e1cc1cf1c901d008d114519652a2d1d51d24365c4abf8151",
+      "app/LinuxRunner/GUISupport.bundle/capture-shm-guard.arm64": "5b5705fb531e0e493b28ac3e5b3c5e99bc4f60a075fa45f7468459fe63806db1",
+      "app/LinuxRunner/GUISupport.bundle/session.sh": "080dc6f893aab23da6769c05b9316ffcf3c0fc1d02181c3a3dd6bcec47ad623f",
+      "app/LinuxRunner/GUISupport.bundle/support-manifest.json": "ee55f17528195f0c5449010329ffd713231b991b1561f1eaff2ae057f28785db",
+      "app/LinuxRunner/GUISupport.bundle/support.sha256": "449aa21d8ada9cef568dbd9c32d395f7793ac833e5ec19323f9f34e2ddb77510",
+      "scripts/build-capture-shm-guard.sh": "c3abe1724aa823be5ea92da2aaa27a3f247d48c75b8e78456d62b1438c6a584d",
+      "scripts/generate-gui-support-manifest.py": "95605414f953f1d50474a10e4df215f79929cf5c76910cbdfaf14edf1beb46ad",
+      "app/UITests/ReferenceDistributionUITests.m": "7cf806505ef26fc38b8e331857440986e9cd1bd83b9c393ae832970c47723a58",
+      "tests/linuxrunner/capture_shm_contract.c": "faeb7a38dc59b957041c5830d58bc35258f186b92e8059d3dcd61d36cb5e1d61",
+      "tests/linuxrunner/run-capture-shm.py": "1cc3ab9b831845be22c4a0aca9adc0f4c641a61446d8fbe29b7ee3b68c0adfa5",
+      "tests/linuxrunner/ios/capture_cleanup_device.sh": "98bda15e57262a0a3fe83a36c59dc1d4fa4129ae0ce1e3c4392ce764d2a44940",
+      "tests/linuxrunner/ios/verify_capture_cleanup.py": "fbabcdc81e07fb28da1fa8deadd581e67a0a7e7dad20c14b7bdb70fa3c0dcb6b",
+      "tests/linuxrunner/gui/test_capture_cleanup_evidence.py": "96677ced5dce16b1370f70efd71da11877878d54ac8fa8b5f26a6a1f15c2f28a",
+      "tests/linuxrunner/gui/test_capture_cleanup_selection.py": "3f4483b313d7f1f0e79f36e1b02eda89d6f41239566cd83ad94a91368afa20c2"
+    },
+    "host_runtime_sha256": "6096898ca6971bc1eea6d0d6f11e30c03de4704eee191a7663b672597261d283",
+    "host_contract_log_sha256": "d075155008c11e3edd6cf4c957e63d5de0092b5307636c0dadded35b2480ae84"
+  },
+  "host_contract": {
+    "result": "PASS",
+    "single_process_kills": 64,
+    "multithreaded_group_kills": 16,
+    "ordinary_persistence": true,
+    "fork_isolation": true,
+    "exec_retention": true,
+    "last_thread_ownership": true,
+    "attached_mapping_retention": true,
+    "rejected_capability_socket_fallback": true
+  },
+  "physical": {
+    "steamos": {
+      "result": "PASS",
+      "same_runtime": true,
+      "cycles": [
+        {
+          "cycle": 1,
+          "phase": "ready-kill",
+          "baseline": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          },
+          "live": {
+            "segments": 51,
+            "backing_fds": 51,
+            "bytes": 11064160,
+            "attachments": 102,
+            "capture_segments": 51,
+            "scopes": 1,
+            "close_failures": 0
+          },
+          "after": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          }
+        },
+        {
+          "cycle": 2,
+          "phase": "ready-kill",
+          "baseline": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          },
+          "live": {
+            "segments": 51,
+            "backing_fds": 51,
+            "bytes": 11064160,
+            "attachments": 102,
+            "capture_segments": 51,
+            "scopes": 1,
+            "close_failures": 0
+          },
+          "after": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          }
+        },
+        {
+          "cycle": 3,
+          "phase": "ready-kill",
+          "baseline": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          },
+          "live": {
+            "segments": 51,
+            "backing_fds": 51,
+            "bytes": 11064160,
+            "attachments": 102,
+            "capture_segments": 51,
+            "scopes": 1,
+            "close_failures": 0
+          },
+          "after": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          }
+        },
+        {
+          "cycle": 4,
+          "phase": "ready-kill",
+          "baseline": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          },
+          "live": {
+            "segments": 51,
+            "backing_fds": 51,
+            "bytes": 11064160,
+            "attachments": 102,
+            "capture_segments": 51,
+            "scopes": 1,
+            "close_failures": 0
+          },
+          "after": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          }
+        },
+        {
+          "cycle": 5,
+          "phase": "normal-stop",
+          "baseline": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          },
+          "live": {
+            "segments": 51,
+            "backing_fds": 51,
+            "bytes": 11064160,
+            "attachments": 102,
+            "capture_segments": 51,
+            "scopes": 1,
+            "close_failures": 0
+          },
+          "after": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          }
+        }
+      ],
+      "monitor_log_sha256": "90802d94a22046b40323a40fedc9c06e2abebe4981451ce57096598928d2b2a5",
+      "ui_result_sha256": "d5a4ba9723e5d847dcc2143c54eed5ca1dfc45e531b324755d2e5bfc4281cf1a"
+    },
+    "arch": {
+      "result": "PASS",
+      "same_runtime": true,
+      "cycles": [
+        {
+          "cycle": 1,
+          "phase": "ready-kill",
+          "baseline": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          },
+          "live": {
+            "segments": 32,
+            "backing_fds": 32,
+            "bytes": 3982080,
+            "attachments": 64,
+            "capture_segments": 32,
+            "scopes": 1,
+            "close_failures": 0
+          },
+          "after": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          }
+        },
+        {
+          "cycle": 2,
+          "phase": "ready-kill",
+          "baseline": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          },
+          "live": {
+            "segments": 32,
+            "backing_fds": 32,
+            "bytes": 3982080,
+            "attachments": 64,
+            "capture_segments": 32,
+            "scopes": 1,
+            "close_failures": 0
+          },
+          "after": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          }
+        },
+        {
+          "cycle": 3,
+          "phase": "ready-kill",
+          "baseline": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          },
+          "live": {
+            "segments": 32,
+            "backing_fds": 32,
+            "bytes": 3982080,
+            "attachments": 64,
+            "capture_segments": 32,
+            "scopes": 1,
+            "close_failures": 0
+          },
+          "after": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          }
+        },
+        {
+          "cycle": 4,
+          "phase": "ready-kill",
+          "baseline": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          },
+          "live": {
+            "segments": 32,
+            "backing_fds": 32,
+            "bytes": 3982080,
+            "attachments": 64,
+            "capture_segments": 32,
+            "scopes": 1,
+            "close_failures": 0
+          },
+          "after": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          }
+        },
+        {
+          "cycle": 5,
+          "phase": "normal-stop",
+          "baseline": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          },
+          "live": {
+            "segments": 32,
+            "backing_fds": 32,
+            "bytes": 3982080,
+            "attachments": 64,
+            "capture_segments": 32,
+            "scopes": 1,
+            "close_failures": 0
+          },
+          "after": {
+            "segments": 0,
+            "backing_fds": 0,
+            "bytes": 0,
+            "attachments": 0,
+            "capture_segments": 0,
+            "scopes": 0,
+            "close_failures": 0
+          }
+        }
+      ],
+      "monitor_log_sha256": "f665e703553f071e1e531048488598449273ba2fd45e7267abb50f86e6b6cd82",
+      "ui_result_sha256": "f2890135e16129478c516c07b8d9f36465c0247d2f5ececacc554f4c82343b39"
+    }
+  },
+  "limits": [
+    "Four forced capture kills and one normal stop per distribution in a single app/guest runtime per run; not a sustained reliability soak.",
+    "Truly stuck host threads remain outside the safety claim; failed-start and forced-orphan cleanup were source-reviewed, not fault-injected.",
+    "Early real-x11vnc partial initialization, allocation/attach failure recovery, external displays and simultaneous scenes were not physically qualified.",
+    "Guest exit notices during forced teardown are retained in private XCTest artifacts, not treated as capture resource results.",
+    "UI pilots v1-v5 excluded; physical acceptance requires both UI readiness and the independent five-cycle ALL_PASS log.",
+    "All byte counters are requested segment sizes, not total process footprint or committed physical memory.",
+    "Prior responsiveness measurements used the earlier runtime; no new battery, frame-rate, panel-latency or CPU claim."
+  ],
+  "post_qualification_socket_smoke": {
+    "result": "PASS",
+    "desktop_ready": true,
+    "konsole_aarch64_via_synthetic_input": true,
+    "bounded_repaint": true,
+    "session_capture": "off",
+    "ui_result_sha256": "2be73059ae244270baf7cf5a0f0cf2d7fea9fcff1023456a960caa195a838e42",
+    "session_log_sha256": "e5a406276a6ca2a68f86b462b1274905e3e461ceddeecc09d44b831709145622"
+  }
+}

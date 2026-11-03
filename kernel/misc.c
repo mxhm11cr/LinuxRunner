@@ -2,12 +2,17 @@
 #include <stdatomic.h>
 #include "kernel/calls.h"
 #include "kernel/task.h"
+#include "kernel/ipc.h"
+#include "kernel/capture_shm.h"
 
 #define PRCTL_SET_KEEPCAPS_ 8
 #define PRCTL_SET_NAME_ 15
 
 int_t sys_prctl(dword_t option, addr_t arg2, addr_t arg3, addr_t arg4, addr_t arg5) {
     switch (option) {
+        case LR_PR_CAPTURE_SHM:
+            if (arg2 != LR_CAPTURE_SHM_VERSION || arg3 || arg4 || arg5) return _EINVAL;
+            return ipc_capture_shm_enable();
         case 1: // PR_SET_PDEATHSIG
             if (arg2 >= NUM_SIGS) return _EINVAL;   // 0 clears
             current->pdeath_signal = (int) arg2;

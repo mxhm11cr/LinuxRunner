@@ -76,11 +76,16 @@ Default output is `build/releases/LinuxRunner.ipa` with the retained archive, sy
 
 Unsigned mode adds an ad-hoc signature without Apple provisioning. A compatible installation method must provide device authorization. For your own signing, configure an Apple team in Xcode and use `TEAM_ID=YOUR_TEAM_ID scripts/build-ipa.sh`, adding the variant variables above if desired. Never commit certificates, keys or provisioning profiles. Optional App Group access uses `group.dev.linuxrunner.app`; a private-container fallback exists.
 
-Alpine 3.24.2 is checksum-pinned. `ROOTFS_CACHE` can provide the cached archive; validation still applies. `verify-ipa.py` checks package identity, rootfs hash, 90 GUI resources, source fingerprint, device Mach-O dependencies, IPA/archive identity and matching symbols. Set `LINUXRUNNER_VERIFY_SOURCE_TREE` and `LINUXRUNNER_EXPECTED_SOURCE_COMMIT` when checking a retained artifact against its source.
+Alpine 3.24.2 is checksum-pinned. `ROOTFS_CACHE` can provide the cached archive; validation still applies. `verify-ipa.py` checks package identity, rootfs hash, the generated GUI resource manifest, source fingerprint, device Mach-O dependencies, IPA/archive identity and matching symbols. Set `LINUXRUNNER_VERIFY_SOURCE_TREE` and `LINUXRUNNER_EXPECTED_SOURCE_COMMIT` when checking a retained artifact against its source.
 
 ## Guest Helpers and Runtime Tests
 
 Guest helpers in `GUISupport.bundle` are not all rebuilt by an ordinary app build. Their sources/recipes are mapped in [bundled-guest-source-map.json](../licenses/bundled-guest-source-map.json). Preserve matching source and notices for the bundled rootfs, terminal renderer and graphics dependencies.
+
+The freestanding capture cleanup launcher is reproducible with
+`CAPTURE_LD=/path/to/ld.lld scripts/build-capture-shm-guard.sh`. Regenerate the
+GUI resource manifest afterward. See [capture cleanup](CAPTURE_CLEANUP.md) for
+its ARM64 host contract and physical-device qualification.
 
 ```sh
 meson setup build/host -Dengine=asbestos -Dguest_arch=arm64 -Djit=false -Djit_emit=false -Dcli_aot=

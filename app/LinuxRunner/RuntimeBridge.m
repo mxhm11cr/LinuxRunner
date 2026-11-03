@@ -1,5 +1,7 @@
 #import "RuntimeBridge.h"
 #include "LinuxAccountPolicy.h"
+#include "DisplayPolicy.h"
+#import "CapturePolicy.h"
 #import "GuestMetalBackend.h"
 #import "FileTransfer.h"
 #import "FileArchive.h"
@@ -689,6 +691,24 @@ static NSString *LRJITLastFailure;   // reason of the last refused or failed act
         if([key hasPrefix:@"LinuxRunnerDesktop.resolution."]&&[d integerForKey:key]==4)[d setInteger:3 forKey:key];
     [d setBool:YES forKey:@"LinuxRunnerDesktop.landscapeDefault.v1"];
 }
++ (NSInteger)desktopResolutionIndex {
+    NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
+    NSString *root=self.activeRootName;
+    NSString *key=[@"LinuxRunnerDesktop.resolution." stringByAppendingString:root];
+    NSString *migration=[@"LinuxRunnerDesktop.steamosIPadFit.v1." stringByAppendingString:root];
+    id saved=[d objectForKey:key];
+    BOOL steamosIPad=self.activeEnvironmentIsSteamOS&&UIDevice.currentDevice.userInterfaceIdiom==UIUserInterfaceIdiomPad;
+    NSInteger choice=lr_desktop_resolution(saved?(int)MAX(0,MIN(4,[saved integerValue])):-1,steamosIPad,[d boolForKey:migration]);
+    if(steamosIPad&&![d boolForKey:migration]) {
+        [d setInteger:choice forKey:key];
+        [d setBool:YES forKey:migration];
+    }
+    return choice;
+}
++ (BOOL)desktopMetalPresentationEnabled {
+    id choice=[NSUserDefaults.standardUserDefaults objectForKey:@"LinuxRunnerDesktop.metalPresentation"];
+    return choice?[choice boolValue]:(self.activeEnvironmentIsSteamOS&&self.virglActive&&UIDevice.currentDevice.userInterfaceIdiom==UIUserInterfaceIdiomPad);
+}
 + (void)prepareExecutionBackendAtLaunch {
     [self migrateDesktopSizeToLandscape];
     static dispatch_once_t observe;
@@ -748,11 +768,22 @@ static NSString *LRJITLastFailure;   // reason of the last refused or failed act
     LRInstallProgress *reporter=[LRInstallProgress new];reporter.progress=progress;reporter.cancel=cancel;
     return [Roots.instance importVerifiedRootFromArchive:archive name:root sha256:sha256 metadata:metadata error:error progressReporter:reporter];
 }
+// Request policy only; session.sh independently probes the runtime cleanup
+// capability before allowing x11vnc to create shared capture buffers.
++ (BOOL)desktopSharedImagesEnabled {
+    NSDictionary *catalog=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:self.catalogURL]?:[NSData data] options:0 error:nil];
+    NSDictionary *installation=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:[[self rootURL:self.activeRootName] URLByAppendingPathComponent:@"environment-install.json"]]?:[NSData data] options:0 error:nil];
+    return LRDesktopSharedCaptureEnabled(NSUserDefaults.standardUserDefaults,self.activeRootName,catalog[@"environments"],installation);
+}
 + (BOOL)activeEnvironmentIsArch {
     NSDictionary *catalog=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:self.catalogURL]?:[NSData data] options:0 error:nil];
     for(NSDictionary *e in catalog[@"environments"])if([e[@"rootfsName"] isEqual:self.activeRootName])return [e[@"distributionID"] isEqual:@"arch"];
     NSDictionary *installation=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:[[self rootURL:self.activeRootName] URLByAppendingPathComponent:@"environment-install.json"]]?:[NSData data] options:0 error:nil];
     return [installation[@"distributionID"] isEqual:@"arch"];
+}
++ (BOOL)activeEnvironmentIsSteamOS {
+    NSDictionary *installation=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:[[self rootURL:self.activeRootName] URLByAppendingPathComponent:@"environment-install.json"]]?:[NSData data] options:0 error:nil];
+    return [installation[@"distributionID"] isEqual:@"steamos"];
 }
 + (BOOL)importVerifiedEnvironment:(NSURL *)archive root:(NSString *)root sha256:(NSString *)sha256 progress:(void (^)(double,NSString *))progress cancel:(BOOL (^)(void))cancel error:(NSError **)error {
     LRInstallProgress *reporter=[LRInstallProgress new];reporter.progress=progress;reporter.cancel=cancel;

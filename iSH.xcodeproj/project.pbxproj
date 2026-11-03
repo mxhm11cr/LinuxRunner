@@ -21,6 +21,7 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
+        1A13000000000000000000C1 /* CaptureCleanupUITests.m in Sources */ = {isa = PBXBuildFile; fileRef = 1A14000000000000000000C1; };
         1F5300000000000000000048 /* LinuxRunnerLaunch.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 1F5400000000000000000048; };
 		1C1100000000000000000004 /* DebianSupport.bundle */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000004; };
 		1C1100000000000000000003 /* DebianInstaller.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000003; };
@@ -349,6 +350,7 @@
 		1A1100000000000000000003 /* RuntimeBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = 1A1200000000000000000003; };
 		1A1100000000000000000004 /* FileTransfer.c in Sources */ = {isa = PBXBuildFile; fileRef = 1A1200000000000000000004; };
 		1A1300000000000000000001 /* LinuxRunnerUITests.m in Sources */ = {isa = PBXBuildFile; fileRef = 1A1400000000000000000001; };
+		1A13000000000000000000B1 /* ReferenceDistributionUITests.m in Sources */ = {isa = PBXBuildFile; fileRef = 1A14000000000000000000B1; };
 		1F5100000000000000000048 /* MetalFramebufferView.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F5200000000000000000048; };
 		1F51000000000000000000A1 /* AudioBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F52000000000000000000A1; };
 		1F51000000000000000000A4 /* PasswordHash.c in Sources */ = {isa = PBXBuildFile; fileRef = 1F52000000000000000000A4; };
@@ -552,6 +554,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+        1A14000000000000000000C1 /* CaptureCleanupUITests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = app/UITests/CaptureCleanupUITests.m; sourceTree = SOURCE_ROOT; };
         1F5400000000000000000048 /* LinuxRunnerLaunch.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = app/LinuxRunner/LinuxRunnerLaunch.storyboard; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000004 /* DebianSupport.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = app/LinuxRunner/DebianSupport.bundle; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000003 /* DebianInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/DebianInstaller.swift; sourceTree = SOURCE_ROOT; };
@@ -902,6 +905,7 @@
 		1A1200000000000000000003 /* RuntimeBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = app/LinuxRunner/RuntimeBridge.m; sourceTree = SOURCE_ROOT; };
 		1A1200000000000000000004 /* FileTransfer.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = app/LinuxRunner/FileTransfer.c; sourceTree = SOURCE_ROOT; };
 		1A1400000000000000000001 /* LinuxRunnerUITests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = app/UITests/LinuxRunnerUITests.m; sourceTree = SOURCE_ROOT; };
+		1A14000000000000000000B1 /* ReferenceDistributionUITests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = app/UITests/ReferenceDistributionUITests.m; sourceTree = SOURCE_ROOT; };
 		1F5200000000000000000048 /* MetalFramebufferView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = app/LinuxRunner/MetalFramebufferView.m; sourceTree = SOURCE_ROOT; };
 		1F52000000000000000000A1 /* AudioBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = app/LinuxRunner/AudioBridge.m; sourceTree = SOURCE_ROOT; };
 		1F52000000000000000000A2 /* AudioBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = app/LinuxRunner/AudioBridge.h; sourceTree = SOURCE_ROOT; };
@@ -1194,6 +1198,7 @@
 			isa = PBXGroup;
 			children = (
 				1A1400000000000000000001,
+                1A14000000000000000000C1,
 				1A1200000000000000000004 /* FileTransfer.c */,
 				1F5200000000000000000048 /* MetalFramebufferView.m */,
 				1F52000000000000000000A1 /* AudioBridge.m */,
@@ -2664,6 +2669,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				1A1300000000000000000001,
+				1A13000000000000000000B1,
+                1A13000000000000000000C1,
 				BB41591F255EF9E300E0950C /* UITests.m in Sources */,
 				BBD23D5F258DA450003DCB40 /* Screenshots.m in Sources */,
 				BBD23D77258DA4BC003DCB40 /* SnapshotHelper.swift in Sources */,

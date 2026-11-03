@@ -20,6 +20,7 @@
 #endif
 #import "AppDelegate.h"
 #import "AppGroup.h"
+#import "UnixSocketDirectory.h"
 #import "CurrentRoot.h"
 #import "ExceptionExfiltrator.h"
 #import "iOSFS.h"
@@ -274,7 +275,7 @@ static int bootError;
     exit_hook = ios_handle_exit;
     die_handler = ios_handle_die;
 #if !TARGET_OS_SIMULATOR
-    NSString *sockTmp = [NSTemporaryDirectory() stringByAppendingString:@"ishsock"];
+    NSString *sockTmp = [LRUnixSocketDirectory(NSTemporaryDirectory()) stringByAppendingPathComponent:@"ishsock"];
     sock_tmp_prefix = strdup(sockTmp.UTF8String);
 #endif
     

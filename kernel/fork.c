@@ -7,6 +7,7 @@
 #include "fs/tty.h"
 #include "kernel/mm.h"
 #include "kernel/ptrace.h"
+#include "kernel/ipc.h"
 
 // Architecture-specific register access for fork/clone
 #if defined(GUEST_ARM64)
@@ -163,6 +164,8 @@ static int copy_task(struct task *task, dword_t flags, addr_t stack, addr_t ptid
     task->pdeath_signal = 0;   // PR_SET_PDEATHSIG is not inherited
 
     // remember to do CLONE_SYSVSEM
+    if (flags & CLONE_THREAD_)
+        ipc_capture_shm_inherit_thread(task);
     return 0;
 
 fail_free_sighand:

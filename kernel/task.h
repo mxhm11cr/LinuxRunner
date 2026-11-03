@@ -28,6 +28,9 @@ struct task {
     unsigned diagnostic_memory_stage; // 0 idle, 1 upgrade, 2 write wait, 3 materialize
 
     struct tgroup *group; // immutable
+    // Explicit capture lease. Private to this task; shared by CLONE_THREAD
+    // only. Its object/reference count is protected by the IPC lock.
+    struct capture_shm_scope *capture_shm; // pending lease until host thread starts
     struct list group_links;
     pid_t_ pid, tgid; // immutable
     uid_t_ uid, gid;

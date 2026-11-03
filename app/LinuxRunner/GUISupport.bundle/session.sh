@@ -195,6 +195,15 @@ case "$shm_mode" in
  sysv) shm_switch=+extension; vnc_shm_option=;;
  *) echo 'GUI_SESSION: invalid shared-image mode (off or sysv required)'; exit 2;;
 esac
+capture_launcher=
+if [ "$shm_mode" = sysv ]; then
+    if [ -x ./capture-shm-guard.arm64 ] && ./capture-shm-guard.arm64 --probe; then
+        capture_launcher=./capture-shm-guard.arm64
+    else
+        echo 'GUI_CAPTURE: cleanup unavailable; using socket capture'
+        shm_mode=off; shm_switch=-extension; vnc_shm_option=-noshm
+    fi
+fi
 echo "GUI_CAPTURE: shared-images=$shm_mode"
 # Wayfire draws into this X server through MIT-SHM (wlroots' X11 backend with its
 # software renderer); x11vnc keeps the capture path chosen above.
@@ -339,7 +348,11 @@ case "$mode:$(cat "$session/desktop-environment" 2>/dev/null)" in
     desktop:wayfire) if [ -c /dev/dri/card1 ] && command -v wayfire >/dev/null; then vnc_cursor_option=-nocursor; fi;;
 esac
 [ -z "$vnc_cursor_option" ] || echo 'GUI_SESSION: pointer=compositor (x11vnc draws none)'
-x11vnc -norc -display "$DISPLAY" -auth "$XAUTHORITY" -localhost -no6 -rfbport "$port" -passwdfile "$session/password" $vnc_lifetime $vnc_shm_option $vnc_timing_options -noxrecord -noscr -nosel -noclipboard -nocursorshape $vnc_cursor_option -nolookup $input_option "$xkb" > "$session/display.log" 2>&1 & vpid=$!
+$capture_launcher "$(command -v x11vnc)" -norc -display "$DISPLAY" -auth "$XAUTHORITY" -localhost -no6 -rfbport "$port" -passwdfile "$session/password" $vnc_lifetime $vnc_shm_option $vnc_timing_options -noxrecord -noscr -nosel -noclipboard -nocursorshape $vnc_cursor_option -nolookup $input_option "$xkb" > "$session/display.log" 2>&1 & vpid=$!
+# Diagnostic identity for this owned child; consumers must recheck both its
+# parent and start time before signalling it (a PID alone can be reused).
+capture_start=$(sed 's/.*) //' "/proc/$vpid/stat" 2>/dev/null | cut -d ' ' -f 20)
+[ -z "$capture_start" ] || printf '%s %s %s\n' "$vpid" "$$" "$capture_start" > "$session/capture-process"
 echo "GUI_SESSION: stage=vnc-started port=$port"
 if [ "$mode" = test ]; then ./gui-test > "$session/application.log" 2>&1 &
 elif [ "$mode" = xterm ]; then xterm -geometry 80x24+0+0 -fn fixed -xrm 'XTerm*renderFont: false' > "$session/application.log" 2>&1 &

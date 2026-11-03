@@ -20,6 +20,13 @@ static inline bool lr_touchpad_move(double *x, double *y, double dx, double dy,
 static inline double lr_input_gain(double value, double fallback) {
     return isfinite(value) && value >= .25 && value <= 4 ? value : fallback;
 }
+// SteamOS on iPad replaces the old 16:9 default once. Later explicit choices
+// (including Wide) survive; the existing iPhone and other distro defaults stay.
+static inline unsigned lr_desktop_resolution(int saved, bool steamos_ipad, bool migrated) {
+    if (saved < 0) return steamos_ipad ? 4 : 3;
+    if (steamos_ipad && !migrated && saved == 3) return 4;
+    return saved > 4 ? 4 : (unsigned)saved;
+}
 // Bound interpreted software rendering, preserving aspect ratio. This is a
 // guest resolution, not a claim of driving a monitor at its native pixel count.
 static inline void lr_desktop_geometry(double w, double h, uint16_t *width, uint16_t *height) {

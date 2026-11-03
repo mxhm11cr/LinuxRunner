@@ -43,6 +43,16 @@
       "mode": "0644"
     },
     {
+      "name": "capture-shm-guard.arm64",
+      "sha256": "5b5705fb531e0e493b28ac3e5b3c5e99bc4f60a075fa45f7468459fe63806db1",
+      "mode": "0755"
+    },
+    {
+      "name": "capture-shm-guard.c",
+      "sha256": "495fc0f5a4034776e1cc1cf1c901d008d114519652a2d1d51d24365c4abf8151",
+      "mode": "0644"
+    },
+    {
       "name": "desktop-components.sh",
       "sha256": "70d3176a1d7b0ddc12a4df4906c05f5abaa5d4b3999a4bf66c60dbbb49e0f26c",
       "mode": "0755"
@@ -409,7 +419,7 @@
     },
     {
       "name": "session.sh",
-      "sha256": "7d33bc02a949ae221e24f9bf5861a8fb0238211b3c125d2f1d1a2bb46bd60ba0",
+      "sha256": "9bb47dfe075f107ea0b4364ce5cad1c5bfdc037b1c56d56fa5ff2072d77e6e26",
       "mode": "0755"
     },
     {

@@ -17,6 +17,7 @@
 #include "fs/path.h"
 #include "fs/real.h"
 #include "fs/sock.h"
+#include "fs/unix_socket_path.h"
 #include "fs/poll.h"
 #include "debug.h"
 
@@ -616,9 +617,9 @@ static int sockaddr_read_bind(addr_t sockaddr_addr, void *sockaddr, uint_t *sock
             }
 
             struct sockaddr_un *real_addr_un = sockaddr;
-            int path_len = snprintf(real_addr_un->sun_path, sizeof(real_addr_un->sun_path),
-                                    "%s%d.%u", sock_tmp_prefix, getpid(), socket_id);
-            if (path_len < 0 || (size_t) path_len >= sizeof(real_addr_un->sun_path))
+            size_t path_len = unix_socket_host_path(sock_tmp_prefix, (uint32_t)getpid(),
+                                    socket_id, real_addr_un->sun_path, sizeof(real_addr_un->sun_path));
+            if (path_len == 0)
                 return _ENAMETOOLONG;
             // The call to real bind will fail if the backing socket already
             // exists from a previous run or something. We already checked that

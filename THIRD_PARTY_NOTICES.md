@@ -20,6 +20,12 @@ LinuxRunner derives from iSH (Theodore Dubois and contributors) through ios-linu
 
 The app bundles `gpu-glx-notice.txt`, `gpu-bridge-notice.txt`, `mesa-demos-notice.txt`, `shader-compiler-notices.txt`, `terminal-notices.txt` and xterm's `LICENSES.md`. Retain these notices in the source and packaged application.
 
+The capture cleanup launcher is LinuxRunner code under the combined application's
+GPL terms. Its preferred source, ABI header and freestanding ARM64 build recipe
+are retained in `GUISupport.bundle/capture-shm-guard.c`, `kernel/capture_shm.h` and
+`scripts/build-capture-shm-guard.sh`, with its binary hash in the guest source map.
+It links no guest libc or third-party runtime.
+
 The custom LinuxRunner wallpaper and active icon have retained generation scripts and original SVG geometry. Inherited alternate iSH icons retain their original files. KDE wallpaper and application artwork visible in screenshots belong to their respective projects.
 
 ## GPU-enabled Build 900

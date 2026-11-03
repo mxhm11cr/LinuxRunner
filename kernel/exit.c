@@ -8,6 +8,7 @@
 #include "kernel/mm.h"
 #include "kernel/futex.h"
 #include "kernel/ptrace.h"
+#include "kernel/ipc.h"
 #include "fs/fd.h"
 #include "fs/tty.h"
 #include "platform/platform.h"
@@ -77,6 +78,7 @@ noreturn void do_exit(int status) {
     lock(&pids_lock);
     if (current->exiting) {
         unlock(&pids_lock);
+        ipc_capture_shm_exit_current();
         current = NULL;
         pthread_exit(NULL);
     }
@@ -118,6 +120,7 @@ noreturn void do_exit(int status) {
 
     futex_pi_exit();
     futex_robust_exit();
+    ipc_capture_shm_exit_current();
 
     // has to happen before mm_release
     addr_t clear_tid = current->clear_tid;

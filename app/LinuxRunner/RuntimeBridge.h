@@ -55,7 +55,9 @@ void LRSetDatalessMaterialization(void);
 + (BOOL)assembleArchPackages:(NSArray<NSString *> *)packages localNames:(NSArray<NSString *> *)names localDescriptions:(NSArray<NSString *> *)descriptions toArchive:(NSURL *)archive progress:(void (^)(double))progress cancel:(BOOL (^)(void))cancel error:(NSError **)error;
 + (BOOL)importVerifiedEnvironment:(NSURL *)archive root:(NSString *)root sha256:(NSString *)sha256 metadata:(NSDictionary<NSString *, NSString *> *)metadata progress:(void (^)(double, NSString *))progress cancel:(BOOL (^)(void))cancel error:(NSError **)error;
 + (BOOL)activeEnvironmentIsArch;
++ (BOOL)desktopSharedImagesEnabled;
 + (BOOL)activeEnvironmentIsDebian;
++ (BOOL)activeEnvironmentIsSteamOS;
 + (NSDictionary *)probeJITPermissions;
 /// Execution backend. The JIT exists only in the JIT-capable build variant and
 /// runs only after iOS grants executable memory (an attached debugger such as
@@ -79,6 +81,8 @@ void LRSetDatalessMaterialization(void);
 + (void)setExecutionMode:(NSString *)mode;
 + (BOOL)debuggerAttached;
 + (void)setDesktopDisplayWidth:(NSUInteger)width height:(NSUInteger)height;   // KMS preferred mode for the next desktop
++ (NSInteger)desktopResolutionIndex;
++ (BOOL)desktopMetalPresentationEnabled;
 + (NSString *)gpuMode;                     // automatic, metal, software
 + (void)setGPUMode:(NSString *)mode;
 + (NSDictionary *)gpuStatus;                 // mode, active renderer, detail

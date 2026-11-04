@@ -10,7 +10,7 @@ Distinguish a successful launch, basic interaction and a longer feature test. In
 
 ## Propose a Change
 
-Read [Architecture](docs/ARCHITECTURE.md) and [Building](docs/BUILDING.md). Keep each pull request focused, preserve existing distributions and explain the behavior changed and how it was verified. Use meaningful tests for runtime changes and state the actual test environment; do not turn a development test into a physical-device claim.
+Read [Architecture](docs/ARCHITECTURE.md) and [Building](docs/BUILDING.md). Keep each pull request focused, preserve existing distributions and explain the behavior that changed and how it was verified. Use meaningful tests for runtime changes and state the actual test environment; do not turn a development test into a physical-device claim.
 
 Follow the surrounding C, Objective-C, Swift and shell style. Do not commit signing credentials, provisioning profiles, private logs, personal data or unrelated binaries. License-check third-party code and retain its preferred source/build instructions and notices.
 

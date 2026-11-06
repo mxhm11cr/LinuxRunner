@@ -225,11 +225,17 @@ WF_SHELL_INI
     { echo 'DESKTOP_STARTUP: wayfire bridge build failed'; exit 127; }
   fi
   wayfire > "$session/wayfire.log" 2>&1 & wm=$!; surface=$wm
-  ( i=0
+  start_panel() {
+   ( i=0
     until socket=$(ls "$XDG_RUNTIME_DIR" 2>/dev/null | grep -m1 '^wayland-[0-9]*$') && [ -S "$XDG_RUNTIME_DIR/$socket" ]; do
      i=$((i+1)); [ "$i" -lt 600 ] || exit 1; sleep .5; done
     publish_wayland "$XDG_RUNTIME_DIR/$socket"
-    WAYLAND_DISPLAY=$socket exec "$bridge" /dev/dri/card1 ) >> "$session/kms-bridge.log" 2>&1 & panel=$!
+    if [ "$(cat "$session/display-transport" 2>/dev/null)" = direct-kms ]; then
+     rm -f "$session/native-input-ready"
+     LR_NATIVE_INPUT_READY="$session/native-input-ready" WAYLAND_DISPLAY=$socket exec "$bridge" /dev/dri/card1 --native-input
+    else WAYLAND_DISPLAY=$socket exec "$bridge" /dev/dri/card1; fi ) >> "$session/kms-bridge.log" 2>&1 & panel=$!
+  }
+  start_panel
  else
   wayfire > "$session/wayfire.log" 2>&1 & wm=$!; panel=$wm; surface=$wm
   ( i=0
@@ -342,7 +348,10 @@ elif [ "$environment" = hyprland ]; then
      i=$((i+1)); [ "$i" -lt 600 ] || exit 1; sleep .5; done
     # The bridge shows the scanout of the card Hyprland drives (virtio-gpu or software KMS).
     publish_wayland "$XDG_RUNTIME_DIR/$socket"
-    WAYLAND_DISPLAY=$socket exec "$bridge" "${AQ_DRM_DEVICES%%:*}" ) >> "$session/kms-bridge.log" 2>&1 & panel=$!
+    if [ "$(cat "$session/display-transport" 2>/dev/null)" = direct-kms ]; then
+     rm -f "$session/native-input-ready"
+     LR_NATIVE_INPUT_READY="$session/native-input-ready" WAYLAND_DISPLAY=$socket exec "$bridge" "${AQ_DRM_DEVICES%%:*}" --native-input
+    else WAYLAND_DISPLAY=$socket exec "$bridge" "${AQ_DRM_DEVICES%%:*}"; fi ) >> "$session/kms-bridge.log" 2>&1 & panel=$!
  }
  start_panel
  integrated=1; limit=600
@@ -389,7 +398,7 @@ supervise() {
  # alone is restarted (a few times) while Hyprland runs.
  case "$environment" in plasma|lxqt|enlightenment|wayfire|hyprland)
   kill -0 "$wm" 2>/dev/null || { echo "$1: component_exited name=$(component_name "$wm") pid=$wm"; exit 1; }
-  if [ "$environment" = hyprland ] && [ -n "$panel" ] && ! kill -0 "$panel" 2>/dev/null; then
+  if { [ "$environment" = hyprland ] || { [ "$environment" = wayfire ] && [ "${wf_gpu:-0}" = 1 ]; }; } && [ -n "$panel" ] && ! kill -0 "$panel" 2>/dev/null; then
    bridge_restarts=$((${bridge_restarts:-0} + 1))
    if [ "$bridge_restarts" -gt 5 ]; then echo "$1: component_failed name=$(component_name "$panel")"; panel=; failed="panel"; write_degraded
    else echo "$1: component_restarted name=$(component_name "$panel") attempt=$bridge_restarts/5"; sleep 1; start_panel; fi
@@ -419,6 +428,9 @@ supervise() {
 # Wayfire and Hyprland run no X window manager on this display: their mapped
 # full-screen output window (Wayfire's own, Hyprland's KMS bridge) makes them ready.
 nested_output_mapped() {
+ if [ "$(cat "$session/display-transport" 2>/dev/null)" = direct-kms ]; then
+  [ -n "$panel" ] && kill -0 "$panel" 2>/dev/null && [ -f "$session/native-input-ready" ]; return $?
+ fi
  root=$(xwininfo -root 2>/dev/null | awk '/-geometry/{split($2,g,"+"); print g[1]}')
  for w in $(xwininfo -root -children 2>/dev/null | awk -v g=" $root+0+0" 'index($0,g){print $1}'); do
   xwininfo -id "$w" 2>/dev/null | grep -q IsViewable && return 0

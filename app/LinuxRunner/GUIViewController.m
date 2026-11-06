@@ -83,6 +83,90 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
 #import "TouchScrollPolicy.h"
 #import "PointerPolicy.h"
 #import "DisplayPolicy.h"
+// Reuse the viewer's frame/input interface; this client never opens an RFB socket.
+#include "fs/kms_display.h"
+extern void drm_refresh_native_display(void);
+@interface LRKMSClient : LRRFBClient
+@property NSURL *sessionURL;
+@end
+@implementation LRKMSClient {
+    NSTimer *_frameTimer;
+    uint64_t _token, _delivered, _copied;
+    uint32_t _width, _height;
+    NSTimeInterval _lastLifecycleCheck;
+    NSMutableData *_typedInput;
+}
+- (void)start {
+    if (_token) return;
+    _token = lr_kms_display_begin();
+    drm_refresh_native_display();
+    __weak typeof(self) weak = self;
+    _frameTimer = [NSTimer timerWithTimeInterval:1.0/60 repeats:YES block:^(NSTimer *timer) {
+        typeof(self) self = weak; if (!self) { [timer invalidate]; return; }
+        NSTimeInterval now=NSProcessInfo.processInfo.systemUptime;
+        if (now-self->_lastLifecycleCheck>=0.25) {
+            self->_lastLifecycleCheck=now;
+            if ([NSFileManager.defaultManager fileExistsAtPath:[self.sessionURL URLByAppendingPathComponent:@"display-ended"].path]) {
+                [self stop];
+                if (self.statusHandler) self.statusHandler(@"Linux display ended");
+                return;
+            }
+        }
+        if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+        [self drainTypedInput];
+        struct lr_kms_frame frame = {0};
+        if (!lr_kms_display_take(self->_token, &frame)) return;
+        size_t bytes = (size_t)frame.width * frame.height * 4;
+        NSData *pixels = [NSData dataWithBytesNoCopy:frame.pixels length:bytes freeWhenDone:YES];
+        self->_width = frame.width; self->_height = frame.height;
+        self->_delivered++; self->_copied += bytes;
+        if (self.patchFrameHandler) self.patchFrameHandler(pixels, frame.width, frame.height,
+            self->_delivered, self->_copied, (LRFrameDamage){0,0,frame.width,frame.height});
+    }];
+    [NSRunLoop.mainRunLoop addTimer:_frameTimer forMode:NSRunLoopCommonModes];
+    if (self.statusHandler) self.statusHandler(@"Connected to native Linux KMS display");
+}
+- (void)stop {
+    [_frameTimer invalidate]; _frameTimer = nil;
+    if (_token) lr_kms_display_end(_token);
+    _token = 0; _typedInput = nil;
+}
+- (void)dealloc { [self stop]; }
+- (void)sendInput:(struct lr_kms_input)event {
+    if (_token && !lr_kms_display_input(_token, event)) {
+        [self stop];
+        if (self.statusHandler) self.statusHandler(@"Display error: Native input queue overflow; reconnect the desktop.");
+    }
+}
+- (void)key:(uint32_t)sym down:(BOOL)down {
+    struct lr_kms_input event={.type=2,.keysym=sym,.down=down};
+    if (_typedInput.length) [_typedInput appendBytes:&event length:sizeof event];
+    else [self sendInput:event];
+}
+- (void)drainTypedInput {
+    // Bound each paste burst so a long clipboard cannot overflow the guest queue.
+    NSUInteger n=MIN((NSUInteger)64,_typedInput.length/sizeof(struct lr_kms_input));
+    NSUInteger sent=0;
+    for (;sent<n && _token;sent++) {
+        struct lr_kms_input event; [_typedInput getBytes:&event range:NSMakeRange(sent*sizeof event,sizeof event)];
+        if (!lr_kms_display_input(_token,event)) break; // Backpressure: retry next tick.
+    }
+    if (sent) [_typedInput replaceBytesInRange:NSMakeRange(0,sent*sizeof(struct lr_kms_input)) withBytes:NULL length:0];
+}
+- (void)typeKeysyms:(const uint32_t *)symbols count:(size_t)count {
+    if (!_token) return;
+    if (!_typedInput) _typedInput=[NSMutableData new];
+    for (size_t i=0;i<count;i++) {
+        struct lr_kms_input pair[2]={{.type=2,.keysym=symbols[i],.down=1},{.type=2,.keysym=symbols[i]}};
+        [_typedInput appendBytes:pair length:sizeof pair];
+    }
+    [self drainTypedInput];
+}
+- (void)pointerX:(uint16_t)x y:(uint16_t)y buttons:(uint8_t)buttons {
+    [self sendInput:(struct lr_kms_input){.type=1,.x=x,.y=y,.buttons=buttons,.width=_width,.height=_height}];
+}
+@end
+
 @interface LRFramebufferView : UIView <UIKeyInput,UIGestureRecognizerDelegate,UIPointerInteractionDelegate>
 @property UIImageView *image;
 @property LRRFBClient *client;
@@ -1394,7 +1478,8 @@ static NSString *LRSessionGraphicsMode(void){
     NSString *desktopKey=[@"LinuxRunnerDesktop.environment." stringByAppendingString:LRRuntimeBridge.activeRootName];
     NSString *selectedDesktop=[NSUserDefaults.standardUserDefaults stringForKey:desktopKey];
     if(!selectedDesktop && LRRuntimeBridge.activeEnvironmentIsDebian)selectedDesktop=[NSUserDefaults.standardUserDefaults stringForKey:@"LinuxRunnerDesktop.environment"];
-    NSDictionary *files=@{@"desktop-environment":([selectedDesktop isEqual:@"plasma"]||[selectedDesktop isEqual:@"lxqt"]||[selectedDesktop isEqual:@"enlightenment"]||[selectedDesktop isEqual:@"wayfire"]||[selectedDesktop isEqual:@"hyprland"])?selectedDesktop:@"linuxrunner",@"guest-user":_sessionGuestUser,@"geometry":geometry,@"glx-mode":glxMode,@"gpu-mode":LRSessionGraphicsMode(),@"input-mode":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUIEagerInput"]?@"eager":@"legacy",@"shm-mode":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUISharedImages"]?@"sysv":@"off",@"vnc-timing":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUILowLatencyInput"]?@"threads":@"default",@"password":password,@"cookie":cookie,@"port":[NSString stringWithFormat:@"%u",port],@"audio-port":_audioPort?[NSString stringWithFormat:@"%u",_audioPort]:@"",@"display":[NSString stringWithFormat:@"%u",display]};
+    BOOL directKMS=_desktopMode && ([selectedDesktop isEqual:@"hyprland"] || ([selectedDesktop isEqual:@"wayfire"] && [LRRuntimeBridge virglActive])) && [NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerDesktop.directKMS"];
+    NSDictionary *files=@{@"display-transport":directKMS?@"direct-kms":@"rfb",@"desktop-environment":([selectedDesktop isEqual:@"plasma"]||[selectedDesktop isEqual:@"lxqt"]||[selectedDesktop isEqual:@"enlightenment"]||[selectedDesktop isEqual:@"wayfire"]||[selectedDesktop isEqual:@"hyprland"])?selectedDesktop:@"linuxrunner",@"guest-user":_sessionGuestUser,@"geometry":geometry,@"glx-mode":glxMode,@"gpu-mode":LRSessionGraphicsMode(),@"input-mode":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUIEagerInput"]?@"eager":@"legacy",@"shm-mode":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUISharedImages"]?@"sysv":@"off",@"vnc-timing":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUILowLatencyInput"]?@"threads":@"default",@"password":password,@"cookie":cookie,@"port":[NSString stringWithFormat:@"%u",port],@"audio-port":_audioPort?[NSString stringWithFormat:@"%u",_audioPort]:@"",@"display":[NSString stringWithFormat:@"%u",display]};
     for(NSString *name in files){NSURL *url=[_sessionURL URLByAppendingPathComponent:name];if(![files[name] writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:&error]||![NSFileManager.defaultManager setAttributes:@{NSFilePosixPermissions:@0600} ofItemAtPath:url.path error:&error]){[self message:error.localizedDescription];return;}}
     NSString *xkb=[NSUserDefaults.standardUserDefaults stringForKey:@"LinuxRunnerGUIXKBMode"]?:@"xkb";
     [xkb writeToURL:[_sessionURL URLByAppendingPathComponent:@"xkb-mode"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -1509,9 +1594,13 @@ static NSString *DesktopDegradedNotice(NSString *state){
 - (void)attachViewerWithPort:(uint16_t)port password:(NSString *)password{
     if(_client)return;
     _desktopPainted=NO;[_surface clearFrame];[_surface configurePresentation];_traceFirstUpdate=NO;
-    if(_desktopMode){[LRRuntimeBridge desktopTrace:@"11 viewer" result:@"ok" detail:[NSString stringWithFormat:@"RFB client created port=%u",port]];
+    if(_desktopMode){[LRRuntimeBridge desktopTrace:@"11 viewer" result:@"ok" detail:@"native viewer client created"];
         [LRRuntimeBridge desktopTrace:@"12 renderer" result:_surface?@"ok":@"fail" detail:[NSString stringWithFormat:@"surface=%d metal=%d hidden=%d in-window=%d size=%.0fx%.0f",_surface!=nil,_surface.metal!=nil,_surface.hidden,_surface.window!=nil,_surface.bounds.size.width,_surface.bounds.size.height]];}
-    _client=[[LRRFBClient alloc] initWithPort:port password:password];_surface.client=_client;_startedAt=NSDate.date;_frames=0;_bytes=0;_applicationWindowMapped=NO;
+    NSString *transport=[NSString stringWithContentsOfURL:[_sessionURL URLByAppendingPathComponent:@"display-transport"] encoding:NSUTF8StringEncoding error:nil];
+    BOOL direct=[transport isEqual:@"direct-kms"];
+    _client=[[(direct?LRKMSClient.class:LRRFBClient.class) alloc] initWithPort:port password:password];
+    if (direct) ((LRKMSClient *)_client).sessionURL=_sessionURL;
+    [LRRuntimeBridge logCategory:@"GUI_TRANSPORT" event:direct?@"native-kms (no RFB socket)":@"rfb"];_surface.client=_client;_startedAt=NSDate.date;_frames=0;_bytes=0;_applicationWindowMapped=NO;
     __weak typeof(self) weak=self;
     __weak LRRFBClient *thisClient=_client;
     _client.patchFrameHandler=^(NSData *patch,uint16_t w,uint16_t h,uint64_t frames,uint64_t bytes,LRFrameDamage damage){
@@ -1585,7 +1674,7 @@ static NSString *DesktopDegradedNotice(NSString *state){
     [self updateStartupStatus];
     [_frameLock lock];uint64_t frames=_frames,bytes=_bytes,patchBytes=_patchBytes,submittedPatchBytes=_presentationPatchBytes;[_frameLock unlock];
     [LRRuntimeBridge logCategory:@"GUI_TRANSPORT" event:[NSString stringWithFormat:@"decoder_patch_bytes=%llu presenter_patch_bytes=%llu frames=%llu",(unsigned long long)patchBytes,(unsigned long long)submittedPatchBytes,(unsigned long long)frames]];
-    [LRRuntimeBridge logCategory:@"GUI" event:[NSString stringWithFormat:@"frames=%llu wire-bytes=%llu elapsed=%.2fs resolution=%ux%u software-rendering",(unsigned long long)frames,(unsigned long long)bytes,-[_startedAt timeIntervalSinceNow],_pendingWidth,_pendingHeight]];
+    [LRRuntimeBridge logCategory:@"GUI" event:[NSString stringWithFormat:@"frames=%llu transport-bytes=%llu elapsed=%.2fs resolution=%ux%u software-rendering",(unsigned long long)frames,(unsigned long long)bytes,-[_startedAt timeIntervalSinceNow],_pendingWidth,_pendingHeight]];
 }
 - (void)stop{
     [_audio stop];_audio=nil;

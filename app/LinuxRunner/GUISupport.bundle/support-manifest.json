@@ -44,7 +44,7 @@
     },
     {
       "name": "desktop-components.sh",
-      "sha256": "70d3176a1d7b0ddc12a4df4906c05f5abaa5d4b3999a4bf66c60dbbb49e0f26c",
+      "sha256": "6e72b93816b72c0c8a67ef2db1022bc8da03dae733ade803153d929d66a5ba1d",
       "mode": "0755"
     },
     {
@@ -364,7 +364,7 @@
     },
     {
       "name": "lr-kms-bridge.c",
-      "sha256": "9b1916f9c7efc4ba17623004f25457e9d2ed32d97a6eaff7e75ee2c0dfcbdd7f",
+      "sha256": "e00adac03343bed9b14e93a089765e51a6fc10eb158c688a5273e44931482dc6",
       "mode": "0644"
     },
     {
@@ -409,7 +409,7 @@
     },
     {
       "name": "session.sh",
-      "sha256": "7d33bc02a949ae221e24f9bf5861a8fb0238211b3c125d2f1d1a2bb46bd60ba0",
+      "sha256": "f571f41e7b0406d35267f4f6fa2de914e87099e0e9004df5607a123027a3521e",
       "mode": "0755"
     },
     {

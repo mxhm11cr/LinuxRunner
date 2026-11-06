@@ -83,12 +83,115 @@ static struct xkb_state *send_keymap(struct wl_proxy *keyboard) {
     return xkb_state_new(map);
 }
 
+// Native input mailbox ABI (matches fs/kms_display.h; no guest pointers).
+struct native_input { uint32_t type, x, y, buttons, keysym, down, width, height; };
+#define NATIVE_INPUT_IOCTL 0x802064f0U
+_Static_assert(sizeof(struct native_input) == 32, "native input ABI");
+static void modifiers(struct wl_proxy *keyboard, struct xkb_state *xkb) {
+    wl_proxy_marshal(keyboard, VK_MODIFIERS, xkb_state_serialize_mods(xkb, XKB_STATE_MODS_DEPRESSED),
+        xkb_state_serialize_mods(xkb, XKB_STATE_MODS_LATCHED), xkb_state_serialize_mods(xkb, XKB_STATE_MODS_LOCKED),
+        xkb_state_serialize_layout(xkb, XKB_STATE_LAYOUT_EFFECTIVE));
+}
+static void send_key(struct wl_proxy *keyboard, struct xkb_state *xkb, uint32_t code, bool down) {
+    xkb_state_update_key(xkb, code, down ? XKB_KEY_DOWN : XKB_KEY_UP);
+    wl_proxy_marshal(keyboard, VK_KEY, ms(), code - 8, down ? 1U : 0U);
+    modifiers(keyboard, xkb);
+}
+// A separate keyboard provides characters absent from the US physical map,
+// without replacing the hardware keyboard's map or disturbing held modifiers.
+static bool send_text(struct wl_proxy *keyboard, uint32_t sym) {
+    char map[512];
+    int n = snprintf(map, sizeof map, "xkb_keymap { xkb_keycodes { minimum=8; maximum=8; <TEXT>=8; }; "
+        "xkb_types { type \"ONE_LEVEL\" { modifiers=None; level_name[Level1]=\"Any\"; }; }; "
+        "xkb_compatibility {}; xkb_symbols { key <TEXT> { type=\"ONE_LEVEL\", [ 0x%08x ] }; }; };", sym);
+    if (n <= 0 || (size_t)n >= sizeof map) return false;
+    int fd = memfd_create("lr-native-text", MFD_CLOEXEC);
+    if (fd < 0) return false;
+    bool ok = write(fd, map, n + 1) == n + 1;
+    if (ok) {
+        wl_proxy_marshal(keyboard, VK_KEYMAP, 1U, fd, (uint32_t)n + 1);
+        wl_proxy_marshal(keyboard, VK_KEY, ms(), 0U, 1U);
+        wl_proxy_marshal(keyboard, VK_KEY, ms(), 0U, 0U);
+    }
+    close(fd); return ok;
+}
+static int native_loop(int drm, struct wl_display *wl, struct wl_proxy *pointer,
+                       struct wl_proxy *keyboard, struct xkb_state *xkb) {
+    if (!pointer || !keyboard || !xkb) { fprintf(stderr, "KMS_BRIDGE: native input protocols unavailable\n"); return 1; }
+    struct wl_proxy *text = wl_proxy_marshal_constructor(keyboard_manager, 0, &zwp_virtual_keyboard_v1_interface, seat, NULL);
+    uint32_t held[256] = {0}; bool shifted[256] = {0}; unsigned synthetic_shift = 0;
+    uint32_t buttons = 0;
+    struct xkb_keymap *map = xkb_state_get_keymap(xkb);
+    fprintf(stderr, "KMS_BRIDGE: native input ready (no X11 capture)\n");
+    // Readiness is actual compositor protocol connection, independent of pixels.
+    const char *ready = getenv("LR_NATIVE_INPUT_READY");
+    if (ready) { FILE *f = fopen(ready, "w"); if (f) { fputs("ready\n", f); fclose(f); } }
+    for (;;) {
+        for (unsigned batch = 0; batch < 256; batch++) {
+            struct native_input e = {0};
+            if (ioctl(drm, NATIVE_INPUT_IOCTL, &e)) {
+                if (errno != EAGAIN) { perror("KMS_BRIDGE: native input"); return 1; }
+                break;
+            }
+            static const uint32_t codes[] = {0x110, 0x112, 0x111};
+            if (e.type == 3) {
+                for (unsigned k = 8; k < 256; k++) if (held[k]) { send_key(keyboard, xkb, k, false); held[k] = 0; }
+                if (synthetic_shift) send_key(keyboard, xkb, 50, false);
+                synthetic_shift = 0; memset(shifted, 0, sizeof shifted);
+                for (unsigned b = 0; b < 3; b++) if (buttons & (1U << b)) wl_proxy_marshal(pointer, VP_BUTTON, ms(), codes[b], 0U);
+                buttons = 0; xkb_state_update_mask(xkb, 0, 0, 0, 0, 0, 0); modifiers(keyboard, xkb);
+                wl_proxy_marshal(pointer, VP_FRAME); break;
+            } else if (e.type == 1) {
+                if (e.width && e.height) wl_proxy_marshal(pointer, VP_MOTION_ABSOLUTE, ms(), e.x, e.y, e.width, e.height);
+                for (unsigned b = 0; b < 3; b++) if ((buttons ^ e.buttons) & (1U << b))
+                    wl_proxy_marshal(pointer, VP_BUTTON, ms(), codes[b], !!(e.buttons & (1U << b)));
+                for (unsigned b = 3; b < 7; b++) if ((e.buttons & ~buttons) & (1U << b)) {
+                    int step = b == 3 || b == 5 ? -1 : 1;
+                    wl_proxy_marshal(pointer, VP_AXIS_SOURCE, 0U);
+                    wl_proxy_marshal(pointer, VP_AXIS_DISCRETE, ms(), b < 5 ? 0U : 1U, wl_fixed_from_int(15 * step), step);
+                }
+                buttons = e.buttons; wl_proxy_marshal(pointer, VP_FRAME);
+            } else if (e.type == 2) {
+                uint32_t code = 0; bool shift = false;
+                for (unsigned k = 8; k < 256; k++) if (held[k] == e.keysym) { code = k; shift = shifted[k]; break; }
+                if (!code && e.down) {
+                    for (unsigned level = 0; level < 2 && !code; level++) for (unsigned k = 8; k < 256; k++) {
+                        const xkb_keysym_t *syms;
+                        int n = xkb_keymap_key_get_syms_by_level(map, k, 0, level, &syms);
+                        if (n == 1 && syms[0] == e.keysym) { code = k; shift = level != 0; break; }
+                    }
+                }
+                if (code && e.down && !held[code]) {
+                    if (shift && !synthetic_shift++) send_key(keyboard, xkb, 50, true);
+                    held[code] = e.keysym; shifted[code] = shift; send_key(keyboard, xkb, code, true);
+                } else if (code && !e.down) {
+                    send_key(keyboard, xkb, code, false); held[code] = 0; shifted[code] = false;
+                    if (shift && synthetic_shift && !--synthetic_shift && !held[50]) send_key(keyboard, xkb, 50, false);
+                } else if (e.down && text && (e.keysym >= 0x1000100U || (e.keysym >= 0xa0 && e.keysym <= 0xff))) {
+                    if (!send_text(text, e.keysym)) fprintf(stderr, "KMS_BRIDGE: native text failed\n");
+                }
+            }
+        }
+        // Dispatch compositor events too; a broken connection ends supervision.
+        if (wl_display_dispatch_pending(wl) < 0) return 1;
+        while (wl_display_prepare_read(wl) != 0) if (wl_display_dispatch_pending(wl) < 0) return 1;
+        int flushed = wl_display_flush(wl);
+        if (flushed < 0 && errno != EAGAIN) { wl_display_cancel_read(wl); return 1; }
+        struct pollfd p = {wl_display_get_fd(wl), POLLIN | (flushed < 0 ? POLLOUT : 0), 0};
+        int result = poll(&p, 1, 8);
+        if (result > 0 && (p.revents & POLLIN)) { if (wl_display_read_events(wl) < 0) return 1; }
+        else wl_display_cancel_read(wl);
+        if (result > 0 && (p.revents & (POLLERR | POLLHUP | POLLNVAL))) return 1;
+    }
+}
+
 int main(int argc, char **argv) {
     const char *node = argc > 1 ? argv[1] : "/dev/dri/card0";
     int drm = open(node, O_RDWR | O_CLOEXEC);
-    Display *x = XOpenDisplay(NULL);
+    bool direct = argc > 2 && !strcmp(argv[2], "--native-input");
+    Display *x = direct ? NULL : XOpenDisplay(NULL);
     struct wl_display *wl = wl_display_connect(NULL);
-    if (drm < 0 || !x || !wl) { fprintf(stderr, "KMS_BRIDGE: open failed drm=%d x=%p wayland=%p\n", drm, (void *) x, (void *) wl); return 1; }
+    if (drm < 0 || (!direct && !x) || !wl) { fprintf(stderr, "KMS_BRIDGE: open failed drm=%d x=%p wayland=%p\n", drm, (void *) x, (void *) wl); return 1; }
     struct wl_registry *registry = wl_display_get_registry(wl);
     wl_registry_add_listener(registry, &registry_listener, NULL);
     wl_display_roundtrip(wl);
@@ -97,6 +200,8 @@ int main(int argc, char **argv) {
     struct xkb_state *xkb = keyboard ? send_keymap(keyboard) : NULL;
     wl_display_flush(wl);
     fprintf(stderr, "KMS_BRIDGE: pointer=%s keyboard=%s\n", pointer ? "yes" : "no", xkb ? "yes" : "no");
+
+    if (direct) return native_loop(drm, wl, pointer, keyboard, xkb);
 
     int screen = DefaultScreen(x);
     unsigned w = DisplayWidth(x, screen), h = DisplayHeight(x, screen);

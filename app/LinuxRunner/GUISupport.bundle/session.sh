@@ -100,6 +100,7 @@ done
 xpid= vpid= wpid= mpid= bpid= apid= spid= appgroup= runtime_dir= desktop_env=
 cleanup() {
     trap - EXIT HUP INT TERM
+    : > "$session/display-ended"
     touch "$session/stop"
     # Generic custom apps get a separate guest session/process group. Never
     # signal the CLI's group or guest init; children retain the owned group ID.
@@ -152,7 +153,19 @@ cleanup() {
     echo 'GUI_SESSION: cleaned up display children; CLI runtime retained'
 }
 trap cleanup EXIT HUP INT TERM
-[ -x ./focus-manager ] && command -v Xvfb >/dev/null && command -v x11vnc >/dev/null || { echo 'GUI_SESSION: support missing; run Install GUI Support'; exit 3; }
+display_transport=$(cat "$session/display-transport" 2>/dev/null || echo rfb)
+case "$display_transport" in
+ rfb) ;;
+ direct-kms)
+  [ "$mode" = desktop ] || exit 2
+  case "$(cat "$session/desktop-environment")" in
+   hyprland) [ -c /dev/dri/card0 ] || { echo 'GUI_SESSION: direct display requires KMS; disable Direct Wayland Display'; exit 2; };;
+   wayfire) [ -c /dev/dri/card1 ] && [ -S /run/seatd.sock ] || { echo 'GUI_SESSION: direct Wayfire requires GPU KMS; disable Direct Wayland Display'; exit 2; };;
+   *) exit 2;;
+  esac;;
+ *) exit 2;;
+esac
+[ -x ./focus-manager ] && command -v Xvfb >/dev/null && { [ "$display_transport" = direct-kms ] || command -v x11vnc >/dev/null; } || { echo 'GUI_SESSION: support missing; run Install GUI Support'; exit 3; }
 # Refresh only the optional diagnostic helper on source changes, using the
 # existing GUI compiler. Failure must not interrupt the proven display path.
 observer_ready=no
@@ -339,8 +352,12 @@ case "$mode:$(cat "$session/desktop-environment" 2>/dev/null)" in
     desktop:wayfire) if [ -c /dev/dri/card1 ] && command -v wayfire >/dev/null; then vnc_cursor_option=-nocursor; fi;;
 esac
 [ -z "$vnc_cursor_option" ] || echo 'GUI_SESSION: pointer=compositor (x11vnc draws none)'
+if [ "$display_transport" = rfb ]; then
 x11vnc -norc -display "$DISPLAY" -auth "$XAUTHORITY" -localhost -no6 -rfbport "$port" -passwdfile "$session/password" $vnc_lifetime $vnc_shm_option $vnc_timing_options -noxrecord -noscr -nosel -noclipboard -nocursorshape $vnc_cursor_option -nolookup $input_option "$xkb" > "$session/display.log" 2>&1 & vpid=$!
 echo "GUI_SESSION: stage=vnc-started port=$port"
+else
+    echo "GUI_SESSION: transport=direct-kms (x11vnc disabled)"
+fi
 if [ "$mode" = test ]; then ./gui-test > "$session/application.log" 2>&1 &
 elif [ "$mode" = xterm ]; then xterm -geometry 80x24+0+0 -fn fixed -xrm 'XTerm*renderFont: false' > "$session/application.log" 2>&1 &
 elif [ "$mode" = qt ]; then
@@ -373,6 +390,6 @@ application_live() {
     ps -o pgid,stat | awk -v group="$appgroup" '$1 == group && $2 !~ /^Z/ { alive=1 } END { exit !alive }'
 }
 # Disconnect or the last owned app process exiting tears down this session.
-while [ ! -f "$session/stop" ] && application_live && kill -0 "$vpid" 2>/dev/null && { [ "$mode" = desktop ] || kill -0 "$wpid" 2>/dev/null; }; do sleep .2; done
+while [ ! -f "$session/stop" ] && application_live && { [ "$display_transport" = direct-kms ] || kill -0 "$vpid" 2>/dev/null; } && { [ "$mode" = desktop ] || kill -0 "$wpid" 2>/dev/null; }; do sleep .2; done
 if application_live; then echo 'GUI_SESSION: display disconnected'
 else echo 'GUI_SESSION: application process group ended'; fi

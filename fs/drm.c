@@ -15,6 +15,7 @@
 #include <time.h>
 #include "kernel/calls.h"
 #include "fs/drm.h"
+#include "fs/kms_display.inc"
 #include "fs/dmabuf.h"
 #include "fs/real.h"
 #include "fs/poll.h"
@@ -159,8 +160,8 @@ static void buffer_put(struct buffer *b) {
             if (*p == b) { *p = b->next_virgl; break; }
         unlock(&virgl_lock);
         virgl->resource_unref(b->res_id);
-        if (b->host_map) munmap(b->host_map, b->size);
     }
+    if (b->host_map) munmap(b->host_map, b->size);
     if (b->dumb) atomic_fetch_sub(&allocated, b->size);
     fd_close(b->source);
     free(b);
@@ -421,6 +422,26 @@ static void scanout_sync(uint32_t fb_id) {
     buffer_put(copy.buffer);
 }
 
+// kms.lock protects the framebuffer and its buffer through snapshot completion.
+static void publish_scanout(void) {
+    if (!kms.mode_valid || !lr_kms_display_active()) return;
+    struct framebuffer *f = fb_lookup(kms.scanout);
+    if (!f) return;
+    struct buffer *b = f->buffer;
+    if (!b->host_map) {
+        void *map = mmap(NULL, b->size, PROT_READ, MAP_SHARED, b->source->real_fd, b->offset);
+        if (map == MAP_FAILED) return;
+        b->host_map = map;
+    }
+    lr_kms_display_publish((char *)b->host_map + f->offset,
+        kms.mode.hdisplay, kms.mode.vdisplay, f->pitch);
+}
+// On viewer reconnect, the compositor may be idle and never flip again.
+void drm_refresh_native_display(void) {
+    pthread_once(&kms_once, kms_init);
+    lock(&kms.lock); publish_scanout(); unlock(&kms.lock);
+}
+
 static int set_crtc(struct mode_crtc *c) {
     if (c->crtc_id != CRTC_ID) return _ENOENT;
     if (c->count_connectors > 1) return _EINVAL;
@@ -440,6 +461,7 @@ static int set_crtc(struct mode_crtc *c) {
         if (!f || f->width < c->mode.hdisplay || f->height < c->mode.vdisplay) err = _EINVAL;
         else { kms.mode = c->mode; kms.mode_valid = true; kms.scanout = fb; }
     }
+    publish_scanout();
     struct buffer *dropped = drop_closed_scanout(previous);
     unlock(&kms.lock);
     if (dropped) buffer_put(dropped);
@@ -472,6 +494,7 @@ static int page_flip(struct fd *fd, struct drm_file *f, struct page_flip *p) {
     lock(&kms.lock);
     uint32_t previous = kms.scanout;
     kms.scanout = p->fb_id; kms.sequence++; kms.last_flip_ns = monotonic_ns();
+    publish_scanout();
     struct buffer *dropped = drop_closed_scanout(previous);
     unlock(&kms.lock);
     if (dropped) buffer_put(dropped);
@@ -587,6 +610,7 @@ static int get_plane(struct get_plane *p) {
 
 static ssize_t drm_ioctl_size(int command) {
     switch ((uint32_t) command) {
+        case LR_KMS_INPUT_IOCTL: return sizeof(struct lr_kms_input);
         case DRM_VERSION_: return sizeof(struct version);
         case VIRTGPU_MAP_: case VIRTGPU_GETPARAM_: case VIRTGPU_RESOURCE_INFO_: return 16;
         case VIRTGPU_EXECBUFFER_: return 64;
@@ -790,6 +814,8 @@ static int virgl_ioctl(struct drm_file *f, uint32_t command, void *arg) {
 }
 
 static int drm_ioctl_dispatch(struct fd *fd, int command, void *arg) {
+    if ((uint32_t)command == LR_KMS_INPUT_IOCTL)
+        return lr_kms_display_pop(arg) ? 0 : _EAGAIN;
     struct drm_file *f = fd->data;
     if (f->virgl && ((uint32_t) command & 0xff) >= 0x40 && ((uint32_t) command & 0xff) < 0xa0)
         return virgl_ioctl(f, (uint32_t) command, arg);

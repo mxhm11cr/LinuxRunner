@@ -1702,6 +1702,7 @@ private struct DesktopPreferencesView: View {
     @State private var resolution = 3
     @AppStorage("LinuxRunnerDesktop.autoFullscreen") private var autoFullscreen = true
     @AppStorage("LinuxRunnerDesktop.metalPresentation") private var metalPresentation = false
+    @AppStorage("LinuxRunnerDesktop.directKMS") private var directKMS = false
     private var key: String { "LinuxRunnerDesktop.resolution." + LRRuntimeBridge.activeRootName() }
     var body: some View { Form {
         Section("Next Desktop Start") {
@@ -1712,6 +1713,10 @@ private struct DesktopPreferencesView: View {
         Section("Interaction") {
             Text("Landscape uses the available display while preserving aspect ratio. Pinch to zoom; two fingers pan while zoomed, or scroll while fitted. Long press provides right click.")
             Text("Desktop Settings provides Fit, Actual Size and Full Screen. Use the restore button to bring controls back.")
+        }
+        Section("Desktop Transport") {
+            Toggle("Direct Wayland Display · Experimental", isOn: $directKMS)
+            Text("Bypasses VNC for Hyprland and Wayfire with Metal GPU. Applies at the next desktop start. Turn off and restart the desktop to return to the standard viewer connection.").font(.caption)
         }
         Section("Framebuffer Presentation") {
             Toggle("Metal Presentation · Experimental", isOn: $metalPresentation)

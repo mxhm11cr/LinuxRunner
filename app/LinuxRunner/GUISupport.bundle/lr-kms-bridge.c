@@ -97,28 +97,69 @@ static void send_key(struct wl_proxy *keyboard, struct xkb_state *xkb, uint32_t 
     wl_proxy_marshal(keyboard, VK_KEY, ms(), code - 8, down ? 1U : 0U);
     modifiers(keyboard, xkb);
 }
-// A separate keyboard provides characters absent from the US physical map,
-// without replacing the hardware keyboard's map or disturbing held modifiers.
-static bool send_text(struct wl_proxy *keyboard, uint32_t sym) {
-    char map[512];
-    int n = snprintf(map, sizeof map, "xkb_keymap { xkb_keycodes { minimum=8; maximum=8; <TEXT>=8; }; "
-        "xkb_types { type \"ONE_LEVEL\" { modifiers=None; level_name[Level1]=\"Any\"; }; }; "
-        "xkb_compatibility {}; xkb_symbols { key <TEXT> { type=\"ONE_LEVEL\", [ 0x%08x ] }; }; };", sym);
-    if (n <= 0 || (size_t)n >= sizeof map) return false;
+// Keep text on the same keyboard. Changing keyboards can remove client focus.
+// Keep text keycodes within the X11 limit for Xwayland clients.
+#define NATIVE_TEXT_SLOTS 32
+#define NATIVE_TEXT_FIRST_CODE 224
+struct native_text {
+    struct wl_proxy *keyboard;
+    struct xkb_state *physical;
+    uint32_t symbols[NATIVE_TEXT_SLOTS];
+    unsigned count, next;
+};
+static bool text_keymap(struct native_text *text) {
+    char *map = NULL;
+    size_t size = 0;
+    FILE *stream = open_memstream(&map, &size);
+    if (!stream) return false;
+    fputs("xkb_keymap { xkb_keycodes { include \"evdev+aliases(qwerty)\" ", stream);
+    for (unsigned i = 0; i < text->count; i++)
+        fprintf(stream, "<L%03u>=%u; ", i, NATIVE_TEXT_FIRST_CODE + i);
+    fputs("}; xkb_types { include \"complete\" }; xkb_compatibility { include \"complete\" }; "
+        "xkb_symbols { include \"pc+us+inet(evdev)\" ", stream);
+    for (unsigned i = 0; i < text->count; i++)
+        fprintf(stream, "key <L%03u> { type=\"ONE_LEVEL\", [ 0x%08x ] }; ", i, text->symbols[i]);
+    fputs("}; };", stream);
+    bool failed = ferror(stream);
+    if (fclose(stream) || failed) { free(map); return false; }
+    struct xkb_context *context = xkb_context_new(0);
+    struct xkb_keymap *compiled = context ? xkb_keymap_new_from_string(context, map, XKB_KEYMAP_FORMAT_TEXT_V1, 0) : NULL;
+    char *serialized = compiled ? xkb_keymap_get_as_string(compiled, XKB_KEYMAP_FORMAT_TEXT_V1) : NULL;
+    free(map);
+    if (compiled) xkb_keymap_unref(compiled);
+    if (context) xkb_context_unref(context);
+    if (!serialized) return false;
+    size = strlen(serialized) + 1;
     int fd = memfd_create("lr-native-text", MFD_CLOEXEC);
-    if (fd < 0) return false;
-    bool ok = write(fd, map, n + 1) == n + 1;
+    bool ok = fd >= 0 && write(fd, serialized, size) == (ssize_t)size;
     if (ok) {
-        wl_proxy_marshal(keyboard, VK_KEYMAP, 1U, fd, (uint32_t)n + 1);
-        wl_proxy_marshal(keyboard, VK_KEY, ms(), 0U, 1U);
-        wl_proxy_marshal(keyboard, VK_KEY, ms(), 0U, 0U);
+        wl_proxy_marshal(text->keyboard, VK_KEYMAP, 1U, fd, (uint32_t)size);
+        modifiers(text->keyboard, text->physical);
     }
-    close(fd); return ok;
+    if (fd >= 0) close(fd);
+    free(serialized);
+    return ok;
+}
+static bool send_text(struct native_text *text, uint32_t sym) {
+    unsigned slot = 0;
+    while (slot < text->count && text->symbols[slot] != sym) slot++;
+    if (slot == text->count) {
+        struct native_text updated = *text;
+        if (updated.count < NATIVE_TEXT_SLOTS) updated.count++;
+        else slot = updated.next++ % NATIVE_TEXT_SLOTS;
+        updated.symbols[slot] = sym;
+        if (!text_keymap(&updated)) return false;
+        *text = updated;
+    }
+    uint32_t code = NATIVE_TEXT_FIRST_CODE + slot - 8;
+    wl_proxy_marshal(text->keyboard, VK_KEY, ms(), code, 1U);
+    wl_proxy_marshal(text->keyboard, VK_KEY, ms(), code, 0U);
+    return true;
 }
 static int native_loop(int drm, struct wl_display *wl, struct wl_proxy *pointer,
                        struct wl_proxy *keyboard, struct xkb_state *xkb) {
     if (!pointer || !keyboard || !xkb) { fprintf(stderr, "KMS_BRIDGE: native input protocols unavailable\n"); return 1; }
-    struct wl_proxy *text = wl_proxy_marshal_constructor(keyboard_manager, 0, &zwp_virtual_keyboard_v1_interface, seat, NULL);
+    struct native_text text = {.keyboard = keyboard, .physical = xkb};
     uint32_t held[256] = {0}; bool shifted[256] = {0}; unsigned synthetic_shift = 0;
     uint32_t buttons = 0;
     struct xkb_keymap *map = xkb_state_get_keymap(xkb);
@@ -167,8 +208,8 @@ static int native_loop(int drm, struct wl_display *wl, struct wl_proxy *pointer,
                 } else if (code && !e.down) {
                     send_key(keyboard, xkb, code, false); held[code] = 0; shifted[code] = false;
                     if (shift && synthetic_shift && !--synthetic_shift && !held[50]) send_key(keyboard, xkb, 50, false);
-                } else if (e.down && text && (e.keysym >= 0x1000100U || (e.keysym >= 0xa0 && e.keysym <= 0xff))) {
-                    if (!send_text(text, e.keysym)) fprintf(stderr, "KMS_BRIDGE: native text failed\n");
+                } else if (e.down && (e.keysym >= 0x1000100U || (e.keysym >= 0xa0 && e.keysym <= 0xff))) {
+                    if (!send_text(&text, e.keysym)) fprintf(stderr, "KMS_BRIDGE: native text failed\n");
                 }
             }
         }

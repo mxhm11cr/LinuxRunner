@@ -15,10 +15,16 @@ static void box(int x,int y,int w,int h,unsigned long color) {
 static void label(int x,int y,const char *s) {
     XSetForeground(display,gc,0xffffff); XDrawString(display,window,gc,x,y,s,(int)strlen(s));
 }
+static void report_geometry(void) {
+    XWindowAttributes attributes; Window child; int x=0,y=0;
+    if(XGetWindowAttributes(display,window,&attributes)&&XTranslateCoordinates(display,window,DefaultRootWindow(display),0,0,&x,&y,&child)){
+        printf("GUI_TEST: geometry=%d,%d,%d,%d\n",x,y,attributes.width,attributes.height);fflush(stdout);
+    }
+}
 static void paint(void) {
     box(0,0,640,480,0x182430);
     label(24,35,"REAL LINUX ARM64 X11 APPLICATION");
-    label(24,58,"Xlib -> X.Org Xvfb -> display bridge -> iOS");
+    label(24,58,"Xlib -> X11 display server -> LinuxRunner -> iOS");
     box(24,80,190,80,0xd84040); box(224,80,190,80,0x40b060); box(424,80,190,80,0x4080d8);
     box(24,190,380,80, clicks%2 ? 0x236c56 : 0x304858);
     char line[128]; snprintf(line,sizeof line,"Click counter: %u",clicks); label(44,235,line);
@@ -46,7 +52,8 @@ int main(int argc, char **argv) {
     while(!quit){
         XEvent event; XNextEvent(display,&event);
         if(event.type==MapNotify)XSetInputFocus(display,window,RevertToParent,CurrentTime);
-        else if(event.type==Expose)paint();
+        else if(event.type==Expose){paint();report_geometry();}
+        else if(event.type==ConfigureNotify)report_geometry();
         else if(event.type==ButtonPress){
             if(event.xbutton.x>=424 && event.xbutton.y>=190 && event.xbutton.y<270)quit=1;
             else if(event.xbutton.x>=24 && event.xbutton.x<404 && event.xbutton.y>=190 && event.xbutton.y<270){double event_ms=trace ? trace_clock_ms() : 0; clicks++;printf("GUI_TEST: click=%u button=%u\n",clicks,event.xbutton.button);fflush(stdout);paint(); if(trace){printf("GUI_INPUT_TRACE: click=%u event_monotonic_ms=%.3f redraw_submit_monotonic_ms=%.3f\n",clicks,event_ms,trace_clock_ms());fflush(stdout);}}

@@ -2,6 +2,7 @@
 // compositor buffer release. Build with generated stable xdg-shell protocol.
 #define _GNU_SOURCE
 #include <wayland-client.h>
+#include <xkbcommon/xkbcommon.h>
 #include "xdg-shell-client-protocol.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -13,20 +14,38 @@
 #include <unistd.h>
 #include <poll.h>
 #include <time.h>
-struct state {struct wl_display *display;struct wl_compositor *compositor;struct wl_shm *shm;struct xdg_wm_base *wm;struct wl_surface *surface;struct wl_seat *seat;struct wl_pointer *pointer;struct wl_keyboard *keyboard;int configured,closed,frames,releases,buttons,keys;};
+struct state {struct wl_display *display;struct wl_compositor *compositor;struct wl_shm *shm;struct xdg_wm_base *wm;struct wl_surface *surface;struct wl_seat *seat;struct wl_pointer *pointer;struct wl_keyboard *keyboard;struct xkb_context *context;struct xkb_state *key_state;int extended,configured,closed,frames,releases,buttons,keys;};
 static void ping(void *p,struct xdg_wm_base *wm,uint32_t serial){(void)p;xdg_wm_base_pong(wm,serial);}
 static const struct xdg_wm_base_listener wm_listener={.ping=ping};
 static void pointer_enter(void *p,struct wl_pointer *v,uint32_t n,struct wl_surface *s,wl_fixed_t x,wl_fixed_t y){(void)p;(void)v;(void)n;(void)s;(void)x;(void)y;}
 static void pointer_leave(void *p,struct wl_pointer *v,uint32_t n,struct wl_surface *s){(void)p;(void)v;(void)n;(void)s;}
-static void motion(void *p,struct wl_pointer *v,uint32_t n,wl_fixed_t x,wl_fixed_t y){(void)p;(void)v;(void)n;(void)x;(void)y;}
-static void button(void *p,struct wl_pointer *v,uint32_t n,uint32_t t,uint32_t b,uint32_t state){(void)v;(void)n;(void)t;if(state){((struct state*)p)->buttons++;printf("WAYLAND_INPUT button=%u\n",b);fflush(stdout);}}
-static void axis(void *p,struct wl_pointer *v,uint32_t t,uint32_t a,wl_fixed_t value){(void)p;(void)v;(void)t;(void)a;(void)value;}
+static void motion(void *p,struct wl_pointer *v,uint32_t n,wl_fixed_t x,wl_fixed_t y){
+ (void)v;(void)n;struct state *s=p;
+ if(s->extended){printf("WAYLAND_MOTION x=%d y=%d\n",wl_fixed_to_int(x),wl_fixed_to_int(y));fflush(stdout);}
+}
+static void button(void *p,struct wl_pointer *v,uint32_t n,uint32_t t,uint32_t b,uint32_t state){(void)v;(void)n;(void)t;struct state *s=p;if(s->extended){printf("WAYLAND_BUTTON code=%u down=%u\n",b,state);fflush(stdout);}if(state){s->buttons++;printf("WAYLAND_INPUT button=%u\n",b);fflush(stdout);}}
+static void axis(void *p,struct wl_pointer *v,uint32_t t,uint32_t a,wl_fixed_t value){
+ (void)v;(void)t;struct state *s=p;if(s->extended){printf("WAYLAND_AXIS axis=%u value=%d\n",a,wl_fixed_to_int(value));fflush(stdout);}
+}
 static const struct wl_pointer_listener pointer_listener={.enter=pointer_enter,.leave=pointer_leave,.motion=motion,.button=button,.axis=axis};
-static void keymap(void *p,struct wl_keyboard *v,uint32_t format,int32_t fd,uint32_t size){(void)p;(void)v;(void)format;(void)size;close(fd);}
+static void keymap(void *p,struct wl_keyboard *v,uint32_t format,int32_t fd,uint32_t size){
+ (void)v;struct state *s=p;
+ if(format==WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1&&size){
+  char *text=mmap(NULL,size,PROT_READ,MAP_PRIVATE,fd,0);
+  if(text!=MAP_FAILED){
+   struct xkb_keymap *map=xkb_keymap_new_from_string(s->context,text,XKB_KEYMAP_FORMAT_TEXT_V1,0);
+   if(map){if(s->key_state)xkb_state_unref(s->key_state);s->key_state=xkb_state_new(map);xkb_keymap_unref(map);}
+   munmap(text,size);
+  }
+ }
+ close(fd);
+}
 static void key_enter(void *p,struct wl_keyboard *v,uint32_t n,struct wl_surface *s,struct wl_array *keys){(void)p;(void)v;(void)n;(void)s;(void)keys;}
 static void key_leave(void *p,struct wl_keyboard *v,uint32_t n,struct wl_surface *s){(void)p;(void)v;(void)n;(void)s;}
-static void key(void *p,struct wl_keyboard *v,uint32_t n,uint32_t t,uint32_t code,uint32_t state){(void)v;(void)n;(void)t;if(state){((struct state*)p)->keys++;printf("WAYLAND_INPUT key=%u\n",code);fflush(stdout);}}
-static void modifiers(void *p,struct wl_keyboard *v,uint32_t n,uint32_t a,uint32_t b,uint32_t c,uint32_t g){(void)p;(void)v;(void)n;(void)a;(void)b;(void)c;(void)g;}
+static void key(void *p,struct wl_keyboard *v,uint32_t n,uint32_t t,uint32_t code,uint32_t state){(void)v;(void)n;(void)t;struct state *s=p;
+ if(s->extended&&s->key_state){printf("WAYLAND_KEY code=%u sym=%u utf32=%u down=%u\n",code,xkb_state_key_get_one_sym(s->key_state,code+8),xkb_state_key_get_utf32(s->key_state,code+8),state);fflush(stdout);}
+ if(state){s->keys++;printf("WAYLAND_INPUT key=%u\n",code);fflush(stdout);}}
+static void modifiers(void *p,struct wl_keyboard *v,uint32_t n,uint32_t a,uint32_t b,uint32_t c,uint32_t g){(void)v;(void)n;struct state *s=p;if(s->key_state)xkb_state_update_mask(s->key_state,a,b,c,0,0,g);if(s->extended){printf("WAYLAND_MODIFIERS depressed=%u latched=%u locked=%u\n",a,b,c);fflush(stdout);}}
 static const struct wl_keyboard_listener keyboard_listener={.keymap=keymap,.enter=key_enter,.leave=key_leave,.key=key,.modifiers=modifiers};
 static void capabilities(void *data,struct wl_seat *seat,uint32_t caps){struct state *s=data;
  if((caps&WL_SEAT_CAPABILITY_POINTER)&&!s->pointer){s->pointer=wl_seat_get_pointer(seat);wl_pointer_add_listener(s->pointer,&pointer_listener,s);}
@@ -62,7 +81,7 @@ static int draw(struct state *s,unsigned index){
  wl_surface_attach(s->surface,buffer,0,0);wl_surface_damage(s->surface,0,0,w,h);wl_surface_commit(s->surface);return 0;
 }
 int main(void){
- struct state s={0};s.display=wl_display_connect(NULL);if(!s.display){perror("WAYLAND_CONNECT_FAIL");return 1;}
+ struct state s={0};s.extended=getenv("LR_WAYLAND_EXTENDED_INPUT")!=NULL;s.context=xkb_context_new(0);if(!s.context)return 7;s.display=wl_display_connect(NULL);if(!s.display){perror("WAYLAND_CONNECT_FAIL");return 1;}
  struct wl_registry *registry=wl_display_get_registry(s.display);wl_registry_add_listener(registry,&registry_listener,&s);
  if(wl_display_roundtrip(s.display)<0||!s.compositor||!s.shm||!s.wm){fputs("WAYLAND_PROTOCOLS_MISSING\n",stderr);return 2;}
  s.surface=wl_compositor_create_surface(s.compositor);struct xdg_surface *xdg=xdg_wm_base_get_xdg_surface(s.wm,s.surface);xdg_surface_add_listener(xdg,&surface_listener,&s);
@@ -70,10 +89,12 @@ int main(void){
  while(!s.configured&&!s.closed)if(wl_display_dispatch(s.display)<0)return 3;
  for(int n=0;n<3&&!s.closed;n++){if(draw(&s,n))return 4;while(s.frames<=n&&!s.closed)if(wl_display_dispatch(s.display)<0)return 5;}
  wl_display_roundtrip(s.display);
- const char *hold=getenv("LR_WAYLAND_INPUT_SECONDS");int seconds=hold?atoi(hold):0;if(seconds>10)seconds=10;
+ puts("WAYLAND_INPUT_READY");fflush(stdout);
+ const char *hold=getenv("LR_WAYLAND_INPUT_SECONDS");int seconds=hold?atoi(hold):0;if(seconds>300)seconds=300;
  struct timespec started,now;clock_gettime(CLOCK_MONOTONIC,&started);
  while(seconds>0&&!s.closed){
   clock_gettime(CLOCK_MONOTONIC,&now);if(now.tv_sec-started.tv_sec>=seconds)break;
+  if(!s.extended&&s.keys>0&&s.buttons>0)break;
   wl_display_dispatch_pending(s.display);wl_display_flush(s.display);struct pollfd p={wl_display_get_fd(s.display),POLLIN,0};
   if(poll(&p,1,100)>0&&wl_display_dispatch(s.display)<0)return 5;
  }
@@ -84,5 +105,5 @@ int main(void){
  if(s.keyboard)wl_keyboard_destroy(s.keyboard);
  if(s.pointer)wl_pointer_destroy(s.pointer);
  if(s.seat)wl_seat_destroy(s.seat);
- xdg_toplevel_destroy(top);xdg_surface_destroy(xdg);wl_surface_destroy(s.surface);xdg_wm_base_destroy(s.wm);wl_shm_destroy(s.shm);wl_compositor_destroy(s.compositor);wl_registry_destroy(registry);wl_display_disconnect(s.display);return pass?0:6;
+ xdg_toplevel_destroy(top);xdg_surface_destroy(xdg);wl_surface_destroy(s.surface);xdg_wm_base_destroy(s.wm);wl_shm_destroy(s.shm);wl_compositor_destroy(s.compositor);wl_registry_destroy(registry);wl_display_disconnect(s.display);if(s.key_state)xkb_state_unref(s.key_state);xkb_context_unref(s.context);return pass?0:6;
 }

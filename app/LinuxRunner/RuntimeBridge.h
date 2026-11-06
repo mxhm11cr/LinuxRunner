@@ -12,6 +12,7 @@ void LRSetDatalessMaterialization(void);
 + (void)runExternalDisplayContract:(void (^)(NSDictionary *result))completion;
 + (NSDictionary *)networkABIContract;
 + (void)runDesktopFilesContract:(void (^)(NSDictionary *result))completion;
++ (void)runEnvironmentRemovalContract:(void (^)(NSDictionary *result))completion;
 #endif
 + (UIViewController *)guiController;
 + (UIViewController *)desktopController;
@@ -89,6 +90,7 @@ void LRSetDatalessMaterialization(void);
 + (BOOL)activateJIT:(NSString * _Nullable * _Nullable)detail;
 + (void)prepareExecutionBackendAtLaunch;
 + (void)createEnvironment:(NSString *)root completion:(void (^)(NSError * _Nullable))completion;
++ (void)removeEnvironment:(NSString *)root completion:(void (^)(NSError * _Nullable))completion;
 + (NSArray<NSDictionary<NSString *, NSString *> *> *)discoverApplications;
 + (NSArray<NSDictionary *> *)discoverGraphicalApplications;
 + (NSURL * _Nullable)prepareApplicationSupport:(NSError **)error;

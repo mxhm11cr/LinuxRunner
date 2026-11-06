@@ -25,6 +25,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (readonly) BOOL wantsVersionFile;
 #ifdef LINUXRUNNER
 @property (readonly, nullable) NSError *initializationError;
+- (BOOL)stageRemovalOfRoot:(NSString *)name extraDirectories:(NSArray<NSURL *> *)directories destination:(NSURL *)destination error:(NSError **)error;
 #endif
 - (NSURL *)rootUrl:(NSString *)name;
 - (BOOL)importRootFromArchive:(NSURL *)archive name:(NSString *)name error:(NSError **)error progressReporter:(id<ProgressReporter> _Nullable)progress;

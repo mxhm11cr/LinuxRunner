@@ -20,6 +20,10 @@ else echo 'GUI_SESSION: support missing: setsid (busybox or util-linux); run Ins
 guest_user=root
 [ ! -f "$session/guest-user" ] || guest_user=$(cat "$session/guest-user")
 case "$guest_user" in ''|*[!a-z0-9_-]*|[0-9-]*) echo 'GUI_SESSION: invalid guest account'; exit 2;; esac
+case "$mode:$(cat "$session/desktop-environment" 2>/dev/null || echo linuxrunner)" in
+    desktop:wayfire|desktop:hyprland)
+        [ "$guest_user" != root ] || { echo 'GUI_SESSION: Wayland desktops require a non-root Linux user; select one in Settings > Linux Users'; exit 10; };;
+esac
 # Terminal login shells find the running desktop through this root-owned
 # profile hook (desktop-env.sh parses and validates; it never evaluates).
 if [ "$(id -u)" = 0 ] && [ -d /etc/profile.d ] && ! cmp -s ./desktop-env.sh /etc/profile.d/linuxrunner-desktop.sh; then
@@ -46,18 +50,9 @@ if [ "$(id -u)" = 0 ] && [ "$guest_user" != root ]; then
         esac
     done
     [ ! -x ./window-observer ] || /bin/sh ./prepare-window-observer.sh || true
-    # Hyprland draws on LinuxRunner's software KMS device: its nodes, a seat
-    # (seatd without a virtual terminal) and udev's seat tag exist only for this
-    # desktop; every other desktop runs without a DRM device, as before.
-    # Wayfire uses it too, but only with the GPU (virtio-gpu card answering);
-    # in software it stays nested in the X server as before.
-    kms_desktop=$(cat "$session/desktop-environment" 2>/dev/null)
-    if [ "$mode" = desktop ] && [ "$kms_desktop" = wayfire ] && command -v seatd >/dev/null; then
-        mkdir -p /dev/dri
-        [ -c /dev/dri/card1 ] || mknod -m 660 /dev/dri/card1 c 226 1
-        if (exec 3<>/dev/dri/card1) 2>/dev/null; then kms_desktop=wayfire-gpu; else rm -f /dev/dri/card1; fi
-    fi
-    if [ "$mode" = desktop ] && { [ "$kms_desktop" = hyprland ] || [ "$kms_desktop" = wayfire-gpu ]; } && command -v seatd >/dev/null; then
+    # Prepare KMS and the seat for the selected Linux account.
+    kms_desktop=$(cat "$session/desktop-environment" 2>/dev/null || echo linuxrunner)
+    if [ "$mode" = desktop ] && { [ "$kms_desktop" = hyprland ] || [ "$kms_desktop" = wayfire ]; } && command -v seatd >/dev/null; then
         mkdir -p /dev/dri /run/udev/data
         [ -c /dev/dri/card0 ] || mknod -m 660 /dev/dri/card0 c 226 0
         [ -c /dev/dri/renderD128 ] || mknod -m 666 /dev/dri/renderD128 c 226 128
@@ -73,8 +68,16 @@ if [ "$(id -u)" = 0 ] && [ "$guest_user" != root ]; then
             rm -f /run/seatd.sock
             SEATD_VTBOUND=0 seatd -u "$guest_user" -g "$(id -gn "$guest_user")" > "$session/seatd.log" 2>&1 &
         fi
+        seat_wait=0
+        until [ -S /run/seatd.sock ]; do
+            seat_wait=$((seat_wait+1))
+            [ "$seat_wait" -lt 100 ] || { echo 'GUI_SESSION: seatd did not create its socket'; exit 11; }
+            sleep .02
+        done
+        chown "$uid:$gid" /run/seatd.sock
+        chmod 660 /run/seatd.sock
         echo "GUI_SESSION: software_kms=prepared seat=seatd"
-    elif [ "$mode" = desktop ] && [ -c /dev/dri/card0 ]; then
+    elif [ "$guest_user" != root ] && [ "$mode" = desktop ] && [ -c /dev/dri/card0 ]; then
         rm -f /dev/dri/card0 /dev/dri/renderD128 /dev/dri/card1 /dev/dri/renderD129
     fi
     chown -R "$uid:$gid" "$session"
@@ -146,10 +149,11 @@ cleanup() {
     done
     for pid in "$apid" "$vpid" "$wpid" "$mpid" "$spid" "$bpid" "$xpid"; do [ -z "$pid" ] || wait "$pid" 2>/dev/null || true; done
     # The terminal hook's record of this desktop, only while it names this display.
-    if [ -n "$desktop_env" ] && grep -qx "DISPLAY=${DISPLAY:-none}" "$desktop_env" 2>/dev/null; then rm -f "$desktop_env"; fi
+    if [ -n "$desktop_env" ] && { grep -qx "XAUTHORITY=$session/authority" "$desktop_env" 2>/dev/null ||
+        grep -qx "XAUTHORITY=$session/xwayland-authority" "$desktop_env" 2>/dev/null; }; then rm -f "$desktop_env"; fi
     # Only our uniquely created runtime directory; preserve user profiles.
     [ -z "$runtime_dir" ] || rm -rf "$runtime_dir"
-    rm -f "$session/password" "$session/cookie" "$session/authority"
+    rm -f "$session/password" "$session/cookie" "$session/authority" "$session/xwayland-authority"
     echo 'GUI_SESSION: cleaned up display children; CLI runtime retained'
 }
 trap cleanup EXIT HUP INT TERM
@@ -160,7 +164,7 @@ case "$display_transport" in
   [ "$mode" = desktop ] || exit 2
   case "$(cat "$session/desktop-environment")" in
    hyprland) [ -c /dev/dri/card0 ] || { echo 'GUI_SESSION: direct display requires KMS; disable Direct Wayland Display'; exit 2; };;
-   wayfire) [ -c /dev/dri/card1 ] && [ -S /run/seatd.sock ] || { echo 'GUI_SESSION: direct Wayfire requires GPU KMS; disable Direct Wayland Display'; exit 2; };;
+   wayfire) { [ -c /dev/dri/card1 ] || [ -c /dev/dri/card0 ]; } && [ -S /run/seatd.sock ] || { echo 'GUI_SESSION: direct Wayfire requires KMS and seatd; disable Direct Wayland Display'; exit 2; };;
    *) exit 2;;
   esac;;
  *) exit 2;;
@@ -209,10 +213,11 @@ case "$shm_mode" in
  *) echo 'GUI_SESSION: invalid shared-image mode (off or sysv required)'; exit 2;;
 esac
 echo "GUI_CAPTURE: shared-images=$shm_mode"
-# Wayfire draws into this X server through MIT-SHM (wlroots' X11 backend with its
-# software renderer); x11vnc keeps the capture path chosen above.
+# The RFB KMS bridge uses MIT-SHM. Capture keeps its selected mode.
 [ "$mode" != desktop ] || [ "$desktop_environment" != wayfire ] || shm_switch=+extension
 export XDG_SESSION_TYPE=x11
+# A login profile can restore the previous compositor socket.
+unset WAYLAND_DISPLAY
 export QT_QPA_PLATFORM=${QT_QPA_PLATFORM:-xcb}
 export QT_FORCE_STDERR_LOGGING=${QT_FORCE_STDERR_LOGGING:-1}
 export QT_WIDGETS_RHI=${QT_WIDGETS_RHI:-0} QT_QUICK_BACKEND=${QT_QUICK_BACKEND:-software}
@@ -229,7 +234,7 @@ fi
 export XAUTHORITY="$session/authority"
 umask 077
 xauth -f "$XAUTHORITY" add "$DISPLAY" . "$(cat "$session/cookie")"
-echo "GUI_SESSION: root=${LINUXRUNNER_ENVIRONMENT:-current} distribution=$distro DISPLAY=$DISPLAY geometry=${width}x${height} backend=xvfb-rfb interpreter-baseline"
+echo "GUI_SESSION: root=${LINUXRUNNER_ENVIRONMENT:-current} distribution=$distro DISPLAY=$DISPLAY geometry=${width}x${height} backend=xvfb-$display_transport interpreter-baseline"
 echo "GUI_SESSION: starting X.Org software display, ${width}x${height}, no JIT"
 Xvfb "$DISPLAY" -screen 0 "${width}x${height}x24" -nolisten tcp -auth "$XAUTHORITY" "$shm_switch" MIT-SHM "$glx_switch" GLX > "$session/xvfb.log" 2>&1 & xpid=$!
 i=0
@@ -344,12 +349,11 @@ esac
 echo "GUI_VNC: timing=$vnc_timing options=$vnc_timing_options"
 vnc_lifetime="-once -timeout 60"
 [ "$mode" != desktop ] || vnc_lifetime="-forever"
-# KMS compositors (Hyprland; Wayfire on the GPU) draw their own pointer into
-# the output the bridge shows: x11vnc must not paint a second one.
+# KMS compositors draw their pointer. RFB must not draw a second pointer.
 vnc_cursor_option=
 case "$mode:$(cat "$session/desktop-environment" 2>/dev/null)" in
     desktop:hyprland) if command -v Hyprland >/dev/null && [ -c /dev/dri/card0 ]; then vnc_cursor_option=-nocursor; fi;;
-    desktop:wayfire) if [ -c /dev/dri/card1 ] && command -v wayfire >/dev/null; then vnc_cursor_option=-nocursor; fi;;
+    desktop:wayfire) if [ -c /dev/dri/card0 ] && command -v wayfire >/dev/null; then vnc_cursor_option=-nocursor; fi;;
 esac
 [ -z "$vnc_cursor_option" ] || echo 'GUI_SESSION: pointer=compositor (x11vnc draws none)'
 if [ "$display_transport" = rfb ]; then
@@ -364,9 +368,12 @@ elif [ "$mode" = qt ]; then
     [ -x ./qt-test ] || { echo 'GUI_SESSION: Qt support missing; run Install Qt Support'; exit 7; }
     QT_QPA_PLATFORM=xcb ./qt-test > "$session/application.log" 2>&1 &
 elif [ "$mode" = desktop ]; then
-    # Desktop components and everything launched from the desktop inherit the
-    # graphics routing; Xvfb and x11vnc above were started without it.
-    ( . ./gpu-env.sh; lr_gpu_route "$LR_GUI_GPU_MODE" "$PWD" "$session/gpu-stats"
+    # Wayland compositors use KMS directly. The application bridge requires GLX.
+    # Keep the selected application mode for later launch.sh requests.
+    ( . ./gpu-env.sh
+      compositor_gpu_mode=$LR_GUI_GPU_MODE
+      case "$desktop_environment" in wayfire|hyprland) compositor_gpu_mode=mesa;; esac
+      lr_gpu_route "$compositor_gpu_mode" "$PWD" "$session/gpu-stats"
       exec $setsid_cmd /bin/sh -c 'echo $$ > "$1/application-group"; exec /bin/sh ./desktop-components.sh "$1"' sh "$session" ) > "$session/application.log" 2>&1 &
 else
     [ -f "$session/command.sh" ] || { echo 'GUI_SESSION: launch configuration missing'; exit 8; }

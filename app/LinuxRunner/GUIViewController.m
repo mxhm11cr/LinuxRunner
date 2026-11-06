@@ -219,6 +219,8 @@ extern void drm_refresh_native_display(void);
 - (void)fitViewport;
 - (void)actualViewport;
 - (void)releaseInput;
+- (BOOL)hasExternalKeyboard;
+- (void)focusExternalKeyboard;
 - (void)relativeMoveX:(CGFloat)x y:(CGFloat)y;
 - (void)stroke:(uint32_t)symbol;
 - (void)toggleModifier:(UIKeyModifierFlags)flag;
@@ -358,6 +360,10 @@ extern void drm_refresh_native_display(void);
     [self finishTwoFingerRecognizer:g other:_twoFingerScroll];
 }
 
+- (BOOL)hasExternalKeyboard{return GCKeyboard.coalescedKeyboard != nil;}
+- (void)focusExternalKeyboard{
+    if([self hasExternalKeyboard]&&self.window.isKeyWindow&&!self.hidden&&!self.isFirstResponder)[self becomeFirstResponder];
+}
 - (BOOL)canBecomeFirstResponder{return YES;}
 - (BOOL)hasText{return YES;}
 - (UITextAutocorrectionType)autocorrectionType{return UITextAutocorrectionTypeNo;}
@@ -513,6 +519,7 @@ extern void drm_refresh_native_display(void);
 - (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction styleForRegion:(UIPointerRegion *)region{return [UIPointerStyle hiddenPointerStyle];}
 // ---- Pointer-mode touches (mouse through UIKit) ------------------------------
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event{
+    [self focusExternalKeyboard];
     for(UITouch *t in touches)[self countInput:t.type==UITouchTypeIndirectPointer?@"uikit.touch.indirect-pointer":t.type==UITouchTypeDirect?@"uikit.touch.direct":t.type==UITouchTypePencil?@"uikit.touch.pencil":@"uikit.touch.indirect"];
     UITouch *t=touches.anyObject;_lastTouchDown=t.timestamp;
     if(t.type==UITouchTypeIndirectPointer&&!_sawIndirectPointer){_sawIndirectPointer=YES;[self refreshPointerMode];}
@@ -580,7 +587,7 @@ extern void drm_refresh_native_display(void);
     _pointerX=x;_pointerY=y;_mouseX=x;_mouseY=y;return YES;
 }
 // Touch-gesture clicks: latency counted from the finger-down time, so recognizer waits show up.
-- (void)click:(uint8_t)button at:(CGPoint)p{if(_relativeTouchpad||[self position:p]){[self sendPointerFromEventTime:_lastTouchDown buttons:button];[self sendPointerFromEventTime:0 buttons:0];}}
+- (void)click:(uint8_t)button at:(CGPoint)p{[self focusExternalKeyboard];if(_relativeTouchpad||[self position:p]){[self sendPointerFromEventTime:_lastTouchDown buttons:button];[self sendPointerFromEventTime:0 buttons:0];}}
 - (void)tap:(UITapGestureRecognizer *)g{if([self mouseActive]&&!_relativeTouchpad)return;[self click:1 at:[g locationInView:self]];}
 - (void)drag:(UIPanGestureRecognizer *)g{
     if(_relativeTouchpad){CGPoint t=[g translationInView:self];[g setTranslation:CGPointZero inView:self];[self relativeMoveX:t.x y:t.y];return;}
@@ -1443,6 +1450,10 @@ static NSString *LRSessionGraphicsMode(void){
     if(_client){[self message:@"A display session is already running. Close it first."];return;}
     if(_desktopMode&&_sessionTerminal.sessionPid>0&&_sessionURL&&![NSFileManager.defaultManager fileExistsAtPath:[_sessionURL URLByAppendingPathComponent:@"stop"].path]){[self connectDesktopViewer];return;}
     if(![LRRuntimeBridge isRunning]){if(_desktopMode)[self desktopStartFailed:@"Linux is not running" detail:[NSString stringWithFormat:@"%@\n\nError: RUNTIME_NOT_RUNNING. Tap Retry once Linux has started.",LRRuntimeBridge.runtimeStatus]];else [self message:LRRuntimeBridge.runtimeStatus];return;}
+    NSString *desktopChoice=[NSUserDefaults.standardUserDefaults stringForKey:[@"LinuxRunnerDesktop.environment." stringByAppendingString:LRRuntimeBridge.activeRootName]];
+    if(_desktopMode&&desktopChoice.length&&[@[@"wayfire",@"hyprland"] containsObject:desktopChoice]&&[LRRuntimeBridge.defaultLinuxUser isEqual:@"root"]){
+        [self desktopStartFailed:@"Choose a Linux user" detail:@"Wayland desktops require a Linux user other than root. Close this screen, open Settings > Linux Users, then create or select your account and open the desktop again."];return;
+    }
     NSError *error=nil;_supportURL=PrepareSupport(&error);if(!_supportURL){if(_desktopMode)[self desktopStartFailed:@"Desktop files could not be prepared" detail:[error.localizedDescription stringByAppendingString:@"\n\nError: FILESYSTEM_ERROR"]];else [self message:error.localizedDescription];return;}
     if(_desktopMode&&(_startState==LRStartChecking||_startState==LRStartRepairing)){[self.view bringSubviewToFront:_startPanel];return;} // already working on it
     if(_desktopMode&&![self profileVerified]){[self beginDesktopCheck];return;}
@@ -1478,7 +1489,7 @@ static NSString *LRSessionGraphicsMode(void){
     NSString *desktopKey=[@"LinuxRunnerDesktop.environment." stringByAppendingString:LRRuntimeBridge.activeRootName];
     NSString *selectedDesktop=[NSUserDefaults.standardUserDefaults stringForKey:desktopKey];
     if(!selectedDesktop && LRRuntimeBridge.activeEnvironmentIsDebian)selectedDesktop=[NSUserDefaults.standardUserDefaults stringForKey:@"LinuxRunnerDesktop.environment"];
-    BOOL directKMS=_desktopMode && ([selectedDesktop isEqual:@"hyprland"] || ([selectedDesktop isEqual:@"wayfire"] && [LRRuntimeBridge virglActive])) && [NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerDesktop.directKMS"];
+    BOOL directKMS=_desktopMode && ([selectedDesktop isEqual:@"hyprland"] || [selectedDesktop isEqual:@"wayfire"]) && [NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerDesktop.directKMS"];
     NSDictionary *files=@{@"display-transport":directKMS?@"direct-kms":@"rfb",@"desktop-environment":([selectedDesktop isEqual:@"plasma"]||[selectedDesktop isEqual:@"lxqt"]||[selectedDesktop isEqual:@"enlightenment"]||[selectedDesktop isEqual:@"wayfire"]||[selectedDesktop isEqual:@"hyprland"])?selectedDesktop:@"linuxrunner",@"guest-user":_sessionGuestUser,@"geometry":geometry,@"glx-mode":glxMode,@"gpu-mode":LRSessionGraphicsMode(),@"input-mode":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUIEagerInput"]?@"eager":@"legacy",@"shm-mode":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUISharedImages"]?@"sysv":@"off",@"vnc-timing":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUILowLatencyInput"]?@"threads":@"default",@"password":password,@"cookie":cookie,@"port":[NSString stringWithFormat:@"%u",port],@"audio-port":_audioPort?[NSString stringWithFormat:@"%u",_audioPort]:@"",@"display":[NSString stringWithFormat:@"%u",display]};
     for(NSString *name in files){NSURL *url=[_sessionURL URLByAppendingPathComponent:name];if(![files[name] writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:&error]||![NSFileManager.defaultManager setAttributes:@{NSFilePosixPermissions:@0600} ofItemAtPath:url.path error:&error]){[self message:error.localizedDescription];return;}}
     NSString *xkb=[NSUserDefaults.standardUserDefaults stringForKey:@"LinuxRunnerGUIXKBMode"]?:@"xkb";

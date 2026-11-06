@@ -20,6 +20,8 @@ static struct native_input events[] = {
 static unsigned next_event, key_down, key_up, button_down, button_up, moves, wheels, maps;
 static struct wl_proxy *vp=(void *)1, *vk=(void *)2, *text_vk=(void *)3;
 static struct xkb_context *context;
+static struct xkb_keymap *received_map;
+static uint32_t last_unicode, last_depressed;
 int __wrap_ioctl(int fd, unsigned long command, ...) {
     (void)fd; assert(command == NATIVE_INPUT_IOCTL);
     if (next_event == sizeof events / sizeof *events) { errno=EAGAIN; return -1; }
@@ -37,14 +39,24 @@ void __wrap_wl_proxy_marshal(struct wl_proxy *p, uint32_t op, ...) {
         if(op == VP_MOTION_ABSOLUTE) moves++;
         if(op == VP_AXIS_DISCRETE) wheels++;
     } else if (p==vk || p==text_vk) {
-        if(op==VK_KEY) { va_arg(ap,uint32_t); va_arg(ap,uint32_t); if(va_arg(ap,uint32_t))key_down++;else key_up++; }
+        if(op==VK_MODIFIERS) last_depressed=va_arg(ap,uint32_t);
+        if(op==VK_KEY) {
+            va_arg(ap,uint32_t);uint32_t code=va_arg(ap,uint32_t);bool down=va_arg(ap,uint32_t);
+            if(down)key_down++;else key_up++;
+            if(down && code >= NATIVE_TEXT_FIRST_CODE-8) {
+                const xkb_keysym_t *symbols;
+                assert(received_map && xkb_keymap_key_get_syms_by_level(received_map,code+8,0,0,&symbols)==1);
+                last_unicode=symbols[0];
+            }
+        }
         if(op==VK_KEYMAP) {
             assert(va_arg(ap,uint32_t)==1);int fd=va_arg(ap,int);uint32_t size=va_arg(ap,uint32_t);
             char *s=malloc(size); assert(pread(fd,s,size,0)==size);
             struct xkb_keymap *map=xkb_keymap_new_from_string(context,s,XKB_KEYMAP_FORMAT_TEXT_V1,0);
             assert(map); const xkb_keysym_t *symbols;
-            assert(xkb_keymap_key_get_syms_by_level(map,8,0,0,&symbols)==1 && symbols[0]==0x0101f600);
-            xkb_keymap_unref(map);free(s);maps++;
+            assert(xkb_keymap_key_get_syms_by_level(map,38,0,0,&symbols)==1 && symbols[0]=='a');
+            if(received_map)xkb_keymap_unref(received_map);
+            received_map=map;free(s);maps++;
         }
     }
     va_end(ap);
@@ -58,6 +70,25 @@ int main(void) {
     assert(key_down==key_up && key_down==6); // shift, A, control, c, unicode, b
     assert(button_down==1 && button_up==1 && moves==3 && wheels==1 && maps==1);
     assert(!xkb_state_serialize_mods(state,XKB_STATE_MODS_DEPRESSED));
+    assert(last_unicode==0x0101f600);
+    struct native_text text={.keyboard=vk,.physical=state};
+    for(unsigned i=0;i<1000;i++) {
+        uint32_t sym=i%2?0x010003bb:0x0101f600;
+        assert(send_text(&text,sym) && last_unicode==sym);
+    }
+    assert(maps==3); // One map in native_loop, then two cached symbols.
+    for(unsigned i=0;i<NATIVE_TEXT_SLOTS+2;i++) {
+        uint32_t sym=0x01004e00+i;
+        assert(send_text(&text,sym) && last_unicode==sym);
+    }
+    assert(text.count==NATIVE_TEXT_SLOTS && key_down==key_up);
+    send_key(vk,state,37,true);
+    assert(send_text(&text,0x0101f680));
+    xkb_mod_index_t control=xkb_keymap_mod_get_index(received_map,XKB_MOD_NAME_CTRL);
+    assert(control!=XKB_MOD_INVALID && (last_depressed & (1U<<control)));
+    send_key(vk,state,37,false);
+    assert(last_depressed==0 && key_down==key_up);
+    xkb_keymap_unref(received_map);
     xkb_state_unref(state);xkb_keymap_unref(map);xkb_context_unref(context);
     puts("Native KMS input PASS");
 }

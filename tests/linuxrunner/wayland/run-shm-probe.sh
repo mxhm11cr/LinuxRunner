@@ -32,7 +32,7 @@ trap 'exit 143' TERM
 protocol=/usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml
 wayland-scanner client-header "$protocol" "$work/xdg-shell-client-protocol.h"
 wayland-scanner private-code "$protocol" "$work/xdg-shell-protocol.c"
-cc -O2 -Wall -Wextra -I"$work" "$base/shm-client.c" "$work/xdg-shell-protocol.c" $(pkg-config --cflags --libs wayland-client) -o "$work/client"
+cc -O2 -Wall -Wextra -I"$work" "$base/shm-client.c" "$work/xdg-shell-protocol.c" $(pkg-config --cflags --libs wayland-client xkbcommon) -o "$work/client"
 export XDG_RUNTIME_DIR="$work" WAYLAND_DISPLAY=linuxrunner-probe
 setsid weston --backend="$backend" --renderer=pixman --socket="$WAYLAND_DISPLAY" --idle-time=0 --width=640 --height=480 --no-config --shell="$shell" --log="$work/weston.log" &
 compositor=$!

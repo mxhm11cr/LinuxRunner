@@ -117,8 +117,6 @@ struct fiber_block {
     struct list jumps_from_links[2];
     // links for free list
     struct list jetsam;
-    size_t retired_bytes;
-    _Atomic bool collecting;
     bool is_jetsam;
 
     // Precise fault PCs, sorted by start (owned; freed with the block).

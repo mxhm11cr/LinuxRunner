@@ -31,4 +31,7 @@ echo "GUI_LAUNCH: executable=$command directory=$PWD DISPLAY=$DISPLAY"
 # Settings (session.sh exports it). Unusable GPU modes fall back to Mesa.
 . "$base/gpu-env.sh"
 lr_gpu_route "${LR_GUI_GPU_MODE:-mesa}" "$base" "${LR_GUI_SESSION_DIR:+$LR_GUI_SESSION_DIR/gpu-stats}"
+case "${command##*/}" in
+    firefox|firefox-esr) exec /bin/sh "$base/firefox-launch.sh" "$command" "$@";;
+esac
 exec "$command" "$@"

@@ -24,7 +24,7 @@
     },
     {
       "name": "browser-launch.sh",
-      "sha256": "dfe7f6cdf71d6d9d28ac220c9f51afdf4bb00bda6c317f08a472c43d11a9e625",
+      "sha256": "a6781fbd61539675552579d5253181f1539d78b9aa933fbdb860f80b96c5a9dc",
       "mode": "0755"
     },
     {
@@ -44,7 +44,7 @@
     },
     {
       "name": "desktop-components.sh",
-      "sha256": "c81ac532050cd25f3f778543e49ea3aaeedb28997c710df01650c9c0551627c4",
+      "sha256": "ac53431376c9b46a3150116444b63a5ac3033f20422ac7d769f0a3ccfebbd18b",
       "mode": "0755"
     },
     {
@@ -111,6 +111,16 @@
       "name": "desktop-xfce-panel.xml",
       "sha256": "990d74e43743c37e921c3ce393db7be625840c2aa6f303854a58e2798adfe942",
       "mode": "0644"
+    },
+    {
+      "name": "firefox-desktop.sh",
+      "sha256": "7160077a1f767026a66a339621f19b84801f40ef1872ea22deca61a617c40319",
+      "mode": "0755"
+    },
+    {
+      "name": "firefox-launch.sh",
+      "sha256": "ac48cf99a3fc2151aa251924de9c8be6f0a14acda777e4013347490f023da55a",
+      "mode": "0755"
     },
     {
       "name": "firefox-test.html",
@@ -319,7 +329,7 @@
     },
     {
       "name": "launch.sh",
-      "sha256": "8652865d53054795c8313e368b77e72aeb06e7f598642af3a78aed8265cb8d8f",
+      "sha256": "78cb750027ab4d5cb00f0e83b4458275a4e984aaaa08315b9c4cf3f744f3b691",
       "mode": "0755"
     },
     {

@@ -35,8 +35,11 @@ if [ "$qt_desktop" = 1 ]; then
  export QT_FORCE_STDERR_LOGGING=${QT_FORCE_STDERR_LOGGING:-1}
  echo 'DESKTOP_STARTUP: environment=linuxrunner components=openbox,lxqt-panel,pcmanfm-qt (Arch X11 desktop)'
 fi
-export XDG_DATA_DIRS="$base/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 fi
+export XDG_DATA_DIRS="$base/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+case "$environment" in wayfire|hyprland)
+    /bin/sh ./firefox-desktop.sh "$base/share/applications" || echo 'DESKTOP_STARTUP: Firefox menu compatibility entries could not be updated';;
+esac
 # Programs started from LinuxRunner open inside a Wayland compositor: its
 # socket joins the desktop environment file (see desktop-env.sh).
 publish_wayland() {

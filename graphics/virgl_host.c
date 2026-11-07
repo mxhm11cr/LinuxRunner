@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include <virgl/virglrenderer.h>
 #include "graphics/virgl_backend.h"
+#include "graphics/host_gpu_job.h"
 
 // virglrenderer's public header declares the transfer box opaquely; this is
 // its layout (src/virgl_hw.h), part of the transfer ABI.
@@ -62,8 +63,7 @@ static bool job_done, ready, init_ok;
 static char status[192];
 const char *lr_virgl_host_status(void) { return status; }
 
-static void *gpu_main(void *unused) {
-    (void) unused;
+static void initialize_gpu(void *result) {
     display = eglGetPlatformDisplayEXT(EGL_PLATFORM_ANGLE_ANGLE, (void *) EGL_DEFAULT_DISPLAY,
         (const EGLint[]) {EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE, EGL_NONE});
     EGLint major = 0, minor = 0, count = 0;
@@ -88,6 +88,12 @@ static void *gpu_main(void *unused) {
     else if (count != 1) snprintf(status, sizeof status, "no RGBA8 GLES 3 configuration");
     else if (root == EGL_NO_CONTEXT) snprintf(status, sizeof status, "could not create a GLES 3 context (error %#x)", eglGetError());
     else snprintf(status, sizeof status, "virglrenderer did not initialise");
+    *(bool *)result=ok;
+}
+static void *gpu_main(void *unused) {
+    (void)unused;
+    bool ok=false;
+    lr_host_gpu_job(initialize_gpu,&ok);
     pthread_mutex_lock(&slot_lock);
     init_ok = ok; ready = true;
     pthread_cond_broadcast(&slot_cond);
@@ -95,7 +101,7 @@ static void *gpu_main(void *unused) {
         while (!job) pthread_cond_wait(&slot_cond, &slot_lock);
         void (*run)(void *) = job; void *arg = job_arg;
         pthread_mutex_unlock(&slot_lock);
-        run(arg);
+        lr_host_gpu_job(run,arg);
         pthread_mutex_lock(&slot_lock);
         job = NULL; job_done = true;
         pthread_cond_broadcast(&slot_cond);

@@ -712,7 +712,15 @@
     for (VNRecognizedTextObservation *line in request.results) {
         if (![[line topCandidates:1].firstObject.string isEqualToString:text]) continue;
         CGRect box = line.boundingBox;
-        [[app coordinateWithNormalizedOffset:CGVectorMake(CGRectGetMidX(box), 1 - CGRectGetMidY(box))] tap];
+        CGVector point = CGVectorMake(CGRectGetMidX(box), 1 - CGRectGetMidY(box));
+        // Rotate vertical OCR bounds into the landscape application frame.
+        if (box.size.height > box.size.width && app.frame.size.width > app.frame.size.height) {
+            point = XCUIDevice.sharedDevice.orientation == UIDeviceOrientationLandscapeLeft
+                ? CGVectorMake(CGRectGetMidY(box), CGRectGetMidX(box))
+                : CGVectorMake(1 - CGRectGetMidY(box), 1 - CGRectGetMidX(box));
+        }
+        NSLog(@"Rendered text tap: %@ at %.3f, %.3f", text, point.dx, point.dy);
+        [[app coordinateWithNormalizedOffset:point] tap];
         return YES;
     }
     return NO;

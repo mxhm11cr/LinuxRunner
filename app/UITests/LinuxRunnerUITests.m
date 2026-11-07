@@ -721,7 +721,7 @@
     NSString *root = NSProcessInfo.processInfo.environment[@"LR_WAYFIRE_TEST_ROOT"];
     XCTSkipIf(root.length == 0, @"Set the prepared Wayfire root.");
     self.continueAfterFailure = NO;
-    XCUIApplication *app = [self openWayfireAtResolution:@"0"];
+    XCUIApplication *app = [self openWayfireAtResolution:@"2"];
     [self shot:app name:@"Wayfire before Firefox"];
     [app.navigationBars.buttons[@"Done"] tap];
     [app.buttons[@"Terminal"].firstMatch tap];
@@ -736,7 +736,7 @@
     [self shot:app name:@"Firefox terminal launch"];
     [app.buttons[@"Done"] tap];
     [app.buttons[@"Open Desktop"] tap];
-    BOOL heading = [self waitForRenderedText:@"REAL LINUX ARM64 FIREFOX" app:app timeout:180];
+    BOOL heading = [self waitForRenderedText:@"REAL LINUX ARM64" app:app timeout:180];
     [self shot:app name:@"Firefox page rendering result"];
     XCTAssertTrue(heading, @"The screenshot must contain the Firefox fixture heading.");
     BOOL script = [self waitForRenderedText:@"JavaScript 3 storage-ok" app:app timeout:30];

@@ -7,6 +7,7 @@
 #include "kernel/task.h"
 #include "kernel/guest_profile.h"
 #include "kernel/memory.h"
+#include "asbestos/asbestos.h"
 #include "kernel/native_offload.h"
 #include "emu/tlb.h"
 #include "platform/platform.h"
@@ -395,6 +396,7 @@ void task_run_current() {
         int interrupt = cpu_run_to_interrupt(cpu, tlb);
         guest_profile_state(2);
         read_wrunlock(&self->mem->lock);
+        asbestos_collect(self->mem->mmu.asbestos);
         handle_interrupt(interrupt);
     }
 

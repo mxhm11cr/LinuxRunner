@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import subprocess
+import socket
 import tempfile
 import unittest
 
@@ -46,6 +47,19 @@ print(json.dumps({'environment':{key:os.environ.get(key) for key in keys},'argum
                          LIBGL_ALWAYS_SOFTWARE='1', GALLIUM_DRIVER='softpipe', LR_MESA_METAL_MODE='off',
                          WAYLAND_DISPLAY=None, MESA_LOADER_DRIVER_OVERRIDE=None, DISPLAY=':8',
                          XAUTHORITY='/tmp/xwayland-authority'))
+
+    def test_policy_uses_a_live_wayland_socket(self):
+        with socket.socket(socket.AF_UNIX) as compositor:
+            path = str(self.path / 'wayland-0')
+            compositor.bind(path)
+            env = dict(self.env, WAYLAND_DISPLAY=path)
+            result = subprocess.run(['/bin/sh', str(self.support / 'firefox-launch.sh'), str(self.firefox)],
+                                    env=env, text=True, capture_output=True, check=True)
+            value = json.loads(result.stdout)['environment']
+            self.assertEqual(value['MOZ_ENABLE_WAYLAND'], '1')
+            self.assertEqual(value['GDK_BACKEND'], 'wayland')
+            self.assertEqual(value['WAYLAND_DISPLAY'], path)
+            self.assertEqual(value['LR_MESA_METAL_MODE'], 'off')
 
     def test_native_launcher_uses_the_same_policy(self):
         result = subprocess.run(['/bin/sh', str(self.support / 'launch.sh'), str(self.path), str(self.firefox), 'file:///tmp/test.html'],

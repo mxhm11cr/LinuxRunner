@@ -1,4 +1,9 @@
 #include <mach/mach.h>
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+#include <os/proc.h>
+#include "platform/guest_memory.h"
+#endif
 #include <dispatch/dispatch.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
@@ -39,6 +44,21 @@ struct cpu_usage get_cpu_usage() {
     };
 }
 
+static struct mem_usage guest_mem_usage(struct mem_usage usage) {
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+    task_vm_info_data_t info = {};
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    uint64_t remaining = os_proc_available_memory();
+    uint64_t process_limit = 0;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) == KERN_SUCCESS)
+        process_limit = info.phys_footprint + remaining;
+    usage.total = guest_memory_total(usage.total, process_limit);
+    if (usage.free > remaining / 2) usage.free = remaining / 2;
+    if (usage.free > usage.total) usage.free = usage.total;
+#endif
+    return usage;
+}
+
 struct mem_usage get_mem_usage() {
     static struct mem_usage last_good;
     host_basic_info_data_t basic = {};
@@ -52,17 +72,17 @@ struct mem_usage get_mem_usage() {
     if (status != KERN_SUCCESS) {
         printk("WARNING: get_mem_usage: Mach host statistics failed (%d)\n", status);
         if (last_good.total != 0)
-            return last_good;
+            return guest_mem_usage(last_good);
         uint64_t total = 0;
         size_t size = sizeof(total);
         if (sysctlbyname("hw.memsize", &total, &size, NULL, 0) != 0 || total == 0)
             total = 4ULL * 1024 * 1024 * 1024;
-        return (struct mem_usage) {
+        return guest_mem_usage((struct mem_usage) {
             .total = total,
             .free = total / 4,
             .active = total / 4,
             .inactive = total / 4,
-        };
+        });
     }
 
     last_good = (struct mem_usage) {
@@ -71,7 +91,7 @@ struct mem_usage get_mem_usage() {
         .active = vm.active_count * vm_page_size,
         .inactive = vm.inactive_count * vm_page_size,
     };
-    return last_good;
+    return guest_mem_usage(last_good);
 }
 
 struct uptime_info get_uptime() {

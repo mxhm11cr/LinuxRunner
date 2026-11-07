@@ -545,11 +545,15 @@
     if (controls.exists && controls.hittable) [controls tap];
 }
 - (void)waitForWayfireDesktop:(XCUIApplication *)app {
-    [self showWayfireControls:app];
-    NSPredicate *ready = [NSPredicate predicateWithFormat:@"label CONTAINS %@", @"Desktop ready"];
-    XCTNSPredicateExpectation *expectation = [[XCTNSPredicateExpectation alloc] initWithPredicate:ready object:app.staticTexts[@"GUI status"]];
-    XCTAssertEqual([XCTWaiter waitForExpectations:@[expectation] timeout:120], XCTWaiterResultCompleted);
-    [self showWayfireControls:app];
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:120];
+    do {
+        [self showWayfireControls:app];
+        XCUIElement *status = app.staticTexts[@"GUI status"];
+        if (status.exists && [status.label containsString:@"Desktop ready"]) return;
+        [NSThread sleepForTimeInterval:1];
+    } while (deadline.timeIntervalSinceNow > 0);
+    [self shot:app name:@"Wayfire readiness timeout"];
+    XCTFail(@"The desktop must report ready with its controls visible.");
 }
 - (void)pasteWayfireText:(NSString *)text app:(XCUIApplication *)app {
     NSString *clipboard = NSProcessInfo.processInfo.environment[@"LR_WAYFIRE_TEST_CLIPBOARD"];
@@ -697,6 +701,65 @@
     [app.buttons[@"Open Desktop"] tap];
     XCTAssertTrue([app.staticTexts[@"Choose a Linux user"] waitForExistenceWithTimeout:15]);
     [self shot:app name:@"Default root account receives an immediate account prompt"];
+}
+- (BOOL)tapRenderedText:(NSString *)text app:(XCUIApplication *)app {
+    VNRecognizeTextRequest *request = [VNRecognizeTextRequest new];
+    request.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
+    request.recognitionLanguages = @[@"en-US"];
+    request.usesLanguageCorrection = NO;
+    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:app.screenshot.image.CGImage options:@{}];
+    if (![handler performRequests:@[request] error:nil]) return NO;
+    for (VNRecognizedTextObservation *line in request.results) {
+        if (![[line topCandidates:1].firstObject.string isEqualToString:text]) continue;
+        CGRect box = line.boundingBox;
+        [[app coordinateWithNormalizedOffset:CGVectorMake(CGRectGetMidX(box), 1 - CGRectGetMidY(box))] tap];
+        return YES;
+    }
+    return NO;
+}
+- (void)testWayfireFirefoxRendering {
+    NSString *root = NSProcessInfo.processInfo.environment[@"LR_WAYFIRE_TEST_ROOT"];
+    XCTSkipIf(root.length == 0, @"Set the prepared Wayfire root.");
+    self.continueAfterFailure = NO;
+    XCUIApplication *app = [self openWayfireAtResolution:@"0"];
+    [self shot:app name:@"Wayfire before Firefox"];
+    [app.navigationBars.buttons[@"Done"] tap];
+    [app.buttons[@"Terminal"].firstMatch tap];
+    XCTAssertTrue([app.webViews.firstMatch waitForExistenceWithTimeout:30]);
+    [app.webViews.firstMatch tap];
+    XCTAssertTrue([app.keyboards.firstMatch waitForExistenceWithTimeout:30]);
+    NSString *profile = [@"/tmp/lr-firefox-render-" stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSString *command = [NSString stringWithFormat:
+        @"mkdir -p %@; (unset DISPLAY XAUTHORITY WAYLAND_DISPLAY; /bin/sh /home/mobile/Downloads/.linuxrunner/gui/launch.sh /tmp /usr/lib/firefox-esr/firefox-esr --no-remote --new-instance --profile %@ file:///home/mobile/Downloads/.linuxrunner/gui/firefox-test.html) > %@.log 2>&1 &\n", profile, profile, profile];
+    [app typeText:command];
+    [NSThread sleepForTimeInterval:2];
+    [self shot:app name:@"Firefox terminal launch"];
+    [app.buttons[@"Done"] tap];
+    [app.buttons[@"Open Desktop"] tap];
+    BOOL heading = [self waitForRenderedText:@"REAL LINUX ARM64 FIREFOX" app:app timeout:180];
+    [self shot:app name:@"Firefox page rendering result"];
+    XCTAssertTrue(heading, @"The screenshot must contain the Firefox fixture heading.");
+    BOOL script = [self waitForRenderedText:@"JavaScript 3 storage-ok" app:app timeout:30];
+    [self shot:app name:@"Firefox JavaScript rendering result"];
+    XCTAssertTrue(script, @"The screenshot must contain the fixture script result.");
+    [self showWayfireControls:app];
+    XCTAssertTrue([self tapRenderedText:@"Type here" app:app]);
+    [app.buttons[@"GUI Keyboard"] tap];
+    [app typeText:@"Firefox input checked"];
+    [app.buttons[@"GUI Keyboard"] tap];
+    XCTAssertTrue([self tapRenderedText:@"Count" app:app]);
+    BOOL clicked = [self waitForRenderedText:@"clicked 1 Firefox input checked" app:app timeout:30];
+    [self shot:app name:@"Firefox input and click result"];
+    XCTAssertTrue(clicked, @"The page must show the typed text and click count.");
+    for (unsigned sample = 0; sample < 18; sample++) {
+        [NSThread sleepForTimeInterval:10];
+        XCTAssertEqual(app.state, XCUIApplicationStateRunningForeground);
+        if ((sample + 1) % 6 == 0) {
+            BOOL retained = [self waitForRenderedText:@"clicked 1 Firefox input checked" app:app timeout:10];
+            [self shot:app name:[NSString stringWithFormat:@"Firefox stability %u seconds", (sample + 1) * 10]];
+            XCTAssertTrue(retained, @"The page must remain visible during the stability check.");
+        }
+    }
 }
 - (void)testInspectInstalledApp {
     NSString *bundle = NSProcessInfo.processInfo.environment[@"LR_DEVICE_APP_BUNDLE"];

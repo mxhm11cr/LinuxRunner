@@ -507,6 +507,9 @@ dword_t sys_madvise(addr_t addr, dword_t len, dword_t advice) {
     STRACE("madvise(0x%llx, 0x%x, %d)", (unsigned long long)addr, len, advice);
     if (PGOFFSET(addr) != 0)
         return _EINVAL;
+    if (!len) return 0;
+    const addr_t limit = (USER_ADDR_MAX_PAGE + 1) << PAGE_BITS;
+    if (addr >= limit || len > limit - addr) return _ENOMEM;
     // Linux returns ENOMEM if any page in the range is unmapped. Lazy
     // reservations count as mappings because they represent PROT_NONE VMAs.
     read_wrlock(&current->mem->lock);
@@ -529,30 +532,8 @@ dword_t sys_madvise(addr_t addr, dword_t len, dword_t advice) {
     if (advice == 8 /* MADV_FREE */)
         return 0;
 
-    if (advice == 4 /* MADV_DONTNEED */) {
-        // Anonymous private pages become zero-fill. File-backed private pages
-        // must retain their file contents; zeroing those corrupts mapped
-        // executables and caches. Walk under a read lock and skip lazy pages so
-        // exit cannot hang behind repeated per-page write-lock acquisition.
-        addr_t end = addr + len;
-        bool any = false;
-        read_wrlock(&current->mem->lock);
-        for (addr_t p = addr; p < end; p += PAGE_SIZE) {
-            struct pt_entry *pt = mem_pt(current->mem, PAGE(p));
-            if (pt == NULL || pt->data == NULL)
-                continue;
-            if (!(pt->flags & P_ANONYMOUS) && pt->data->fd != NULL)
-                continue;
-            void *ptr = mem_ptr(current->mem, p, MEM_WRITE);
-            if (ptr != NULL) {
-                memset(ptr, 0, PAGE_SIZE);
-                any = true;
-            }
-        }
-        read_wrunlock(&current->mem->lock);
-        if (any)
-            mem_changed_pub(current->mem);
-    }
+    if (advice == 4 /* MADV_DONTNEED */)
+        return mem_discard_private(current->mem, PAGE(addr), PAGE_ROUND_UP(len));
     return 0;
 }
 

@@ -119,7 +119,7 @@
     },
     {
       "name": "firefox-launch.sh",
-      "sha256": "ac48cf99a3fc2151aa251924de9c8be6f0a14acda777e4013347490f023da55a",
+      "sha256": "f6c50e75cd40284a10a17b22fbc98107003f3f79a119d5eb8644c9d23cc92181",
       "mode": "0755"
     },
     {

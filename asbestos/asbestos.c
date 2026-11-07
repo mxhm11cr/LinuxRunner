@@ -615,12 +615,14 @@ void jit_highbit_alert(struct cpu_state *cpu) {
 
 static void fiber_block_disconnect(struct asbestos *asbestos, struct fiber_block *block);
 static void fiber_block_free(struct asbestos *asbestos, struct fiber_block *block);
+static void fiber_block_retire(struct asbestos *asbestos, struct fiber_block *block);
 static void fiber_free_jetsam(struct asbestos *asbestos);
 static void fiber_resize_hash(struct asbestos *asbestos, size_t new_size);
 
 // Process-wide translation memory (diagnostics: /proc/ish/memory). Blocks in a
 // translation table count; disconnected (jetsam) blocks stop counting.
 _Atomic uint64_t asbestos_stat_instances, asbestos_stat_blocks, asbestos_stat_code_words;
+_Atomic uint64_t asbestos_stat_retired_bytes;
 _Atomic uint64_t asbestos_stat_idle_flushes, asbestos_stat_cap_flushes;
 // Translated code is per address space and otherwise kept until exit: a desktop
 // session held ~575 MB, mostly start-up code of idle daemons. A space that has
@@ -671,6 +673,7 @@ struct asbestos *asbestos_new(struct mmu *mmu) {
     wrlock_init(&asbestos->jetsam_lock);
     atomic_init(&asbestos->invalidate_gen, 0);
     atomic_init(&asbestos->jit_active_threads, 0);
+    atomic_init(&asbestos->collecting, false);
     atomic_init(&asbestos->jetsam_gen, 0);
     for (size_t i = 0; i < FIBER_CODE_SEEN_WORDS; i++)
         atomic_init(&asbestos->code_seen[i], 0);
@@ -679,8 +682,6 @@ struct asbestos *asbestos_new(struct mmu *mmu) {
 
 void asbestos_free(struct asbestos *asbestos) {
     atomic_fetch_sub_explicit(&asbestos_stat_instances, 1, memory_order_relaxed);
-    atomic_fetch_sub_explicit(&asbestos_stat_blocks, asbestos->num_blocks, memory_order_relaxed);
-    atomic_fetch_sub_explicit(&asbestos_stat_code_words, asbestos->mem_used, memory_order_relaxed);
     for (size_t i = 0; i < asbestos->hash_size; i++) {
         struct fiber_block *block, *tmp;
         if (list_null(&asbestos->hash[i]))
@@ -757,9 +758,7 @@ void asbestos_invalidate_range(struct asbestos *absestos, page_t start, page_t e
                 list_for_each_entry_safe(blocks, block, tmp, page[i]) {
                     page_t p = PAGE(i == 0 ? block->addr : block->end_addr);
                     if (p < start || p >= end) continue;
-                    fiber_block_disconnect(absestos, block);
-                    block->is_jetsam = true;
-                    list_add(&absestos->jetsam, &block->jetsam);
+                    fiber_block_retire(absestos, block);
                     did_invalidate = true;
                 }
             }
@@ -789,9 +788,7 @@ void asbestos_invalidate_range(struct asbestos *absestos, page_t start, page_t e
                 // colliding code. Index 1 registers a spanning block's end.
                 if (PAGE(i == 0 ? block->addr : block->end_addr) != page)
                     continue;
-                fiber_block_disconnect(absestos, block);
-                block->is_jetsam = true;
-                list_add(&absestos->jetsam, &block->jetsam);
+                fiber_block_retire(absestos, block);
                 did_invalidate = true;
             }
             // All blocks for this exact page were removed (or none existed).
@@ -847,9 +844,7 @@ void asbestos_invalidate_all(struct asbestos *asbestos) {
             if (list_null(blocks))
                 continue;
             list_for_each_entry_safe(blocks, block, tmp, page[i]) {
-                fiber_block_disconnect(asbestos, block);
-                block->is_jetsam = true;
-                list_add(&asbestos->jetsam, &block->jetsam);
+                fiber_block_retire(asbestos, block);
                 did_invalidate = true;
             }
         }
@@ -1134,6 +1129,16 @@ static void fiber_block_disconnect(struct asbestos *asbestos, struct fiber_block
     }
 }
 
+static void fiber_block_retire(struct asbestos *asbestos, struct fiber_block *block) {
+    fiber_block_disconnect(asbestos, block);
+    block->is_jetsam = true;
+    list_add(&asbestos->jetsam, &block->jetsam);
+    size_t bytes = sizeof(*block) + block->used * sizeof(unsigned long) +
+        block->fault_pc_count * sizeof(struct fiber_fault_pc);
+    asbestos->retired_bytes += bytes;
+    atomic_fetch_add_explicit(&asbestos_stat_retired_bytes, bytes, memory_order_relaxed);
+}
+
 static void fiber_block_free(struct asbestos *asbestos, struct fiber_block *block) {
     fiber_block_disconnect(asbestos, block);
 #ifdef ISH_JIT
@@ -1155,8 +1160,27 @@ static void fiber_free_jetsam(struct asbestos *asbestos) {
         free(block->fault_pcs);
         free(block);
     }
+    atomic_fetch_sub_explicit(&asbestos_stat_retired_bytes, asbestos->retired_bytes, memory_order_relaxed);
+    asbestos->retired_bytes = 0;
     // A flushed translation table frees many small blocks: return the pages.
     if (freed > 20000) asbestos_return_free_heap();
+}
+
+void asbestos_collect(struct asbestos *asbestos) {
+    lock(&asbestos->lock);
+    bool needed = asbestos->retired_bytes >= (4u << 20);
+    unlock(&asbestos->lock);
+    bool expected = false;
+    if (!needed || !atomic_compare_exchange_strong(&asbestos->collecting, &expected, true)) return;
+    // Stop new execution slices before waiting for existing readers. Readers
+    // must not wait for this lock while they hold the address-space read lock:
+    // an executing CoW fault can need that address-space lock for writing.
+    write_wrlock(&asbestos->jetsam_lock);
+    lock(&asbestos->lock);
+    fiber_free_jetsam(asbestos);
+    unlock(&asbestos->lock);
+    write_wrunlock(&asbestos->jetsam_lock);
+    atomic_store_explicit(&asbestos->collecting, false, memory_order_release);
 }
 
 int fiber_enter(struct fiber_block *block, struct fiber_frame *frame, struct tlb *tlb);
@@ -1205,9 +1229,11 @@ static void fiber_resolve_fault_pc(struct fiber_frame *frame, const struct fiber
 static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
     struct asbestos *asbestos = cpu->mmu->asbestos;
 
+    if (atomic_load_explicit(&asbestos->collecting, memory_order_acquire)) return INT_TIMER;
+
     // Hold jetsam_lock read during JIT execution.
     // This prevents jetsam cleanup from freeing blocks while we're executing them.
-    read_wrlock(&asbestos->jetsam_lock);
+    if (!read_wrtrylock(&asbestos->jetsam_lock)) return INT_TIMER;
 
     // Use persistent block cache and frame from TLB; invalidate when blocks are jetsam'd.
     unsigned invalidate_gen = asbestos_invalidate_gen_load(asbestos);

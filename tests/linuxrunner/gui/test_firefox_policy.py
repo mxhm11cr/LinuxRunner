@@ -52,14 +52,16 @@ print(json.dumps({'environment':{key:os.environ.get(key) for key in keys},'argum
         with socket.socket(socket.AF_UNIX) as compositor:
             path = str(self.path / 'wayland-0')
             compositor.bind(path)
-            env = dict(self.env, WAYLAND_DISPLAY=path)
-            result = subprocess.run(['/bin/sh', str(self.support / 'firefox-launch.sh'), str(self.firefox)],
-                                    env=env, text=True, capture_output=True, check=True)
-            value = json.loads(result.stdout)['environment']
-            self.assertEqual(value['MOZ_ENABLE_WAYLAND'], '1')
-            self.assertEqual(value['GDK_BACKEND'], 'wayland')
-            self.assertEqual(value['WAYLAND_DISPLAY'], path)
-            self.assertEqual(value['LR_MESA_METAL_MODE'], 'off')
+            for display in [path, 'wayland-0']:
+                with self.subTest(display=display):
+                    env = dict(self.env, WAYLAND_DISPLAY=display, XDG_RUNTIME_DIR=str(self.path))
+                    result = subprocess.run(['/bin/sh', str(self.support / 'firefox-launch.sh'), str(self.firefox)],
+                                            env=env, text=True, capture_output=True, check=True)
+                    value = json.loads(result.stdout)['environment']
+                    self.assertEqual(value['MOZ_ENABLE_WAYLAND'], '1')
+                    self.assertEqual(value['GDK_BACKEND'], 'wayland')
+                    self.assertEqual(value['WAYLAND_DISPLAY'], display)
+                    self.assertEqual(value['LR_MESA_METAL_MODE'], 'off')
 
     def test_native_launcher_uses_the_same_policy(self):
         result = subprocess.run(['/bin/sh', str(self.support / 'launch.sh'), str(self.path), str(self.firefox), 'file:///tmp/test.html'],

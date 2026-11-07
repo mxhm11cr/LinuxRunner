@@ -702,29 +702,6 @@
     XCTAssertTrue([app.staticTexts[@"Choose a Linux user"] waitForExistenceWithTimeout:15]);
     [self shot:app name:@"Default root account receives an immediate account prompt"];
 }
-- (BOOL)tapRenderedText:(NSString *)text app:(XCUIApplication *)app {
-    VNRecognizeTextRequest *request = [VNRecognizeTextRequest new];
-    request.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
-    request.recognitionLanguages = @[@"en-US"];
-    request.usesLanguageCorrection = NO;
-    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:app.screenshot.image.CGImage options:@{}];
-    if (![handler performRequests:@[request] error:nil]) return NO;
-    for (VNRecognizedTextObservation *line in request.results) {
-        if (![[line topCandidates:1].firstObject.string isEqualToString:text]) continue;
-        CGRect box = line.boundingBox;
-        CGVector point = CGVectorMake(CGRectGetMidX(box), 1 - CGRectGetMidY(box));
-        // Rotate vertical OCR bounds into the landscape application frame.
-        if (box.size.height > box.size.width && app.frame.size.width > app.frame.size.height) {
-            point = XCUIDevice.sharedDevice.orientation == UIDeviceOrientationLandscapeLeft
-                ? CGVectorMake(CGRectGetMidY(box), CGRectGetMidX(box))
-                : CGVectorMake(1 - CGRectGetMidY(box), 1 - CGRectGetMidX(box));
-        }
-        NSLog(@"Rendered text tap: %@ at %.3f, %.3f", text, point.dx, point.dy);
-        [[app coordinateWithNormalizedOffset:point] tap];
-        return YES;
-    }
-    return NO;
-}
 - (void)testWayfireFirefoxRendering {
     NSString *root = NSProcessInfo.processInfo.environment[@"LR_WAYFIRE_TEST_ROOT"];
     XCTSkipIf(root.length == 0, @"Set the prepared Wayfire root.");
@@ -751,11 +728,13 @@
     [self shot:app name:@"Firefox JavaScript rendering result"];
     XCTAssertTrue(script, @"The screenshot must contain the fixture script result.");
     [self showWayfireControls:app];
-    XCTAssertTrue([self tapRenderedText:@"Type here" app:app]);
+    [self tapLinuxX:320 y:280 app:app];
     [app.buttons[@"GUI Keyboard"] tap];
+    [app.buttons[@"GUI Tab"] tap];
     [app typeText:@"Firefox input checked"];
+    [app.buttons[@"GUI Tab"] tap];
+    [app typeText:@"\n"];
     [app.buttons[@"GUI Keyboard"] tap];
-    XCTAssertTrue([self tapRenderedText:@"Count" app:app]);
     BOOL clicked = [self waitForRenderedText:@"clicked 1 Firefox input checked" app:app timeout:30];
     [self shot:app name:@"Firefox input and click result"];
     XCTAssertTrue(clicked, @"The page must show the typed text and click count.");
@@ -776,14 +755,14 @@
     [app activate];
     for (NSString *label in [NSProcessInfo.processInfo.environment[@"LR_DEVICE_UI_TAPS"] componentsSeparatedByString:@"|"]) {
         if (label.length == 0) continue;
+        if ([label hasPrefix:@"wait:"]) {
+            [NSThread sleepForTimeInterval:MIN(120, MAX(0, [label substringFromIndex:5].doubleValue))];
+            continue;
+        }
         if ([label hasPrefix:@"linux:"]) {
             NSArray<NSString *> *point = [[label substringFromIndex:6] componentsSeparatedByString:@","];
             XCTAssertEqual(point.count, 2u);
             [self tapLinuxX:point[0].doubleValue y:point[1].doubleValue app:app];
-            continue;
-        }
-        if ([label hasPrefix:@"ocr:"]) {
-            XCTAssertTrue([self tapRenderedText:[label substringFromIndex:4] app:app]);
             continue;
         }
         if ([label hasPrefix:@"type:"]) { [app typeText:[label substringFromIndex:5]]; continue; }

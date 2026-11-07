@@ -10,7 +10,7 @@
 #include "asbestos/asbestos.h"
 #include "emu/tlb.h"
 #include "emu/interrupt.h"
-extern _Atomic uint64_t asbestos_stat_blocks, asbestos_stat_code_words, asbestos_stat_retired_bytes;
+extern _Atomic uint64_t asbestos_stat_blocks, asbestos_stat_code_words, asbestos_stat_retired_bytes, asbestos_stat_cap_flushes;
 static struct asbestos *space;
 static atomic_bool holding, release_reader, collected;
 static void *reader(void *unused) {
@@ -27,7 +27,9 @@ static void *collector(void *unused) {
     atomic_store(&collected, true);
     return NULL;
 }
-int main(void) {
+int main(int argc, char **argv) {
+    bool cap = argc > 1 && !strcmp(argv[1], "cap");
+    if (cap) setenv("ISH_CODE_CAP_MB", "1", 1);
     assert(!mount_root(&realfs, "/") && !become_first_process());
     enum { count = 24000 };
     const addr_t code = 0x10000;
@@ -48,6 +50,16 @@ int main(void) {
     }
     read_wrunlock(&current->mem->lock);
     space = current->mem->mmu.asbestos;
+    if (cap) {
+        assert(atomic_load(&asbestos_stat_cap_flushes) > 0);
+        assert(space->mem_used * sizeof(unsigned long) + space->num_blocks * sizeof(struct fiber_block) <= (1u << 20));
+        tlb_free(tlb);
+        mem_destroy(current->mem);
+        assert(!atomic_load(&asbestos_stat_blocks) && !atomic_load(&asbestos_stat_code_words));
+        assert(!atomic_load(&asbestos_stat_retired_bytes));
+        puts("translation-cap: actual execution stayed within the configured cache limit");
+        return 0;
+    }
     asbestos_invalidate_all(space);
     assert(space->retired_bytes >= (4u << 20));
     assert(atomic_load(&asbestos_stat_retired_bytes) == space->retired_bytes);

@@ -318,6 +318,11 @@ static NSString *desktopRoot;
     NSAssert(NSThread.isMainThread, @"Boot is serialized on the main thread");
     if (bootAttempted) return NO; // Partial initialization cannot safely restart.
     bootAttempted = YES;
+#if TARGET_OS_IOS && !TARGET_OS_SIMULATOR
+    // Leave room for guest data, Metal and UIKit within the iOS app limit.
+    setenv("ISH_CODE_CAP_MB", "32", 0);
+    setenv("ISH_CODE_IDLE_FLUSH_S", "5", 0);
+#endif
     // Select once before any guest execution/decoded blocks. A live toggle
     // would mix incompatible gadget operand streams; preferences apply only
     // after a full process relaunch. On by default from build 884 (validated on

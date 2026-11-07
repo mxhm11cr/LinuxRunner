@@ -6,6 +6,7 @@ Firefox uses native Wayland when its session socket exists. It uses X11 when no 
 
 - Small anonymous and copy-on-write guest pages share host page allocations. A 16 KB iPad host page holds four separate 4 KB guest pages. Each guest page keeps its own backing reference and guest permissions.
 - `MADV_DONTNEED` replaces complete, unshared host pages with demand-zero backing. Partial ranges and copy-on-write pages receive separate zero backing. Shared mappings and file mappings keep their contents. The old zero-fill loop kept discarded memory committed.
+- On physical iOS devices, each address space keeps at most 32 MB of active translations. Idle translation retention is five seconds. Environment overrides remain available for diagnostics.
 - Retired translations have a separate memory counter. A collector stops new execution slices and drains existing readers outside the address-space lock. This prevents repeated nonblocking cleanup attempts from retaining large retired lists. New slices yield while collection runs, so they cannot block a copy-on-write writer while waiting for the collector.
 - Translation destruction decrements counters once. It previously decremented them before the block loop and again inside the loop.
 - Physical iOS devices report half of the smaller physical or current app memory limit to guest programs. The remaining half is reserved for the interpreter, graphics and native UI. The runtime reads the current app limit from the Apple memory APIs.

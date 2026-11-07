@@ -768,6 +768,17 @@
     [app activate];
     for (NSString *label in [NSProcessInfo.processInfo.environment[@"LR_DEVICE_UI_TAPS"] componentsSeparatedByString:@"|"]) {
         if (label.length == 0) continue;
+        if ([label hasPrefix:@"linux:"]) {
+            NSArray<NSString *> *point = [[label substringFromIndex:6] componentsSeparatedByString:@","];
+            XCTAssertEqual(point.count, 2u);
+            [self tapLinuxX:point[0].doubleValue y:point[1].doubleValue app:app];
+            continue;
+        }
+        if ([label hasPrefix:@"ocr:"]) {
+            XCTAssertTrue([self tapRenderedText:[label substringFromIndex:4] app:app]);
+            continue;
+        }
+        if ([label hasPrefix:@"type:"]) { [app typeText:[label substringFromIndex:5]]; continue; }
         XCUIElement *target = app.buttons[label].firstMatch;
         if (!target.exists) target = app.staticTexts[label].firstMatch;
         XCTAssertTrue([target waitForExistenceWithTimeout:10]); [target tap];

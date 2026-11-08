@@ -14,6 +14,7 @@
 #include "debug.h"
 #include "kernel/errno.h"
 #include "kernel/task.h"
+#include "kernel/filecaps.h"
 #include "fs/fd.h"
 #include "fs/dev.h"
 #include "fs/inode.h"
@@ -278,6 +279,29 @@ static inode_t bind_mount_ensure_inode(struct fakefs_db *fs, struct mount *mount
 // this exists only to override readdir to fix the returned inode numbers
 static struct fd_ops fakefs_fdops;
 
+static bool fakefs_caps_allowed(struct fd *fd) {
+    // Host-shared imports can change outside the guest write hooks. Never
+    // attach executable privilege metadata to those externally writable files.
+    return fd->file_caps_storage;
+}
+static ssize_t fakefs_get_file_caps(struct fd *fd, void *value, size_t size) {
+    return fakefs_caps_allowed(fd) ? file_caps_host_get(fd->real_fd, value, size) : _EOPNOTSUPP;
+}
+static int fakefs_set_file_caps(struct fd *fd, const void *value, size_t size, int flags) {
+    return fakefs_caps_allowed(fd) ? file_caps_host_set(fd->real_fd, value, size, flags) : _EOPNOTSUPP;
+}
+static int fakefs_remove_file_caps(struct fd *fd) {
+    return fakefs_caps_allowed(fd) ? file_caps_host_remove(fd->real_fd) : _EOPNOTSUPP;
+}
+
+static int fakefs_strip_caps_path(struct mount *mount, const char *path) {
+    if (is_under_bind_mount(path)) return 0;
+    int fd = openat(mount->root_fd, fix_path(path), O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
+    if (fd < 0) return errno_map();
+    int err = file_caps_host_remove(fd); close(fd);
+    return err == _ENODATA || err == _EOPNOTSUPP ? 0 : err;
+}
+
 static struct fd *fakefs_open(struct mount *mount, const char *path, int flags, int mode) {
     struct fakefs_db *fs = &mount->fakefs;
 
@@ -300,7 +324,7 @@ static struct fd *fakefs_open(struct mount *mount, const char *path, int flags, 
         if (flags & O_RDWR_) real_flags |= O_RDWR;
         if (flags & O_CREAT_) real_flags |= O_CREAT;
         if (flags & O_EXCL_) real_flags |= O_EXCL;
-        if (flags & O_TRUNC_) real_flags |= O_TRUNC;
+        // Truncate in generic_openat after guest DAC and file-cap invalidation.
         if (flags & O_APPEND_) real_flags |= O_APPEND;
         if (flags & O_NONBLOCK_) real_flags |= O_NONBLOCK;
         if (flags & O_NOFOLLOW_) real_flags |= O_NOFOLLOW;
@@ -357,6 +381,7 @@ static struct fd *fakefs_open(struct mount *mount, const char *path, int flags, 
         return ERR_PTR(_ENOMEM);
     }
     fd->ops = &fakefs_fdops;
+    fd->file_caps_storage = !is_under_bind_mount(path);
     return fd;
 }
 
@@ -378,6 +403,8 @@ step:
         fd = realfs.open(mount, path, O_RDONLY_, 0);
     if (PTR_ERR(fd) == _ENOENT)
         goto step;
+    if (IS_ERR(fd)) { db_reset(fs, stmt); db_commit(fs); return fd; }
+    fd->file_caps_storage = !is_under_bind_mount(path);
     db_reset(fs, stmt);
     db_commit(fs);
     fd->fake_inode = inode;
@@ -624,6 +651,9 @@ static int fakefs_setattr(struct mount *mount, const char *path, struct attr att
         return _EROFS;
     if (attr.type == attr_size)
         return realfs.setattr(mount, path, attr);
+    if (attr.type == attr_uid || attr.type == attr_gid) {
+        int err = fakefs_strip_caps_path(mount, path); if (err) return err;
+    }
     db_begin_read(fs);
     struct ish_stat ishstat;
     ino_t inode;
@@ -653,6 +683,9 @@ static int fakefs_fsetattr(struct fd *fd, struct attr attr) {
     struct fakefs_db *fs = &fd->mount->fakefs;
     if (attr.type == attr_size)
         return realfs.fsetattr(fd, attr);
+    if (attr.type == attr_uid || attr.type == attr_gid) {
+        int err = file_caps_strip(fd); if (err) return err;
+    }
     db_begin_write(fs);
     struct ish_stat ishstat;
     inode_read_stat_or_die(fs, fd->fake_inode, &ishstat);
@@ -1113,6 +1146,9 @@ static void fakefs_inode_orphaned(struct mount *mount, ino_t inode) {
 }
 
 const struct fs_ops fakefs = {
+    .get_file_caps = fakefs_get_file_caps,
+    .set_file_caps = fakefs_set_file_caps,
+    .remove_file_caps = fakefs_remove_file_caps,
     .name = "fake", .magic = 0x66616b65,
     .mount = fakefs_mount,
     .umount = fakefs_umount,
@@ -1133,6 +1169,7 @@ const struct fs_ops fakefs = {
     .fsetattr = fakefs_fsetattr,
     .getpath = realfs_getpath,
     .utime = realfs_utime,
+    .futime = realfs_futime,
 
     .mkdir = fakefs_mkdir,
     .rmdir = fakefs_rmdir,

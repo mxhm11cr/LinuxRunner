@@ -1,0 +1,12 @@
+LinuxRunner Plasma bridge: GPL-2.0-or-later.
+
+lr-plasma-krfb.h preserves the plugin ABI declarations from KDE KRFB v26.08.2:
+https://github.com/KDE/krfb/tree/v26.08.2/krfb
+framebuffer.h, events.h, framebufferplugin.h and rfb.h.
+Original copyright and SPDX notices are retained in that header.
+krfbprivate_export.h is represented by a local import-only declaration.
+No upstream executable is patched or redistributed by these source files.
+
+The bridge loads the distribution's installed PipeWire framebuffer plugin and
+links its libkrfbprivate.so.5 and libvncserver. KDE/KWin/libei versions outside
+the qualified configuration require separate compatibility testing.

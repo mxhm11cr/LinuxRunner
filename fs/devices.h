@@ -35,6 +35,11 @@
 
 // --- dynamic devices ---
 #define DYN_DEV_MAJOR 240
+// LinuxRunner Bluetooth LE serial links, /dev/ttyBLE0-3 (Linux "low-density
+// serial" range; no in-kernel driver uses it on LinuxRunner).
+#define TTY_BLE_MAJOR 204
+// USB serial through a USB-MIDI adapter (CoreMIDI), /dev/ttyMIDI0-3.
+#define TTY_MIDI_MAJOR 205
 
 // /dev/clipboard
 #define DEV_CLIPBOARD_MINOR 0

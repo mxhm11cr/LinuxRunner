@@ -52,6 +52,15 @@ struct rowcol {
 
 @end
 
+static NSString *LRTerminalBackground(NSString *hex) {
+    // LinuxRunner's terminal: true black for dark themes (default on).
+    id setting = [NSUserDefaults.standardUserDefaults objectForKey:@"LinuxRunnerTerminal.trueBlack"];
+    if (setting && ![setting boolValue]) return hex;
+    UIColor *c = [[UIColor alloc] ish_initWithHexString:hex]; CGFloat w = 1;
+    if ([c getWhite:&w alpha:NULL] && w < 0.3) return @"#000000";
+    CGFloat r = 1, g = 1, b = 1; if ([c getRed:&r green:&g blue:&b alpha:NULL] && (r + g + b) / 3 < 0.3) return @"#000000";
+    return hex;
+}
 @implementation TerminalView
 @synthesize inputDelegate;
 @synthesize tokenizer;
@@ -189,7 +198,8 @@ static NSString *const HANDLERS[] = {@"syncFocus", @"focus", @"newScrollHeight",
     if (self.overrideAppearance != OverrideAppearanceNone) {
         palette = self.overrideAppearance == OverrideAppearanceLight ? prefs.theme.lightPalette : prefs.theme.darkPalette;
     }
-    UIColor *backgroundColor = [[UIColor alloc] ish_initWithHexString:palette.backgroundColor];
+    NSString *background = LRTerminalBackground(palette.backgroundColor);
+    UIColor *backgroundColor = [[UIColor alloc] ish_initWithHexString:background];
     self.backgroundColor = backgroundColor;
     self.scrollbarView.backgroundColor = backgroundColor;
     if (_overrideFontSize == prefs.fontSize.doubleValue)
@@ -198,10 +208,11 @@ static NSString *const HANDLERS[] = {@"syncFocus", @"focus", @"newScrollHeight",
         @"fontFamily": prefs.fontFamily,
         @"fontSize": @(self.effectiveFontSize),
         @"foregroundColor": palette.foregroundColor,
-        @"backgroundColor": palette.backgroundColor,
+        @"backgroundColor": background,
         @"cursorColor": palette.cursorColor ?: palette.foregroundColor,
         @"blinkCursor": @(prefs.blinkCursor),
         @"cursorShape": prefs.htermCursorShape,
+        @"sharpness": [NSUserDefaults.standardUserDefaults stringForKey:@"LinuxRunnerTerminal.sharpness"] ?: @"sharp",
     } mutableCopy];
     if (palette.colorPaletteOverrides) {
         themeInfo[@"colorPaletteOverrides"] = palette.colorPaletteOverrides;
@@ -376,6 +387,11 @@ static NSString *const HANDLERS[] = {@"syncFocus", @"focus", @"newScrollHeight",
     }
 
     text = [text stringByReplacingOccurrencesOfString:@"\n" withString:@"\r"];
+    if (self.altKey.selected && text.length == 1) {
+        self.altKey.selected = NO;
+        [self.altKey sendActionsForControlEvents:UIControlEventValueChanged];
+        text = [@"\x1b" stringByAppendingString:text];
+    }
     NSData *data = [text dataUsingEncoding:NSUTF8StringEncoding];
     [self.terminal sendInput:data];
 }

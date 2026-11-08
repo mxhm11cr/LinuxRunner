@@ -30,6 +30,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)importRootFromArchive:(NSURL *)archive name:(NSString *)name error:(NSError **)error progressReporter:(id<ProgressReporter> _Nullable)progress;
 #ifdef LINUXRUNNER
 - (BOOL)importVerifiedRootFromArchive:(NSURL *)archive name:(NSString *)name sha256:(NSString *)expected metadata:(NSDictionary *)metadata error:(NSError **)error progressReporter:(id<ProgressReporter> _Nullable)progress;
+- (BOOL)importRootFromStream:(int)descriptor name:(NSString *)name metadata:(NSDictionary *)metadata error:(NSError **)error progressReporter:(id<ProgressReporter> _Nullable)progress;
+- (BOOL)importVerifiedRootFromArchive:(NSURL *)archive name:(NSString *)name sha256:(NSString *)expected topLevel:(NSString * _Nullable)topLevel metadata:(NSDictionary *)metadata error:(NSError **)error progressReporter:(id<ProgressReporter> _Nullable)progress;
 #endif
 - (BOOL)exportRootNamed:(NSString *)name toArchive:(NSURL *)archive error:(NSError **)error progressReporter:(id<ProgressReporter> _Nullable)progress;
 - (BOOL)destroyRootNamed:(NSString *)name error:(NSError **)error;

@@ -7,7 +7,7 @@
 import math, struct, sys, zlib
 
 out = sys.argv[1]
-W, H = (int(sys.argv[2]), int(sys.argv[3])) if len(sys.argv) > 3 else (2560, 2560)
+W, H = (int(sys.argv[2]), int(sys.argv[3])) if len(sys.argv) > 3 else (1280, 1280)
 
 def mix(a, b, t):
     return tuple(x + (y - x) * t for x, y in zip(a, b))

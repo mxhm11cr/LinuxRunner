@@ -9,6 +9,16 @@ mkdir -p "$base/config/openbox" "$base/config/lxpanel/LinuxRunner/panels" "$base
 put() { [ -e "$2" ] || { cp "$1" "$2.new"; chmod 600 "$2.new"; mv "$2.new" "$2"; }; }
 put desktop-openbox.xml "$base/config/openbox/rc.xml"
 put desktop-panel.conf "$base/config/lxpanel/LinuxRunner/panels/panel"
+# Some distributions ship xterm.desktop rather than Debian's launcher ID.
+# Repair only an exact managed default; keep every customized panel intact.
+panel="$base/config/lxpanel/LinuxRunner/panels/panel"
+if [ ! -e /usr/share/applications/debian-xterm.desktop ] &&
+   [ -r /usr/share/applications/xterm.desktop ] &&
+   [ "$(sha256sum < "$panel")" = "$(sha256sum < desktop-panel.conf)" ]; then
+ sed 's|id=/usr/share/applications/debian-xterm.desktop|id=/usr/share/applications/xterm.desktop|' "$panel" > "$panel.new"
+ chmod 600 "$panel.new"; mv "$panel.new" "$panel"
+ echo 'DESKTOP_CONFIG: managed panel terminal launcher resolved from installed desktop entry'
+fi
 put desktop-theme.conf "$base/share/themes/LinuxRunner/openbox-3/themerc"
 if [ ! -e "$base/config/pcmanfm/LinuxRunner/desktop-items-0.conf" ]; then
  cat > "$base/config/pcmanfm/LinuxRunner/desktop-items-0.conf.new" <<EOF
@@ -54,7 +64,12 @@ profile_link() {
 }
 profile_link "$base/config/lxpanel/LinuxRunner" "$user_config/lxpanel/LinuxRunner"
 profile_link "$base/config/pcmanfm/LinuxRunner" "$user_config/pcmanfm/LinuxRunner"
-profile_link "$base/config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml" "$user_config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml"
+# Only Alpine's LinuxRunner desktop uses xfce4-panel as its panel. Elsewhere a
+# user-level xfce4-panel.xml would override a real Xfce desktop's own panel
+# (for example Kali's), so it is not linked there.
+case "$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | tr -d '"')" in
+ alpine) profile_link "$base/config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml" "$user_config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml";;
+esac
 printf 'schema=1\nconfiguration=first-write-only\n' > "$base/configuration.meta.new"
 mv "$base/configuration.meta.new" "$base/configuration.meta"
 echo "DESKTOP_CONFIG: version=1 destination=$base user_files=preserved result=PASS"

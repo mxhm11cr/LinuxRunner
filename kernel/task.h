@@ -28,6 +28,9 @@ struct task {
     unsigned diagnostic_memory_stage; // 0 idle, 1 upgrade, 2 write wait, 3 materialize
 
     struct tgroup *group; // immutable
+    // Explicit capture lease. Private to this task; shared by CLONE_THREAD
+    // only. Its object/reference count is protected by the IPC lock.
+    struct capture_shm_scope *capture_shm; // pending lease until host thread starts
     struct list group_links;
     pid_t_ pid, tgid; // immutable
     uid_t_ uid, gid;
@@ -173,10 +176,11 @@ struct task {
 
     // Linux user namespace (NULL = initial namespace) and capability sets.
     // Credentials above stay global ids; guest-visible values are translated
-    // through userns. Capabilities are authoritative only inside a non-initial
-    // namespace; the initial namespace keeps superuser() semantics.
+    // through userns. These are guest capability sets, never host privileges.
     struct user_ns *userns;
     uint64_t cap_effective, cap_permitted, cap_inheritable;
+    uint64_t cap_bounding;
+    bool keep_caps;
 
     // Linux PID namespace membership (NULL = initial namespace). The global
     // pid above stays the runtime's identity; ns_pid[i] is this task's pid as

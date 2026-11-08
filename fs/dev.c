@@ -23,6 +23,8 @@ struct dev_ops *char_devs[256] = {
     [TTY_ALTERNATE_MAJOR] = &tty_dev,
     [TTY_PSEUDO_MASTER_MAJOR] = &tty_dev,
     [TTY_PSEUDO_SLAVE_MAJOR] = &tty_dev,
+    [TTY_BLE_MAJOR] = &tty_dev,
+    [TTY_MIDI_MAJOR] = &tty_dev,
     [DYN_DEV_MAJOR] = &dyn_dev_char,
 };
 

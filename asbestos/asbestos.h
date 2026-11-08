@@ -27,6 +27,8 @@ struct asbestos {
     // list of fiber_blocks that should be freed soon (at the next RCU grace
     // period, if we had such a thing)
     struct list jetsam;
+    size_t retired_bytes;
+    _Atomic bool collecting;
 
     // A way to look up blocks in a page
     struct {
@@ -144,6 +146,8 @@ bool asbestos_should_trace_guest_pc(addr_t pc);
 // Create a new asbestos
 struct asbestos *asbestos_new(struct mmu *mmu);
 void asbestos_free(struct asbestos *asbestos);
+// Call after releasing the address-space read lock.
+void asbestos_collect(struct asbestos *asbestos);
 
 // Invalidate all fiber blocks in pages start (inclusive) to end (exclusive).
 // Locks the asbestos. Should only be called by memory.c in conjunction with

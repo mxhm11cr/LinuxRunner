@@ -10,6 +10,7 @@ void LRSetDatalessMaterialization(void);
 @interface LRRuntimeBridge : NSObject
 #if TARGET_OS_SIMULATOR
 + (void)runExternalDisplayContract:(void (^)(NSDictionary *result))completion;
++ (NSDictionary *)applicationDiscoveryContextContract;
 + (NSDictionary *)networkABIContract;
 + (void)runDesktopFilesContract:(void (^)(NSDictionary *result))completion;
 #endif
@@ -17,6 +18,8 @@ void LRSetDatalessMaterialization(void);
 + (UIViewController *)desktopController;
 + (UIViewController * _Nullable)desktopControllerIfCreated;
 + (NSDictionary<NSString *, id> *)desktopSessionSummary;
++ (void)setDesktopPreviewWanted:(BOOL)wanted;
++ (nullable UIImage *)desktopPreviewImageIfChangedSince:(uint64_t *)generation;
 + (void)stopDesktopSession;
 /// Requested graphics mode, the guest's GPU_ROUTING decision and per-process GPU statistics of the latest GUI session.
 + (NSDictionary<NSString *, id> *)graphicsSummary;
@@ -48,14 +51,19 @@ void LRSetDatalessMaterialization(void);
 + (void)recordBoot:(NSString *)root error:(int)error;
 + (int)prepareExchange:(NSString *)root;
 + (BOOL)assembleDebianPackages:(NSArray<NSString *> *)packages toArchive:(NSURL *)archive progress:(void (^)(double))progress cancel:(BOOL (^)(void))cancel error:(NSError **)error;
++ (BOOL)installSteamOSFromImage:(NSURL *)image imageSHA256:(NSString *)imageSHA256 packages:(NSArray<NSURL *> *)packages packageSHA256:(NSArray<NSString *> *)packageSHA256 work:(NSURL *)work root:(NSString *)root metadata:(NSDictionary<NSString *, NSString *> *)metadata progress:(void (^)(double, NSString *))progress cancel:(BOOL (^)(void))cancel error:(NSError **)error;
 + (BOOL)importVerifiedEnvironment:(NSURL *)archive root:(NSString *)root sha256:(NSString *)sha256 progress:(void (^)(double, NSString *))progress cancel:(BOOL (^)(void))cancel error:(NSError **)error;
 // Arch Linux ARM installer: repository database text (see lr_arch_read_database),
 // assembly of authenticated packages, and import with explicit metadata.
 + (nullable NSString *)readArchDatabase:(NSURL *)database error:(NSError **)error;
 + (BOOL)assembleArchPackages:(NSArray<NSString *> *)packages localNames:(NSArray<NSString *> *)names localDescriptions:(NSArray<NSString *> *)descriptions toArchive:(NSURL *)archive progress:(void (^)(double))progress cancel:(BOOL (^)(void))cancel error:(NSError **)error;
 + (BOOL)importVerifiedEnvironment:(NSURL *)archive root:(NSString *)root sha256:(NSString *)sha256 metadata:(NSDictionary<NSString *, NSString *> *)metadata progress:(void (^)(double, NSString *))progress cancel:(BOOL (^)(void))cancel error:(NSError **)error;
++ (BOOL)importVerifiedEnvironment:(NSURL *)archive root:(NSString *)root sha256:(NSString *)sha256 topLevel:(NSString *)topLevel metadata:(NSDictionary<NSString *, NSString *> *)metadata progress:(void (^)(double, NSString *))progress cancel:(BOOL (^)(void))cancel error:(NSError **)error;
 + (BOOL)activeEnvironmentIsArch;
++ (BOOL)activeEnvironmentIsFedora;
++ (BOOL)desktopSharedImagesEnabled;
 + (BOOL)activeEnvironmentIsDebian;
++ (BOOL)activeEnvironmentIsSteamOS;
 + (NSDictionary *)probeJITPermissions;
 /// Execution backend. The JIT exists only in the JIT-capable build variant and
 /// runs only after iOS grants executable memory (an attached debugger such as
@@ -79,6 +87,8 @@ void LRSetDatalessMaterialization(void);
 + (void)setExecutionMode:(NSString *)mode;
 + (BOOL)debuggerAttached;
 + (void)setDesktopDisplayWidth:(NSUInteger)width height:(NSUInteger)height;   // KMS preferred mode for the next desktop
++ (NSInteger)desktopResolutionIndex;
++ (BOOL)desktopMetalPresentationEnabled;
 + (NSString *)gpuMode;                     // automatic, metal, software
 + (void)setGPUMode:(NSString *)mode;
 + (NSDictionary *)gpuStatus;                 // mode, active renderer, detail
@@ -89,7 +99,12 @@ void LRSetDatalessMaterialization(void);
 + (BOOL)activateJIT:(NSString * _Nullable * _Nullable)detail;
 + (void)prepareExecutionBackendAtLaunch;
 + (void)createEnvironment:(NSString *)root completion:(void (^)(NSError * _Nullable))completion;
+// The mounted root stays in use until app relaunch, even after guest init exits.
++ (nullable NSString *)environmentDeletionUnavailableReason:(NSString *)root;
++ (void)deleteEnvironment:(NSString *)root completion:(void (^)(NSError * _Nullable))completion;
 + (NSArray<NSDictionary<NSString *, NSString *> *> *)discoverApplications;
+/// Read at most 256 KiB before allocation, refusing symlinks and non-regular files.
++ (NSString *)boundedDiagnosticTail:(NSURL *)url maxBytes:(NSUInteger)bytes;
 + (NSArray<NSDictionary *> *)discoverGraphicalApplications;
 + (NSURL * _Nullable)prepareApplicationSupport:(NSError **)error;
 + (void)resetGraphicalSessions;
@@ -124,6 +139,12 @@ void LRSetDatalessMaterialization(void);
 /// Experimental KDE Plasma (X11) from Debian's packages, on top of the regular desktop.
 + (void)installPlasma:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;
 + (BOOL)plasmaInstalled;
++ (void)installXfce:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;
++ (BOOL)xfceInstalled;
++ (void)installKaliTools:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;
++ (BOOL)kaliToolsInstalled;
++ (BOOL)activeEnvironmentIsKali;
++ (nullable NSString *)activeDistributionID;
 + (void)installLXQt:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;
 + (BOOL)lxqtInstalled;
 + (void)installEnlightenment:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;

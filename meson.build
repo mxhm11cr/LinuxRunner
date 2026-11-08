@@ -147,6 +147,7 @@ if get_option('kernel') == 'ish'
         'kernel/native_io.c',
 
         'kernel/fs.c',
+        'kernel/filecaps.c',
         'kernel/fs_info.c',
         'fs/mount.c',
         'fs/fd.c',
@@ -169,6 +170,7 @@ if get_option('kernel') == 'ish'
 
         'fs/adhoc.c',
         'fs/sock.c',
+        'fs/errqueue.c',
     'fs/netlink.c',
         'fs/uevent.c',
     'fs/dmabuf.c',

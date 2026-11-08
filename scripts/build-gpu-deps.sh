@@ -8,8 +8,8 @@
 # Everything is static: the app loads no libraries at run time. ANGLE becomes
 # one archive (scripts/gpu/angle-static-archive.py, the inputs of ANGLE's own
 # libGLESv2 link plus libEGL_static) and libepoxy finds EGL/GLES in the process
-# image (scripts/gpu/libepoxy-ios-process-image.patch, applied to a copy; the
-# checkouts stay pristine).
+# image on both iOS and the macOS test runtime (the process-image patch is
+# applied to a copy; the checkouts stay pristine).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 platform=${1:?platform}
@@ -35,6 +35,7 @@ esac
 angle_out=out/lr-$platform
 args="is_debug=false symbol_level=0 target_cpu=\"arm64\" angle_enable_metal=true angle_enable_vulkan=false angle_enable_gl=false"
 args+=" angle_enable_null=false angle_enable_swiftshader=false angle_build_tests=false is_component_build=false"
+args+=" angle_enable_wgpu=false"
 args+=" angle_has_frame_capture=false use_siso=false"
 [[ $os == ios ]] && args+=" target_os=\"ios\" target_environment=\"$angle_env\" ios_enable_code_signing=false ios_deployment_target=\"15.0\""
 (cd "$GPU_DEPS/angle" && PATH="$GPU_DEPS/depot_tools:$PATH" buildtools/mac/gn gen "$angle_out" --args="$args" >/dev/null &&
@@ -50,7 +51,7 @@ ar = ['xcrun', '--sdk', '$platform', 'ar']
 strip = ['xcrun', '--sdk', '$platform', 'strip']
 pkg-config = 'pkg-config'
 [built-in options]
-c_args = ['-target', '$target', '-isysroot', '$sdk', '-I$out/include/angle'$([[ $os == ios ]] && echo ", '-DEPOXY_EGL_IN_PROCESS_IMAGE'")]
+c_args = ['-target', '$target', '-isysroot', '$sdk', '-I$out/include/angle', '-DEPOXY_EGL_IN_PROCESS_IMAGE', '-DLINUXRUNNER_ANGLE_ZERO_BORDER']
 c_link_args = ['-target', '$target', '-isysroot', '$sdk']
 default_library = 'static'
 [properties]
@@ -63,13 +64,15 @@ cpu = 'arm64'
 endian = 'little'
 EOF
 
-# libepoxy (patched copy on iOS), then virglrenderer against it.
+# Static ANGLE needs the same symbol lookup on iOS and in the macOS test host.
 rm -rf "$work/libepoxy" && cp -R "$GPU_DEPS/libepoxy" "$work/libepoxy"
-[[ $os == ios ]] && (cd "$work/libepoxy" && git apply "$OLDPWD/scripts/gpu/libepoxy-ios-process-image.patch")
+(cd "$work/libepoxy" && git apply "$OLDPWD/scripts/gpu/libepoxy-ios-process-image.patch")
 meson setup --wipe "$work/epoxy-build" "$work/libepoxy" --cross-file "$work/cross.txt" --prefix="$out" \
     -Degl=yes -Dglx=no -Dx11=false -Dtests=false -Ddocs=false >/dev/null
 ninja -C "$work/epoxy-build" install >/dev/null
-PKG_CONFIG_LIBDIR=$out/lib/pkgconfig meson setup --wipe "$work/virgl-build" "$GPU_DEPS/virglrenderer" --cross-file "$work/cross.txt" \
+rm -rf "$work/virglrenderer" && cp -R "$GPU_DEPS/virglrenderer" "$work/virglrenderer"
+(cd "$work/virglrenderer" && git apply "$OLDPWD/scripts/gpu/virglrenderer-angle-zero-border.patch")
+PKG_CONFIG_LIBDIR=$out/lib/pkgconfig meson setup --wipe "$work/virgl-build" "$work/virglrenderer" --cross-file "$work/cross.txt" \
     --prefix="$out" -Dplatforms=egl -Dvenus=false -Dvideo=false -Dtests=false >/dev/null
 ninja -C "$work/virgl-build" install >/dev/null
 printf 'virglrenderer %s\nlibepoxy %s\nangle %s\n' "$VIRGL_REV" "$EPOXY_REV" "$ANGLE_REV" > "$out/REVISIONS"

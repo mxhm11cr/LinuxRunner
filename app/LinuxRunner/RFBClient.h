@@ -9,6 +9,15 @@ NS_ASSUME_NONNULL_BEGIN
 // Compact dirty pixels, rows tightly packed at damage.width*4 bytes.
 @property (copy,nullable) void (^patchFrameHandler)(NSData *patch,uint16_t width,uint16_t height,uint64_t frameCount,uint64_t receivedBytes,LRFrameDamage damage);
 @property (copy,nullable) void (^statusHandler)(NSString *status);
+// Cursor pseudo-encoding: the server's current cursor as premultiplied BGRA
+// (nil when the cursor is hidden) and its hotspot; the view draws it at the
+// pointer it sends. PointerPos: the server moved the pointer (e.g. a warp).
+// Both are called on the decoder queue.
+@property (copy,nullable) void (^cursorHandler)(NSData *_Nullable bgra,uint16_t width,uint16_t height,uint16_t hotX,uint16_t hotY);
+@property (copy,nullable) void (^pointerPositionHandler)(uint16_t x,uint16_t y);
+/// ServerCutText: text Linux placed on its CLIPBOARD (Latin-1 per RFB). Kept by
+/// the app until the user chooses to copy it to iOS; never written implicitly.
+@property (copy,nullable) void (^cutTextHandler)(NSString *text);
 @property (copy,nullable) void (^inputTraceHandler)(NSString *event);
 // Opt-in stage timing, called on decoder/input queues. No keysyms or pixels.
 // decode_delivery_ms includes receiving the update body and callback delivery;

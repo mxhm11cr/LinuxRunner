@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "date": "2026-11-02",
+  "hardware": "iPad Air 13-inch (M4)",
+  "os": "iPadOS 27.2",
+  "cli": "MobileBuildMCP 2.7.1 guarded public launcher",
+  "configuration": "LinuxRunner Release 1.1.0 build 900, ARM64 interpreter, JIT disabled, virgl compiled",
+  "active_distribution": "Arch Linux ARM (archarm rolling)",
+  "workload": "Idle default Openbox + LXQt panel + PCManFM-Qt X11 desktop, Xvfb/RFB, 960x540, Core Graphics presenter, socket image capture, default VNC timing",
+  "installed_environments": [
+    "Arch Linux ARM (active)",
+    "SteamOS",
+    "Alpine"
+  ],
+  "provenance": "Same preserved local integration source tree. Before reverses the three-file storage runtime diff from d141978 to 0d015d3; after restores it. The native Unix-socket path fix and graphics/test instrumentation are identical in both and are outside the storage PR. Storage walks all installed roots; this is not an Arch-only filesystem benchmark.",
+  "sampling": "Second through fourth scheduled fifteen-second cumulative getrusage(RUSAGE_SELF) user+system CPU / CLOCK_MONOTONIC samples, approximately 30-60 seconds after native sampling began. The test waits 70 seconds after readiness; the xterm broker waits 75 seconds before launch. No pointer/key events in the selected window; thermal_state 0 is nominal.",
+  "runs": {
+    "before": {
+      "binary_uuid": "79269A93-DA38-31CC-AF15-D8FA75DA791E",
+      "samples": [
+        {
+          "monotonic_s": 405586.773056,
+          "cpu_s": 57.424457999999994,
+          "frames": 9,
+          "thermal_state": 0
+        },
+        {
+          "monotonic_s": 405601.773191,
+          "cpu_s": 74.59211499999999,
+          "frames": 9,
+          "thermal_state": 0
+        },
+        {
+          "monotonic_s": 405616.77275,
+          "cpu_s": 91.801798,
+          "frames": 9,
+          "thermal_state": 0
+        }
+      ],
+      "physical_ui_test": "PASS: desktop ready, managed xterm launch, synthesized touch/text and visible LR REF INPUT aarch64 output"
+    },
+    "after": {
+      "binary_uuid": "9FE94715-0035-312C-A990-1B5E86224929",
+      "samples": [
+        {
+          "monotonic_s": 405726.261643,
+          "cpu_s": 31.790210000000002,
+          "frames": 7,
+          "thermal_state": 0
+        },
+        {
+          "monotonic_s": 405741.264594,
+          "cpu_s": 36.714222,
+          "frames": 7,
+          "thermal_state": 0
+        },
+        {
+          "monotonic_s": 405756.265256,
+          "cpu_s": 41.683,
+          "frames": 7,
+          "thermal_state": 0
+        }
+      ],
+      "physical_ui_test": "PASS: desktop ready, managed xterm launch, synthesized touch/text and visible LR REF INPUT aarch64 output"
+    }
+  },
+  "integration_changed_source_sha256": {
+    "before": {
+      "app/LinuxRunner/Diagnostics.swift": "bc9feaac998c62fa4653c5de9f6d52cb8c124b9689a416f1c5a168c984beb4d7",
+      "app/LinuxRunner/ManagerView.swift": "3d29455d5c7dbaf697b4ae5da6d7ecb90ec97f1ada92d2dec792ff9ea8e33c4e",
+      "app/LinuxRunner/GUIViewController.m": "3f5fc8ec7617618422add5f449ca16b97bed759a11736e083eefdf02d89fbb94"
+    },
+    "after": {
+      "app/LinuxRunner/Diagnostics.swift": "7c165d331be3c51c9745b516a3328de065b1285caec65cda16cc26ae9d5cf538",
+      "app/LinuxRunner/ManagerView.swift": "745428d328444205dcfdec7654f076cac4692ce72d69cdae817aed423b1410df",
+      "app/LinuxRunner/GUIViewController.m": "9f836077ceee995c0978fce6e9ffaec61e02c8e80f87540d7a612dee09ce91d0"
+    }
+  },
+  "unchanged_control_source_sha256": {
+    "app/AppDelegate.m": "169f2f9b406c997fedd81cf094677d8ed5d67aba71dff5978512cd4687177777",
+    "app/UnixSocketDirectory.h": "800c0aa7e5f77e80b73fbd40d0f333ed9c6e8e1aff0669a7142830e90f8a3bdc",
+    "fs/sock.c": "2ebadba512af236fdf6f2a105da00305fbbfb148c2a8a5d485a3ba1beacb6ddb",
+    "fs/unix_socket_path.h": "0df5ee9c96e0bde05056db508ea989a920ea4e75078150809a2f271f7ca45a60",
+    "app/LinuxRunner/RuntimeBridge.m": "e537833123bb68fb4e76b9e7fa36450bc451a9e1bfd07dcfdbfa972bd92c8a74",
+    "app/UITests/LinuxRunnerUITests.m": "98950ac3606d1f1fc44675aedecb8281fb830884e9c9953598a7ce7408bb8f0f",
+    "app/UITests/ReferenceDistributionUITests.m": "b14ecaa3074fe05385a1d5194724944eb233fb320655e23f26997e214d38eb1b",
+    "graphics/virgl_host.c": "ef26e5384782e940038505ca82901f4fcd1eedc3d39491be83244f711188fd3e",
+    "fs/drm.c": "b76f3cab67cb9252b8930849f7415489242c5c87dd4bcafd42a9002db935a116",
+    "app/LinuxRunner/GUISupport.bundle/session.sh": "6f167647f732ec2590f6db3a75e8ab329e328e17fc210928b3e48c7d1e01c921",
+    "app/LinuxRunner/GUISupport.bundle/desktop-components.sh": "e93681d904bc1b4a9e1d05913e7a0dd68fbdf7ae19b959fe6c5e8c2fc83abf3f",
+    "app/LinuxRunner/GUISupport.bundle/support-manifest.json": "36343e222f37c1b34f234bfd53ab9753a867fa3145a6fe5c32bb74879480d421"
+  },
+  "runtime_patch_sha256": "672dac97579f305c679ec3b1558ca3c2551fb8038406587db814650921d7440f",
+  "source_manifest_comparison": {
+    "before_sha256": "f10ce146d3a25f49ff2b0fc54a958a623fd675b7b2fb33eb00aee60e35c449ba",
+    "after_sha256": "d252c005125e51b22f8002df7deddac75e41f082f2beee656691a5370229772c",
+    "files_checked": 676,
+    "changed_files": [
+      "app/LinuxRunner/Diagnostics.swift",
+      "app/LinuxRunner/GUIViewController.m",
+      "app/LinuxRunner/ManagerView.swift"
+    ],
+    "comparison": "676 source/control files checked from the working tree during the corresponding builds; only the three storage runtime files differ. Not a binary-equivalence proof."
+  },
+  "limits": [
+    "One sequential before/after pair, without randomized order or repeat trials.",
+    "Storage accounting includes the coinstalled SteamOS and Alpine roots.",
+    "A quiet process CPU measurement does not establish sustained performance, FPS, input latency, battery life or a hardware-keyboard result.",
+    "Both physical UI tests use synthesized touch/text; native terminal identity was separately recorded.",
+    "The local integration source snapshots and raw receipts are retained privately; the storage PR is not a self-contained public integration reproduction kit."
+  ]
+}

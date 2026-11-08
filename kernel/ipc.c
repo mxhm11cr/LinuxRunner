@@ -53,6 +53,7 @@ struct shm_segment {
     int64_t atime, dtime, ctime;
     pid_t_ cpid, lpid;
     atomic_uint_fast64_t attaches;
+    uint64_t capture_scope;
     struct shm_segment *next;
 };
 
@@ -167,6 +168,19 @@ static struct shm_segment *shm_segments;
 static struct msg_queue *msg_queues;
 static struct sem_set *sem_sets;
 static struct mq_queue *mq_queues;
+struct capture_shm_scope { uint64_t id; unsigned threads; };
+// Running owners live in host TLS, independent of the guest task struct. The
+// group-exit safety valve may destroy/zero that struct before pthread cleanup.
+// A genuinely stuck host thread retains its lease and any live mappings until
+// it really exits; reclaiming those mappings earlier would be unsafe.
+static __thread struct capture_shm_scope *current_capture_shm;
+static uint64_t next_capture_scope = 1;
+static unsigned long long capture_scopes, shm_backing_fds, shm_close_failures;
+
+static void shm_close_backing(int fd) {
+    if (close(fd) == 0) shm_backing_fds--;
+    else shm_close_failures++;
+}
 
 // Existing runtime privilege model: effective UID zero, not host credentials.
 static int shm_access(struct shm_segment *seg, unsigned requested) {
@@ -205,9 +219,89 @@ static void shm_destroy_if_unused(struct shm_segment *seg) {
     while (*p && *p != seg) p = &(*p)->next;
     if (*p) {
         *p = seg->next;
-        close(seg->fd);
+        shm_close_backing(seg->fd);
         free(seg);
     }
+}
+
+int ipc_capture_shm_enable(void) {
+    if (current_capture_shm) return 0;
+    // No other thread can clone into this group once this check observes
+    // exactly the caller. Never acquire the IPC lock while holding pids_lock.
+    lock(&pids_lock);
+    bool single = current == current->group->leader &&
+        current->group->threads.next == &current->group_links &&
+        current->group_links.next == &current->group->threads;
+    unlock(&pids_lock);
+    if (!single) return _EBUSY;
+    struct capture_shm_scope *scope = malloc(sizeof(*scope));
+    if (!scope) return _ENOMEM;
+    lock(&shm_lock);
+    if (!next_capture_scope) { unlock(&shm_lock); free(scope); return _EOVERFLOW; }
+    scope->id = next_capture_scope++;
+    scope->threads = 1;
+    current_capture_shm = scope;
+    capture_scopes++;
+    unlock(&shm_lock);
+    return 0;
+}
+
+void ipc_capture_shm_inherit_thread(struct task *child) {
+    if (!current_capture_shm) return;
+    lock(&shm_lock);
+    child->capture_shm = current_capture_shm;
+    child->capture_shm->threads++;
+    unlock(&shm_lock);
+}
+
+void ipc_capture_shm_enter_current(void) {
+    current_capture_shm = current->capture_shm;
+    current->capture_shm = NULL; // transfer the unstarted task's ownership to TLS
+}
+
+static void capture_shm_release(struct capture_shm_scope *scope) {
+    if (!scope) return;
+    lock(&shm_lock);
+    if (--scope->threads == 0) {
+        struct shm_segment *seg = shm_segments;
+        while (seg) {
+            struct shm_segment *next = seg->next;
+            if (seg->capture_scope == scope->id) {
+                seg->removed = true;
+                shm_destroy_if_unused(seg);
+            }
+            seg = next;
+        }
+        capture_scopes--;
+        free(scope);
+    }
+    unlock(&shm_lock);
+}
+
+void ipc_capture_shm_exit_current(void) {
+    struct capture_shm_scope *scope = current_capture_shm;
+    current_capture_shm = NULL;
+    capture_shm_release(scope);
+}
+
+void ipc_capture_shm_discard(struct task *task) {
+    struct capture_shm_scope *scope = task->capture_shm;
+    task->capture_shm = NULL;
+    capture_shm_release(scope);
+}
+
+void ipc_shm_usage(struct ipc_shm_usage *usage) {
+    *usage = (struct ipc_shm_usage) {};
+    lock(&shm_lock);
+    usage->backing_fds = shm_backing_fds;
+    usage->scopes = capture_scopes;
+    usage->close_failures = shm_close_failures;
+    for (struct shm_segment *s = shm_segments; s; s = s->next) {
+        usage->segments++; usage->bytes += s->size;
+        usage->attachments += atomic_load(&s->attaches);
+        if (s->capture_scope) usage->capture_segments++;
+    }
+    unlock(&shm_lock);
 }
 
 // The caller holds source->mem.lock, the same lock protecting shmat/shmdt
@@ -1058,11 +1152,12 @@ int_t sys_shmget(int_t key, size_t size, int_t shmflg) {
         unlock(&shm_lock);
         return err;
     }
+    shm_backing_fds++;
     fcntl(fd, F_SETFD, FD_CLOEXEC);
 
     seg = calloc(1, sizeof(*seg));
     if (seg == NULL) {
-        close(fd);
+        shm_close_backing(fd);
         unlock(&shm_lock);
         return _ENOMEM;
     }
@@ -1077,6 +1172,8 @@ int_t sys_shmget(int_t key, size_t size, int_t shmflg) {
     seg->gid = seg->cgid = current->egid;
     seg->mode = shmflg & 0777;
     seg->cpid = current->tgid;
+    if (key == IPC_PRIVATE_ && current_capture_shm)
+        seg->capture_scope = current_capture_shm->id;
     seg->ctime = time(NULL);
     atomic_init(&seg->attaches, 0);
     seg->next = shm_segments;

@@ -37,7 +37,7 @@ device confirmation.
    `xctrace`, summarized by `tools/bottleneck.py` (cycle-weighted useful / processing / delivery /
    discarded shares).
 
-## Results — engine changes 1 and 2 (build 895 runtime → `claude/engine-perf`)
+## Results — engine changes 1 and 2 (build 895 runtime → the engine-performance branch)
 
 Medians of 5 interleaved rounds. "vs native" is the remaining slowdown factor.
 

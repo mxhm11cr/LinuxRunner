@@ -6,6 +6,10 @@ case "$session" in /*) ;; *) session="$PWD/$session";; esac
 export LR_DESKTOP_SESSION="$session"
 base="$PWD/desktop"
 [ "$(id -u)" = 0 ] || base="${XDG_DATA_HOME:-$HOME/.local/share}/linuxrunner/desktop"
+# Startup timeline (guest monotonic clock): DESKTOP_STARTUP: stage=… at_ms=… duration_ms=…
+lr_ms() { lr_t=$(date +%s%N 2>/dev/null); case "$lr_t" in *[!0-9]*|'') awk '{printf "%d", $1 * 1000}' /proc/uptime 2>/dev/null || echo 0;; *) echo $((lr_t / 1000000));; esac; }
+lr_start_ms=$(lr_ms); lr_stage_ms=$lr_start_ms
+lr_stage() { lr_now=$(lr_ms); echo "DESKTOP_STARTUP: stage=$1 at_ms=$((lr_now - lr_start_ms)) duration_ms=$((lr_now - lr_stage_ms))${2:+ $2}"; lr_stage_ms=$lr_now; }
 # Desktop environment: LinuxRunner (Openbox) by default; "plasma" (experimental,
 # KDE Plasma X11 from the distribution's packages) when chosen in Settings ›
 # Desktop (LR_DESKTOP_ENVIRONMENT from session.sh) or in this account's
@@ -13,7 +17,8 @@ base="$PWD/desktop"
 # desktop starts instead, so Open Desktop keeps working.
 environment=${LR_DESKTOP_ENVIRONMENT:-}
 [ -n "$environment" ] && [ "$environment" != linuxrunner ] || environment=$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/linuxrunner/desktop-environment" 2>/dev/null || echo linuxrunner)
-case "$environment" in plasma|lxqt|enlightenment|wayfire|hyprland) ;; *) environment=linuxrunner;; esac
+case "$environment" in plasma|lxqt|enlightenment|wayfire|hyprland|xfce) ;; *) environment=linuxrunner;; esac
+if [ "$environment" = xfce ] && ! command -v startxfce4 >/dev/null; then echo 'DESKTOP_STARTUP: xfce=not-installed; starting the LinuxRunner desktop (Settings › Desktop Environment › Install Xfce)'; environment=linuxrunner; fi
 if [ "$environment" = lxqt ] && ! command -v startlxqt >/dev/null; then echo 'DESKTOP_STARTUP: lxqt=not-installed; starting the LinuxRunner desktop (Settings › Desktop Environment › Install LXQt)'; environment=linuxrunner; fi
 if [ "$environment" = enlightenment ] && ! command -v enlightenment_start >/dev/null; then echo 'DESKTOP_STARTUP: enlightenment=not-installed; starting the LinuxRunner desktop (Settings › Desktop Environment › Install Enlightenment)'; environment=linuxrunner; fi
 if [ "$environment" = wayfire ] && ! command -v wayfire >/dev/null; then echo 'DESKTOP_STARTUP: wayfire=not-installed; starting the LinuxRunner desktop (Settings › Desktop Environment › Install Wayfire)'; environment=linuxrunner; fi
@@ -33,7 +38,7 @@ export XDG_CURRENT_DESKTOP=LXDE DESKTOP_SESSION=LinuxRunner
 if [ "$qt_desktop" = 1 ]; then
  export XDG_CURRENT_DESKTOP=LXQt XDG_SESSION_TYPE=x11 QT_QPA_PLATFORM=xcb
  export QT_FORCE_STDERR_LOGGING=${QT_FORCE_STDERR_LOGGING:-1}
- echo 'DESKTOP_STARTUP: environment=linuxrunner components=openbox,lxqt-panel,pcmanfm-qt (Arch X11 desktop)'
+ echo 'DESKTOP_STARTUP: environment=linuxrunner components=openbox,lxqt-panel,pcmanfm-qt (Qt X11 desktop)'
 fi
 export XDG_DATA_DIRS="$base/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 fi
@@ -45,7 +50,7 @@ publish_wayland() {
  { grep -v '^WAYLAND_DISPLAY=' "$env_file"; echo "WAYLAND_DISPLAY=$1"; } > "$env_file.new" && chmod 600 "$env_file.new" && mv "$env_file.new" "$env_file" &&
   echo "DESKTOP_STARTUP: wayland socket published for launched programs ($1)"
 }
-component_name() { [ "$environment" != plasma ] || { echo "Plasma session (plasma.log)"; return; }; [ "$environment" != lxqt ] || { echo "LXQt session (lxqt.log)"; return; }; [ "$environment" != enlightenment ] || { echo "Enlightenment (enlightenment.log)"; return; }; [ "$environment" != wayfire ] || { echo "Wayfire (wayfire.log)"; return; }; [ "$environment" != hyprland ] || { case "$1" in "$panel") echo "KMS display bridge (kms-bridge.log)";; *) echo "Hyprland (hyprland.log)";; esac; return; }; case "$1" in "$wm") echo "window manager (wm.log)";; "$panel") echo "panel (panel.log)";; "$surface") echo "desktop surface (desktop.log)";; *) echo unknown;; esac; }
+component_name() { [ "$environment" != plasma ] || { echo "Plasma session (plasma.log)"; return; }; [ "$environment" != lxqt ] || { echo "LXQt session (lxqt.log)"; return; }; [ "$environment" != xfce ] || { echo "Xfce session (xfce.log)"; return; }; [ "$environment" != enlightenment ] || { echo "Enlightenment (enlightenment.log)"; return; }; [ "$environment" != wayfire ] || { echo "Wayfire (wayfire.log)"; return; }; [ "$environment" != hyprland ] || { case "$1" in "$panel") echo "KMS display bridge (kms-bridge.log)";; *) echo "Hyprland (hyprland.log)";; esac; return; }; case "$1" in "$wm") echo "window manager (wm.log)";; "$panel") echo "panel (panel.log)";; "$surface") echo "desktop surface (desktop.log)";; *) echo unknown;; esac; }
 cleanup() { trap - EXIT; for pid in "$surface" "$panel" "$wm" "$conf"; do [ -z "$pid" ] || kill "$pid" 2>/dev/null || true; done; }
 trap cleanup EXIT
 if [ "$environment" = plasma ]; then
@@ -57,6 +62,39 @@ if [ "$environment" = plasma ]; then
  # password prompt over the desktop after a few idle minutes. First start of an
  # account only; a kscreenlockerrc the user already has is left as it is.
  plasma_config="${XDG_CONFIG_HOME:-$HOME/.config}"
+ if [ "$(sed -n 's/^ID=//p' /etc/os-release | tr -d '\"')" = steamos ]; then
+  export KWIN_COMPOSE=N
+  if [ "${LR_STEAMOS_GPU:-0}" = 1 ]; then
+   unset QT_QUICK_BACKEND QT_OPENGL LIBGL_ALWAYS_SOFTWARE
+   export QT_XCB_GL_INTEGRATION=xcb_egl QSG_RHI_BACKEND=opengl QSG_RHI_GL_USE_GLES=1
+  else
+   export QT_XCB_GL_INTEGRATION=none QT_QUICK_BACKEND=software QT_OPENGL=software
+  fi
+  mkdir -p "$plasma_config/autostart"
+  /bin/sh ./steamos-fonts.sh || echo 'STEAMOS_FONTS: optional default unavailable; desktop startup continues'
+  if [ ! -e "$plasma_config/startkderc" ] && [ ! -L "$plasma_config/startkderc" ]; then
+   printf '[General]\nsystemdBoot=false\n' > "$plasma_config/startkderc"
+  fi
+  if [ ! -e "$plasma_config/autostart/steam.desktop" ] && [ ! -L "$plasma_config/autostart/steam.desktop" ]; then
+   printf '[Desktop Entry]\nType=Application\nHidden=true\n' > "$plasma_config/autostart/steam.desktop"
+  fi
+  # The milestone is a desktop and terminal, without system services or updates.
+  # Discover's Flatpak notifier crashes; Baloo reserves a 256 GiB index mapping;
+  # the image's Python firewall/IBus applets also fail and consume address space.
+  # XDG overrides apply to existing accounts too, preserving explicit choices.
+  # iPadOS owns power, display brightness and authentication; their Linux
+  # agents repeatedly query a system bus that this userspace does not provide.
+  for applet in org.kde.discover.notifier baloo_file firewall-applet ibus powerdevil polkit-kde-authentication-agent-1; do
+   if [ ! -e "$plasma_config/autostart/$applet.desktop" ] && [ ! -L "$plasma_config/autostart/$applet.desktop" ]; then
+    printf '[Desktop Entry]\nType=Application\nHidden=true\n' > "$plasma_config/autostart/$applet.desktop"
+   fi
+  done
+  # Tell KDE's Places model that indexing is disabled too. Merely suppressing
+  # the daemon leaves it trying to enumerate the unavailable tags:/ location.
+  if grep -qx 'Hidden=true' "$plasma_config/autostart/baloo_file.desktop" && command -v kwriteconfig6 >/dev/null; then
+   kwriteconfig6 --file baloofilerc --group 'Basic Settings' --key Indexing-Enabled false
+  fi
+ fi
  if mkdir -p "$plasma_config" && [ ! -e "$plasma_config/kscreenlockerrc" ]; then
   printf '[Daemon]\nAutolock=false\nLockOnResume=false\n' > "$plasma_config/kscreenlockerrc" && echo 'DESKTOP_STARTUP: plasma screen locker defaults written (autolock off; iOS locks the device)'
  fi
@@ -111,6 +149,60 @@ EOF
  fi
  startlxqt > "$session/lxqt.log" 2>&1 & wm=$!; panel=$wm; surface=$wm; limit=600
  echo "DESKTOP_STARTUP: environment=lxqt session=$wm"
+elif [ "$environment" = xfce ]; then
+ # The full Xfce session (xfce4-session starts xfwm4, xfce4-panel, xfdesktop
+ # and the user's autostart). On Kali this is Kali's own Xfce desktop. The X
+ # probe sees the window manager, panel dock and desktop window separately.
+ export XDG_CURRENT_DESKTOP=XFCE XDG_SESSION_TYPE=x11 DESKTOP_SESSION=xfce
+ # The distribution's default wallpaper is keyed to monitor0 (older xfdesktop
+ # naming); xfdesktop 4.20 keys it by RandR output name ("screen" on this X
+ # server), so a new account would get a black desktop. On an account's first
+ # Xfce start, apply the distribution's own default image to the real output
+ # name. An existing user desktop configuration is never touched.
+ xfce_user_desktop="${XDG_CONFIG_HOME:-$HOME/.config}/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml"
+ if [ ! -e "$xfce_user_desktop" ] && [ ! -L "$xfce_user_desktop" ]; then
+  xfce_image=$(sed -n 's|.*name="image-path" type="string" value="\([^"]*\)".*|\1|p' /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml 2>/dev/null | head -n 1)
+  xfce_output=$(xrandr --listmonitors 2>/dev/null | sed -n 's/^ *0: [^ ]* .* \([^ ]*\)$/\1/p' | head -n 1)
+  if [ -n "$xfce_image" ] && [ -r "$xfce_image" ] && [ -n "$xfce_output" ]; then
+   mkdir -p "$(dirname "$xfce_user_desktop")" && cat > "$xfce_user_desktop.new" <<XFCEDESKTOP && mv "$xfce_user_desktop.new" "$xfce_user_desktop" && echo "DESKTOP_STARTUP: xfce_wallpaper=distribution-default output=$xfce_output"
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfce4-desktop" version="1.0">
+  <property name="backdrop" type="empty">
+    <property name="screen0" type="empty">
+      <property name="monitor$xfce_output" type="empty">
+        <property name="workspace0" type="empty">
+          <property name="last-image" type="string" value="$xfce_image"/>
+          <property name="image-style" type="int" value="5"/>
+          <property name="color-style" type="int" value="0"/>
+        </property>
+      </property>
+    </property>
+  </property>
+</channel>
+XFCEDESKTOP
+  fi
+ fi
+ # Responsiveness defaults: xfwm4's compositor and frame shadows double the
+ # software drawing on this virtual X display (every window is drawn, then
+ # composited, then captured). Applied as a system-level default for this
+ # session only, built from the distribution's own xfwm4 settings (theme,
+ # layout); the user's own Xfce settings still override it.
+ xfce_defaults="$session/config-defaults/xfce4/xfconf/xfce-perchannel-xml"
+ mkdir -p "$xfce_defaults"
+ xfwm_system=
+ for dir in $(printf '%s' "${XDG_CONFIG_DIRS:-/etc/xdg}" | tr ':' ' '); do
+  [ -r "$dir/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml" ] && { xfwm_system="$dir/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml"; break; }
+ done
+ if [ -n "$xfwm_system" ] && grep -q '<property name="general" type="empty">' "$xfwm_system"; then
+  sed -e '/name="use_compositing"/d' -e '/name="show_frame_shadow"/d' \
+      -e 's|^\( *\)<property name="general" type="empty">|&\n\1  <property name="use_compositing" type="bool" value="false"/>\n\1  <property name="show_frame_shadow" type="bool" value="false"/>|' "$xfwm_system" > "$xfce_defaults/xfwm4.xml"
+ else
+  printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<channel name="xfwm4" version="1.0">' '  <property name="general" type="empty">' '    <property name="use_compositing" type="bool" value="false"/>' '    <property name="show_frame_shadow" type="bool" value="false"/>' '  </property>' '</channel>' > "$xfce_defaults/xfwm4.xml"
+ fi
+ export XDG_CONFIG_DIRS="$session/config-defaults:${XDG_CONFIG_DIRS:-/etc/xdg}"
+ echo 'DESKTOP_STARTUP: xfce_defaults=compositor-off,shadows-off (user settings override)'
+ startxfce4 > "$session/xfce.log" 2>&1 & wm=$!; panel=$wm; surface=$wm; limit=600
+ echo "DESKTOP_STARTUP: environment=xfce session=$wm"
 elif [ "$environment" = enlightenment ]; then
  # Enlightenment is window manager, shelf and desktop in one process tree; it
  # composites in software. First start of an account: the "standard" profile
@@ -172,30 +264,13 @@ command_terminal = foot
 WAYFIRE_INI
   mv "$wf_config/wayfire.ini.new" "$wf_config/wayfire.ini"
  fi
- if [ ! -e "$wf_config/wf-shell.ini" ] && [ ! -L "$wf_config/wf-shell.ini" ]; then
-  cat > "$wf_config/wf-shell.ini.new" <<WF_SHELL_INI
-[panel]
-position = bottom
-autohide = false
-minimal_height = 40
-background_color = rgba(11, 20, 37, 0.92)
-widgets_left = menu spacing4 launchers window-list
-widgets_center = none
-widgets_right = network volume clock
-menu_icon_size = 32
-launchers_size = 28
-launcher_terminal = foot.desktop
-clock_format = %a %e %b  %H:%M
-
-[background]
-image = $PWD/desktop-wallpaper.png
-fill_mode = fill_and_crop
-
-[dock]
-autohide = true
-WF_SHELL_INI
-  mv "$wf_config/wf-shell.ini.new" "$wf_config/wf-shell.ini"
- fi
+ # wf-panel's NetworkManager widget throws while connecting to a missing
+ # system bus. Host socket networking does not provide NetworkManager. Include
+ # the widget only when the real service owns its bus name; do not fake it.
+ wf_network=none
+ if [ -S /run/dbus/system_bus_socket ] && command -v dbus-send >/dev/null &&
+  dbus-send --system --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.NameHasOwner string:org.freedesktop.NetworkManager 2>/dev/null | grep -q 'boolean true'; then wf_network=network; fi
+ sh ./wayfire-shell-configure.sh "$wf_config" "$wf_network"
  # GPU (Settings › Graphics, Metal): when the session prepared the virtio-gpu
  # card, wlroots drives it directly (DRM backend, GLES on virgl/Metal) and the
  # KMS bridge shows its output in this X server, as for Hyprland. Otherwise
@@ -221,6 +296,7 @@ WF_SHELL_INI
   bridge_dir="${XDG_CACHE_HOME:-$HOME/.cache}/linuxrunner"
   bridge="$bridge_dir/lr-kms-bridge-$(sha256sum lr-kms-bridge.c | cut -c1-16)"
   if [ ! -x "$bridge" ]; then
+   lr_stage desktop_config; echo 'DESKTOP_STARTUP: building the KMS display bridge (once per bridge version)'
    mkdir -p "$bridge_dir" && gcc -O2 lr-kms-bridge.c -lX11 -lXext -lwayland-client -lxkbcommon -o "$bridge.new" && mv "$bridge.new" "$bridge" ||
     { echo 'DESKTOP_STARTUP: wayfire bridge build failed'; exit 127; }
   fi
@@ -310,11 +386,10 @@ elif [ "$environment" = hyprland ]; then
  # shadows and animations only with the GPU; on llvmpipe every frame is drawn
  # by the CPU, so they stay off and the desktop stays responsive.
  geometry=$(xwininfo -root 2>/dev/null | awk '/-geometry/{split($2,g,"+"); print g[1]}')
- if [ "${AQ_DRM_DEVICES:-}" = /dev/dri/card1 ]; then
-  effects='hl.config({ decoration = { shadow = { enabled = true, range = 14, render_power = 3, color = 0x66000000 }, blur = { enabled = true, size = 6, passes = 2, vibrancy = 0.17 } }, animations = { enabled = true } })'
- else
-  effects='hl.config({ decoration = { shadow = { enabled = false }, blur = { enabled = false } }, animations = { enabled = false } })'
- fi
+ effects_profile=$(cat "$session/hyprland-effects" 2>/dev/null || printf visual)
+ case "$effects_profile" in performance|balanced|visual) ;; *) effects_profile=visual;; esac
+ effects=$(sh ./hyprland-effects.sh "$effects_profile" "${AQ_DRM_DEVICES:-}")
+ echo "DESKTOP_STARTUP: hyprland effects=$effects_profile device=${AQ_DRM_DEVICES:-software}"
  if [ -e "$lua" ]; then
   awk '/^-- LinuxRunner (display|effects) \(managed\) begin/{skip=1} !skip; /^-- LinuxRunner (display|effects) \(managed\) end/{skip=0}' "$lua" > "$lua.new" && {
    if [ -n "$geometry" ]; then printf -- '-- LinuxRunner display (managed) begin\nhl.monitor({ output = "Virtual-1", mode = "%s@60", position = "0x0", scale = 1 })\n-- LinuxRunner display (managed) end\n' "$geometry"; fi
@@ -328,6 +403,7 @@ elif [ "$environment" = hyprland ]; then
  bridge_dir="${XDG_CACHE_HOME:-$HOME/.cache}/linuxrunner"
  bridge="$bridge_dir/lr-kms-bridge-$(sha256sum lr-kms-bridge.c | cut -c1-16)"
  if [ ! -x "$bridge" ]; then
+  lr_stage desktop_config; echo 'DESKTOP_STARTUP: building the KMS display bridge (once per bridge version)'
   mkdir -p "$bridge_dir" && gcc -O2 lr-kms-bridge.c -lX11 -lXext -lwayland-client -lxkbcommon -o "$bridge.new" && mv "$bridge.new" "$bridge" ||
    { echo 'DESKTOP_STARTUP: hyprland bridge build failed'; exit 127; }
  fi
@@ -352,7 +428,25 @@ start_wm() { openbox --config-file "$base/config/openbox/rc.xml" >> "$session/wm
 if [ "$qt_desktop" = 1 ]; then
  start_panel() { lxqt-panel --config "$base/config/lxqt/panel.conf" >> "$session/panel.log" 2>&1 & panel=$!; }
 elif command -v lxpanel >/dev/null; then
- start_panel() { GTK_THEME=Adwaita:dark lxpanel --profile LinuxRunner >> "$session/panel.log" 2>&1 & panel=$!; }
+ # lxpanel reads its menu with the lxde- prefix (lxmenu-data). Where that menu
+ # is absent but the distribution's own applications.menu exists (Fedora),
+ # use the distribution's menu instead of showing an empty one.
+ if [ -z "${XDG_MENU_PREFIX+x}" ]; then
+  has_menu() { for d in $(printf '%s' "${XDG_CONFIG_DIRS:-/etc/xdg}" | tr ':' ' '); do [ -r "$d/menus/$1" ] && return 0; done; return 1; }
+  if ! has_menu lxde-applications.menu && has_menu applications.menu; then
+   export XDG_MENU_PREFIX=; echo 'DESKTOP_STARTUP: menu=distribution applications.menu'
+  fi
+ fi
+ # lxpanel is GTK2, which ignores GTK3 settings. With no system or user
+ # gtkrc (Fedora), GTK2 falls back to the empty hicolor icon theme and every
+ # panel icon is blank; name the installed Adwaita theme then. A user's own
+ # ~/.gtkrc-2.0 still applies after it.
+ lr_gtk2rc=
+ if [ ! -e /etc/gtk-2.0/gtkrc ] && [ ! -e "$HOME/.gtkrc-2.0" ] && [ -r /usr/share/icons/Adwaita/index.theme ]; then
+  lr_gtk2rc="$base/config/gtkrc-2.0"
+  [ -e "$lr_gtk2rc" ] || printf 'gtk-icon-theme-name = "Adwaita"\n' > "$lr_gtk2rc"
+ fi
+ start_panel() { GTK_THEME=Adwaita:dark GTK2_RC_FILES="${lr_gtk2rc:+$lr_gtk2rc:}$HOME/.gtkrc-2.0${GTK2_RC_FILES:+:$GTK2_RC_FILES}" lxpanel --profile LinuxRunner >> "$session/panel.log" 2>&1 & panel=$!; }
 elif command -v xfce4-panel >/dev/null; then
  confbin=/usr/lib/xfce4/xfconf/xfconfd
  [ -x "$confbin" ] || confbin=/usr/libexec/xfce4/xfconf/xfconfd
@@ -427,7 +521,14 @@ nested_output_mapped() {
 }
 desktop_ready() {
  ./desktop-probe > "$session/desktop-state.probe" || return 1
- case "$environment" in wayfire|hyprland) ! nested_output_mapped || echo wm=1 >> "$session/desktop-state.probe";; esac
+ # KMS compositors (Hyprland; Wayfire on the GPU) are ready when the bridge has
+ # presented a real frame from them, not when its window is mapped; Wayfire
+ # nested in X when its own output window is mapped.
+ case "$environment" in
+  hyprland) ! grep -q 'KMS_BRIDGE: first frame' "$session/kms-bridge.log" 2>/dev/null || echo wm=1 >> "$session/desktop-state.probe";;
+  wayfire) if [ "${wf_gpu:-0}" = 1 ]; then ! grep -q 'KMS_BRIDGE: first frame' "$session/kms-bridge.log" 2>/dev/null || echo wm=1 >> "$session/desktop-state.probe"
+           else ! nested_output_mapped || echo wm=1 >> "$session/desktop-state.probe"; fi;;
+ esac
  awk -F= -v failed=" $failed " -v integrated="$integrated" '{ v[$1] = $2 }
   END { complete = v["wm"] + 0 > 0 && (integrated || (v["panel"] + 0 > 0 && v["surface"] + 0 > 0)) && failed == "  "; ok = v["wm"] + 0 > 0 && (integrated || ((v["panel"] + 0 > 0 || index(failed, " panel ")) && (v["surface"] + 0 > 0 || index(failed, " surface "))))
         if (v["root_geometry"] != "") printf "root_geometry=%s\npanel_geometry=%s\nsurface_geometry=%s\n", v["root_geometry"], v["panel_geometry"], v["surface_geometry"];
@@ -436,12 +537,14 @@ desktop_ready() {
         exit !ok }' "$session/desktop-state.probe" > "$session/desktop-state.new"
 }
 i=0 started=$(date +%s)
+lr_stage components_started "environment=$environment"
 echo "DESKTOP_STARTUP: waiting for window manager, panel and desktop (wm=$wm panel=$panel surface=$surface)"
 until desktop_ready; do
  supervise DESKTOP_STARTUP
  [ ! -e "$session/stop" ] || exit 0
  i=$((i+1)); [ "$i" -lt "$limit" ] || { echo "DESKTOP_STARTUP: readiness_timeout after $(( $(date +%s) - started ))s (inspect wm/panel/desktop logs)"; cat "$session/desktop-state.new"; head -n 120 /proc/ish/tasks; exit 1; }; sleep .5
 done
+lr_stage desktop_ready "environment=$environment (first frame for KMS compositors)"
 echo "environment=$environment" >> "$session/desktop-state.new"
 mv "$session/desktop-state.new" "$session/desktop-state"
 echo "DESKTOP_STARTUP: ready=$(sed -n 's/^ready=//p' "$session/desktop-state") wm=PASS panel=$([ -n "$panel" ] && echo PASS || echo FAILED) surface=$([ -n "$surface" ] && echo PASS || echo FAILED) ready_after=$(( $(date +%s) - started ))s rendering=requires-frame-observation"
@@ -457,7 +560,8 @@ while [ ! -e "$session/stop" ]; do
    mv "$session/desktop-state.new" "$session/desktop-state"
   fi
  fi
- for request in "$session"/requests/launch-*.sh; do
+ # launch-*: applications; input-*: the app's pointer round-trip readiness probe.
+ for request in "$session"/requests/launch-*.sh "$session"/requests/input-*.sh; do
   [ -f "$request" ] && [ ! -L "$request" ] || continue
   name=${request##*/}; mv "$request" "$request.running"
   (code=0; /bin/sh "$request.running" >> "$session/application.log" 2>&1 || code=$?; printf '%s\n' "$code" > "$session/requests/$name.result"; rm -f "$request.running") &

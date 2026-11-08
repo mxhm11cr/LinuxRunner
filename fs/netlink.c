@@ -402,6 +402,179 @@ static int link_get(const void *request, struct nl_header req, uint32_t port, vo
     return b.used;
 }
 
+#define RTM_NEWNEIGH_ 28
+#define RTM_GETNEIGH_ 30
+
+static bool prefix_matches(const uint8_t *a, const uint8_t *b, unsigned bits) {
+    unsigned whole = bits / 8, rest = bits % 8;
+    if (memcmp(a, b, whole)) return false;
+    if (!rest) return true;
+    uint8_t mask = (uint8_t)(0xff << (8 - rest));
+    return (a[whole] & mask) == (b[whole] & mask);
+}
+struct route_lookup { uint8_t dst[16]; unsigned ifindex; struct lr_route best; bool found; };
+static int route_lookup_cb(const struct lr_route *r, void *context) {
+    struct route_lookup *l = context;
+    if (!prefix_matches(r->dst, l->dst, r->dst_len)) return 0;
+    // Prefer routes on the interface the host stack actually selected.
+    if (l->ifindex && r->ifindex && r->ifindex != l->ifindex) return 0;
+    if (!l->found || r->dst_len > l->best.dst_len) { l->best = *r; l->found = true; }
+    return 0;
+}
+
+// Non-dump RTM_GETROUTE ("ip route get ADDR"). The host chooses the route: a
+// connected UDP socket performs the kernel route lookup without sending any
+// packet, getsockname() gives the preferred source, its interface is the
+// output device, and the gateway comes from the longest matching host route.
+static int route_get(const void *request, struct nl_header req, uint32_t port, void *response, size_t capacity) {
+    const uint8_t *body = (const uint8_t *) request + sizeof(req);
+    size_t body_size = req.len - sizeof(req);
+    if (body_size < 12) return error_message(response, capacity, req, port, _EINVAL);
+    uint8_t family = body[0];
+    if (family != 2 && family != 10) return error_message(response, capacity, req, port, _EOPNOTSUPP);
+    int host = family == 2 ? AF_INET : AF_INET6;
+    size_t size = family == 2 ? 4 : 16;
+    struct route_lookup lookup = {0};
+    bool have_dst = false;
+    for (size_t at = 12; at + sizeof(struct nl_attr) <= body_size;) {
+        struct nl_attr a;
+        memcpy(&a, body + at, sizeof(a));
+        if (a.len < sizeof(a) || a.len > body_size - at)
+            return error_message(response, capacity, req, port, _EINVAL);
+        if ((a.type & 0x3fff) == 1) { // RTA_DST
+            if (a.len - sizeof(a) != size) return error_message(response, capacity, req, port, _EINVAL);
+            memcpy(lookup.dst, body + at + sizeof(a), size);
+            have_dst = true;
+        }
+        at += ALIGN4(a.len);
+    }
+    struct sockaddr_storage target = {0}, source = {0};
+    socklen_t target_len, source_len = sizeof(source);
+    if (host == AF_INET) {
+        struct sockaddr_in *in = (void *) &target;
+        in->sin_family = AF_INET; in->sin_port = htons(9);
+        memcpy(&in->sin_addr, lookup.dst, 4);
+        target_len = sizeof(*in);
+    } else {
+        struct sockaddr_in6 *in6 = (void *) &target;
+        in6->sin6_family = AF_INET6; in6->sin6_port = htons(9);
+        memcpy(&in6->sin6_addr, lookup.dst, 16);
+        target_len = sizeof(*in6);
+    }
+#ifdef __APPLE__
+    target.ss_len = (uint8_t) target_len;
+#endif
+    (void) have_dst; // Linux treats an absent RTA_DST as the unspecified address.
+    int probe = socket(host, SOCK_DGRAM, 0);
+    if (probe < 0) return error_message(response, capacity, req, port, errno_map());
+    int error = 0;
+    if (connect(probe, (struct sockaddr *) &target, target_len) < 0 ||
+            getsockname(probe, (struct sockaddr *) &source, &source_len) < 0)
+        error = errno_map();
+    close(probe);
+    if (error) return error_message(response, capacity, req, port, error);
+    const uint8_t *src = host == AF_INET ? (const uint8_t *) &((struct sockaddr_in *) &source)->sin_addr
+                                         : (const uint8_t *) &((struct sockaddr_in6 *) &source)->sin6_addr;
+    bool local = false;
+    struct ifaddrs *all;
+    if (getifaddrs(&all) < 0) return error_message(response, capacity, req, port, errno_map());
+    for (struct ifaddrs *ifa = all; ifa; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_name || !ifa->ifa_addr || ifa->ifa_addr->sa_family != host) continue;
+        const uint8_t *mine = ip_bytes(ifa->ifa_addr);
+        if (!lookup.ifindex && !memcmp(mine, src, size)) lookup.ifindex = if_nametoindex(ifa->ifa_name);
+        if (!memcmp(mine, lookup.dst, size)) local = true;
+    }
+    freeifaddrs(all);
+    int snapshot = lr_route_snapshot(host, route_lookup_cb, &lookup);
+    if (snapshot < 0 && snapshot != _EOPNOTSUPP)
+        return error_message(response, capacity, req, port, snapshot);
+    struct builder b = {response, 0, capacity, 0, req.seq, port, 0, true};
+    struct { uint8_t family, dst_len, src_len, tos, table, protocol, scope, type; uint32_t flags; } rt = {
+        .family = family, .dst_len = (uint8_t)(size * 8), .table = 254,
+        .scope = local ? 254 : 0, .type = local ? 2 : 1, .flags = 0x200, // RTN_LOCAL/UNICAST, RTM_F_CLONED
+    };
+    begin(&b, RTM_NEWROUTE_);
+    append(&b, &rt, sizeof(rt));
+    uint32_t table = local ? 255 : 254;
+    attr(&b, 15, &table, sizeof(table)); // RTA_TABLE
+    attr(&b, 1, lookup.dst, size); // RTA_DST
+    if (lookup.ifindex) { uint32_t oif = lookup.ifindex; attr(&b, 4, &oif, sizeof(oif)); } // RTA_OIF
+    attr(&b, 7, src, size); // RTA_PREFSRC
+    if (!local && lookup.found && lookup.best.has_gateway) attr(&b, 5, lookup.best.gateway, size); // RTA_GATEWAY
+    end(&b);
+    if (b.error) return error_message(response, capacity, req, port, b.error);
+    if (req.flags & 4) { // NLM_F_ACK
+        int ack = error_message(b.data + b.used, capacity - b.used, req, port, 0);
+        if (ack < 0) return error_message(response, capacity, req, port, ack);
+        b.used += ack;
+    }
+    return b.used;
+}
+
+// RTM_GETNEIGH dump: the host IPv4 ARP cache through the public sysctl
+// NET_RT_FLAGS/RTF_LLINFO. Current Darwin returns no entries to unprivileged
+// (sandboxed) processes even when the cache is populated; only private
+// interfaces expose it. An empty public answer is therefore reported as
+// EOPNOTSUPP rather than as a genuinely empty neighbour table. Where entries
+// are returned, Darwin has no NUD confirmation: dynamic entries are STALE,
+// static ones PERMANENT, unresolved ones INCOMPLETE. No IPv6 ND table.
+#ifdef __APPLE__
+static int neigh_dump(struct builder *b) {
+    int mib[6] = {CTL_NET, PF_ROUTE, 0, AF_INET, 2 /* NET_RT_FLAGS */, LR_RTF_LLINFO};
+    size_t size = 0;
+    if (sysctl(mib, 6, NULL, &size, NULL, 0) < 0) return errno_map();
+    if (size > 4 * 1024 * 1024) return _ENOBUFS;
+    size += size / 4 + 1024;
+    char *table = malloc(size ? size : 1);
+    if (!table) return _ENOMEM;
+    if (sysctl(mib, 6, table, &size, NULL, 0) < 0) { int e = errno_map(); free(table); return e; }
+    int result = 0;
+    unsigned entries = 0;
+    for (size_t at = 0; at < size && !result && !b->error;) {
+        if (size - at < sizeof(struct lr_rt_msghdr)) { result = _EIO; break; }
+        struct lr_rt_msghdr m;
+        memcpy(&m, table + at, sizeof(m));
+        if (m.msglen < sizeof(m) || m.msglen > size - at || m.version != 5) { result = _EIO; break; }
+        const char *cursor = table + at + sizeof(m), *limit = table + at + m.msglen;
+        at += m.msglen;
+        const struct sockaddr *addrs[8] = {0};
+        bool bad = false;
+        for (int i = 0; i < 8; i++) {
+            if (!(m.addrs & (1 << i))) continue;
+            const struct sockaddr *sa = (const void *) cursor;
+            if (limit - cursor < 2 || LR_SA_ROUNDUP(sa->sa_len) > (size_t)(limit - cursor)) { bad = true; break; }
+            addrs[i] = sa;
+            cursor += LR_SA_ROUNDUP(sa->sa_len);
+        }
+        if (bad) { result = _EIO; break; }
+        const struct sockaddr *dst = addrs[0], *gw = addrs[1];
+        if (!dst || dst->sa_family != AF_INET || dst->sa_len < sizeof(struct sockaddr_in)) continue;
+        if (!gw || gw->sa_family != AF_LINK) continue;
+        if (m.flags & (LR_RTF_BROADCAST | LR_RTF_MULTICAST)) continue;
+        struct sockaddr_dl dl;
+        memset(&dl, 0, sizeof(dl));
+        memcpy(&dl, gw, gw->sa_len < sizeof(dl) ? gw->sa_len : sizeof(dl));
+        size_t lladdr_offset = offsetof(struct sockaddr_dl, sdl_data) + dl.sdl_nlen;
+        bool resolved = dl.sdl_alen > 0 && lladdr_offset + dl.sdl_alen <= gw->sa_len;
+        struct { uint8_t family, pad1; uint16_t pad2; int32_t ifindex; uint16_t state; uint8_t flags, type; } nd = {
+            .family = 2, .ifindex = dl.sdl_index ? dl.sdl_index : m.index, .type = 1,
+            .state = !resolved ? 0x01 : (m.rmx.expire == 0 || (m.flags & LR_RTF_STATIC)) ? 0x80 : 0x04,
+        };
+        begin(b, RTM_NEWNEIGH_);
+        append(b, &nd, sizeof(nd));
+        attr(b, 1, &((const struct sockaddr_in *) dst)->sin_addr, 4); // NDA_DST
+        if (resolved) attr(b, 2, (const char *) gw + lladdr_offset, dl.sdl_alen); // NDA_LLADDR
+        end(b);
+        entries++;
+    }
+    free(table);
+    if (!result && !b->error && entries == 0) return _EOPNOTSUPP;
+    return result ? result : b->error;
+}
+#else
+static int neigh_dump(struct builder *b) { (void) b; return _EOPNOTSUPP; }
+#endif
+
 static int netlink_snapshot_one(const void *request, size_t size, uint32_t port,
                      void *response, size_t capacity) {
     struct nl_header req;
@@ -412,8 +585,11 @@ static int netlink_snapshot_one(const void *request, size_t size, uint32_t port,
     error = _EOPNOTSUPP;
     if (req.type == RTM_GETLINK_ && (req.flags & NL_DUMP) != NL_DUMP)
         return link_get(request, req, port, response, capacity);
+    if (req.type == RTM_GETROUTE_ && (req.flags & NL_DUMP) != NL_DUMP)
+        return route_get(request, req, port, response, capacity);
     if ((req.flags & NL_DUMP) != NL_DUMP ||
-            (req.type != RTM_GETLINK_ && req.type != RTM_GETADDR_ && req.type != RTM_GETROUTE_))
+            (req.type != RTM_GETLINK_ && req.type != RTM_GETADDR_ && req.type != RTM_GETROUTE_ &&
+             req.type != RTM_GETNEIGH_))
         goto fail;
     uint8_t family = req.len > sizeof(req) ? ((const uint8_t *) request)[sizeof(req)] : 0;
     // Link dumps are family-independent (iproute2 asks with AF_PACKET).
@@ -421,7 +597,12 @@ static int netlink_snapshot_one(const void *request, size_t size, uint32_t port,
     error = _EAFNOSUPPORT;
     if (family != 0 && family != 2 && family != 10) goto fail;
     struct builder b = {response, 0, capacity, 0, req.seq, port, 0, false};
-    if (req.type == RTM_GETROUTE_) {
+    if (req.type == RTM_GETNEIGH_) {
+        // IPv4 only; an IPv6-only request gets an explicit error, not an empty table.
+        if (family == 10) { error = _EOPNOTSUPP; goto fail; }
+        int err = neigh_dump(&b);
+        if (err < 0) { error = err; goto fail; }
+    } else if (req.type == RTM_GETROUTE_) {
         for (int i = 0; i < 2 && !b.error; i++) {
             int host = i == 0 ? AF_INET : AF_INET6;
             if (family && family != (host == AF_INET ? 2 : 10)) continue;

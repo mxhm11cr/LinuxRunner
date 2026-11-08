@@ -115,6 +115,7 @@ dword_t sys_dup3(fd_t f, fd_t new_f, int_t flags);
 dword_t sys_close(fd_t fd);
 dword_t sys_close_range(uint_t first, uint_t last, uint_t flags);
 dword_t sys_fsync(fd_t f);
+dword_t sys_syncfs(fd_t f);
 dword_t sys_sync_file_range(fd_t f, sqword_t offset, sqword_t nbytes, uint_t flags);
 dword_t sys_flock(fd_t fd, dword_t operation);
 int_t sys_pipe(addr_t pipe_addr);
@@ -243,6 +244,18 @@ dword_t sys_mount(addr_t source_addr, addr_t target_addr, addr_t type_addr, dwor
 dword_t sys_umount2(addr_t target_addr, dword_t flags);
 
 dword_t sys_xattr_stub(addr_t path_addr, addr_t name_addr, addr_t value_addr, dword_t size, dword_t flags);
+dword_t sys_setxattr(addr_t path, addr_t name, addr_t value, dword_t size, dword_t flags);
+dword_t sys_lsetxattr(addr_t path, addr_t name, addr_t value, dword_t size, dword_t flags);
+dword_t sys_fsetxattr(fd_t fd, addr_t name, addr_t value, dword_t size, dword_t flags);
+dword_t sys_getxattr(addr_t path, addr_t name, addr_t value, dword_t size);
+dword_t sys_lgetxattr(addr_t path, addr_t name, addr_t value, dword_t size);
+dword_t sys_fgetxattr(fd_t fd, addr_t name, addr_t value, dword_t size);
+dword_t sys_listxattr(addr_t path, addr_t list, dword_t size);
+dword_t sys_llistxattr(addr_t path, addr_t list, dword_t size);
+dword_t sys_flistxattr(fd_t fd, addr_t list, dword_t size);
+dword_t sys_removexattr(addr_t path, addr_t name);
+dword_t sys_lremovexattr(addr_t path, addr_t name);
+dword_t sys_fremovexattr(fd_t fd, addr_t name);
 
 // process information
 pid_t_ sys_getpid(void);

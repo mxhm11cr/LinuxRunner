@@ -51,13 +51,32 @@ if [ "$(id -u)" = 0 ] && [ "$guest_user" != root ]; then
     # desktop; every other desktop runs without a DRM device, as before.
     # Wayfire uses it too, but only with the GPU (virtio-gpu card answering);
     # in software it stays nested in the X server as before.
-    kms_desktop=$(cat "$session/desktop-environment" 2>/dev/null)
+    # Custom/application sessions need no desktop preference. Under set -e,
+    # a missing optional file must not abort before the selected user logs in.
+    kms_desktop=$(cat "$session/desktop-environment" 2>/dev/null || printf linuxrunner)
     if [ "$mode" = desktop ] && [ "$kms_desktop" = wayfire ] && command -v seatd >/dev/null; then
         mkdir -p /dev/dri
         [ -c /dev/dri/card1 ] || mknod -m 660 /dev/dri/card1 c 226 1
         if (exec 3<>/dev/dri/card1) 2>/dev/null; then kms_desktop=wayfire-gpu; else rm -f /dev/dri/card1; fi
     fi
-    if [ "$mode" = desktop ] && { [ "$kms_desktop" = hyprland ] || [ "$kms_desktop" = wayfire-gpu ]; } && command -v seatd >/dev/null; then
+    if [ "$mode" = desktop ] && [ "$kms_desktop" = plasma ] &&
+        [ "$(sed -n 's/^ID=//p' /etc/os-release | tr -d '\"')" = steamos ]; then
+        /bin/sh ./steamos-desktop.sh tags-policy "$guest_user" || echo 'STEAMOS_TAGS: optional workaround unavailable; custom paths preserved, desktop startup continues'
+        rm -f /dev/dri/card0 /dev/dri/renderD128
+        mkdir -p /dev/dri
+        [ -c /dev/dri/card1 ] || mknod -m 660 /dev/dri/card1 c 226 1
+        [ -c /dev/dri/renderD129 ] || mknod -m 660 /dev/dri/renderD129 c 226 129
+        if (exec 3<>/dev/dri/card1) 2>/dev/null && [ -x /usr/lib/Xorg ] &&
+            /bin/sh ./steamos-gpu.sh; then
+            chown "root:$gid" /dev/dri/card1 /dev/dri/renderD129
+            chmod 660 /dev/dri/card1 /dev/dri/renderD129
+            printf 'enabled\n' > "$session/steamos-gpu"
+            echo 'GUI_SESSION: SteamOS gpu=virgl-metal (Xorg glamor and Qt; KWin effects off)'
+        else
+            rm -f /dev/dri/card1 /dev/dri/renderD129
+            echo 'GUI_SESSION: SteamOS gpu=software (GPU device or overlay unavailable)'
+        fi
+    elif [ "$mode" = desktop ] && { [ "$kms_desktop" = hyprland ] || [ "$kms_desktop" = wayfire-gpu ]; } && command -v seatd >/dev/null; then
         mkdir -p /dev/dri /run/udev/data
         [ -c /dev/dri/card0 ] || mknod -m 660 /dev/dri/card0 c 226 0
         [ -c /dev/dri/renderD128 ] || mknod -m 666 /dev/dri/renderD128 c 226 128
@@ -77,6 +96,29 @@ if [ "$(id -u)" = 0 ] && [ "$guest_user" != root ]; then
     elif [ "$mode" = desktop ] && [ -c /dev/dri/card0 ]; then
         rm -f /dev/dri/card0 /dev/dri/renderD128 /dev/dri/card1 /dev/dri/renderD129
     fi
+    if [ "$mode" = desktop ] && [ "$kms_desktop" = plasma ] && ! { command -v startplasma-x11 >/dev/null && command -v kwin_x11 >/dev/null; }; then
+        case "$(sed -n 's/^ID=//p' /etc/os-release | tr -d '"')" in arch|archarm|fedora)
+            /bin/sh ./prepare-plasma-bridge.sh || { echo 'GUI_SESSION: Plasma bridge build failed; install Plasma support'; exit 7; }
+            # The virtual KWin backend needs a render node and anonymous
+            # dma-buf export, without acquiring a physical seat or display.
+            mkdir -p /dev/dri
+            for node in card0:0 renderD128:128 card1:1 renderD129:129; do
+                name=${node%:*}; [ -c "/dev/dri/$name" ] || mknod "/dev/dri/$name" c 226 "${node#*:}"
+                chown "$uid:$gid" "/dev/dri/$name"; chmod 660 "/dev/dri/$name"
+            done
+            [ -c /dev/udmabuf ] || mknod /dev/udmabuf c 10 254
+            chown "$uid:$gid" /dev/udmabuf; chmod 660 /dev/udmabuf
+            echo 'GUI_SESSION: plasma virtual-output devices prepared';;
+        esac
+    fi
+    # Native-created exchange files are imported with ordinary guest modes.
+    # Establish guest credential privacy before either X11 or Plasma starts;
+    # Plasma dispatches before the later X11 xauth setup/chmod path.
+    chmod 700 "$session"
+    for credential in password cookie authority; do
+        [ ! -L "$session/$credential" ] || { echo 'GUI_SESSION: credential symlink refused'; exit 10; }
+        [ ! -f "$session/$credential" ] || chmod 600 "$session/$credential"
+    done
     chown -R "$uid:$gid" "$session"
     absolute_session="$session"
     case "$PWD" in /home/mobile/Downloads/.linuxrunner/gui) ;; *) echo 'GUI_SESSION: unexpected support path'; exit 10;; esac
@@ -97,7 +139,20 @@ for helper in /usr/share/*/chrome-sandbox /usr/lib/*/chrome-sandbox /opt/*/*/chr
     stat -c 'SANDBOX_HELPER: mode=%a uid=%u gid=%g path=%n' "$helper" || true
 done
 
+# Current Arch/Fedora Plasma no longer provides an X11 session. Dispatch before
+# Xvfb/transport startup so one managed desktop owns the existing viewer port.
+if [ "$mode" = desktop ] && [ "$(cat "$session/desktop-environment" 2>/dev/null || true)" = plasma ] && ! { command -v startplasma-x11 >/dev/null && command -v kwin_x11 >/dev/null; }; then
+    case "$(sed -n 's/^ID=//p' /etc/os-release | tr -d '"')" in arch|archarm|fedora)
+        exec /bin/sh ./plasma-session.sh "$session";;
+    esac
+fi
+
 xpid= vpid= wpid= mpid= bpid= apid= spid= appgroup= runtime_dir= desktop_env=
+# Startup timeline from the guest's monotonic clock (/proc/uptime, 10 ms):
+#   DESKTOP_STARTUP: stage=<name> at_ms=<since session start> duration_ms=<since previous stage>
+lr_ms() { lr_t=$(date +%s%N 2>/dev/null); case "$lr_t" in *[!0-9]*|'') awk '{printf "%d", $1 * 1000}' /proc/uptime 2>/dev/null || echo 0;; *) echo $((lr_t / 1000000));; esac; }
+lr_session_start_ms=$(lr_ms); lr_stage_ms=$lr_session_start_ms
+lr_stage() { lr_now=$(lr_ms); echo "DESKTOP_STARTUP: stage=$1 at_ms=$((lr_now - lr_session_start_ms)) duration_ms=$((lr_now - lr_stage_ms))${2:+ $2}"; lr_stage_ms=$lr_now; }
 cleanup() {
     trap - EXIT HUP INT TERM
     touch "$session/stop"
@@ -163,9 +218,15 @@ port=$(cat "$session/port")
 display=$(cat "$session/display")
 case "$port:$display" in *[!0-9:]*|:*) exit 2;; esac
 export DISPLAY=:$display
-# Debian Mesa needs server GLX for real desktop OpenGL contexts. This is
+# Debian and Arch Mesa need server GLX for real desktop OpenGL contexts. This is
 # software rendering, independent of optional Metal framebuffer presentation.
 distro=$(sed -n 's/^ID=//p' /etc/os-release | tr -d '"')
+[ "$distro" != kali ] || distro=debian # Debian-based: same Mesa/GLX packages
+if [ "$distro" = steamos ]; then
+    # Breeze's QWidget painter crashed in the supplied image. Fusion keeps
+    # both direct children and D-Bus-activated Qt applications on one style.
+    export QT_STYLE_OVERRIDE=Fusion
+fi
 # Session graphics default chosen in Settings; a launcher's own
 # LR_GUI_GPU_MODE (command.sh) takes precedence for that application.
 gpu_mode=mesa
@@ -175,10 +236,19 @@ export LR_GUI_GPU_MODE="$gpu_mode" LR_GUI_SESSION_DIR="$session"
 # Desktop environment chosen in Settings › Desktop (desktop mode): linuxrunner or plasma (experimental).
 desktop_environment=linuxrunner
 [ ! -f "$session/desktop-environment" ] || desktop_environment=$(cat "$session/desktop-environment")
-case "$desktop_environment" in linuxrunner|plasma|lxqt|enlightenment|wayfire|hyprland) ;; *) desktop_environment=linuxrunner;; esac
+case "$desktop_environment" in linuxrunner|plasma|lxqt|enlightenment|wayfire|hyprland|xfce) ;; *) desktop_environment=linuxrunner;; esac
 export LR_DESKTOP_ENVIRONMENT="$desktop_environment"
+steamos_gpu=0
+if [ "$distro" = steamos ] && [ "$mode" = desktop ] && [ "$desktop_environment" = plasma ] &&
+    [ "$(cat "$session/steamos-gpu" 2>/dev/null || true)" = enabled ] && [ -c /dev/dri/card1 ]; then
+    steamos_gpu=1
+    export LD_LIBRARY_PATH=/opt/linuxrunner/steamos-gpu/lib
+    export LIBGL_DRIVERS_PATH=/opt/linuxrunner/steamos-gpu/lib/dri
+    export __EGL_VENDOR_LIBRARY_FILENAMES=/opt/linuxrunner/steamos-gpu/share/glvnd/egl_vendor.d/50_mesa.json
+    export MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu GALLIUM_DRIVER=virgl LR_STEAMOS_GPU=1
+fi
 glx_mode=off
-[ "$distro" != debian ] || glx_mode=software
+case "$distro" in debian|arch|archarm) glx_mode=software;; esac
 [ ! -f "$session/glx-mode" ] || glx_mode=$(cat "$session/glx-mode")
 case "$glx_mode" in
  off) glx_switch=-extension;;
@@ -195,6 +265,15 @@ case "$shm_mode" in
  sysv) shm_switch=+extension; vnc_shm_option=;;
  *) echo 'GUI_SESSION: invalid shared-image mode (off or sysv required)'; exit 2;;
 esac
+capture_launcher=
+if [ "$shm_mode" = sysv ]; then
+    if [ -x ./capture-shm-guard.arm64 ] && ./capture-shm-guard.arm64 --probe; then
+        capture_launcher=./capture-shm-guard.arm64
+    else
+        echo 'GUI_CAPTURE: cleanup unavailable; using socket capture'
+        shm_mode=off; shm_switch=-extension; vnc_shm_option=-noshm
+    fi
+fi
 echo "GUI_CAPTURE: shared-images=$shm_mode"
 # Wayfire draws into this X server through MIT-SHM (wlroots' X11 backend with its
 # software renderer); x11vnc keeps the capture path chosen above.
@@ -204,6 +283,17 @@ export QT_QPA_PLATFORM=${QT_QPA_PLATFORM:-xcb}
 export QT_FORCE_STDERR_LOGGING=${QT_FORCE_STDERR_LOGGING:-1}
 export QT_WIDGETS_RHI=${QT_WIDGETS_RHI:-0} QT_QUICK_BACKEND=${QT_QUICK_BACKEND:-software}
 export QT_OPENGL=${QT_OPENGL:-software} LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-1}
+if [ "$steamos_gpu" = 1 ]; then
+    unset LIBGL_ALWAYS_SOFTWARE QT_QUICK_BACKEND QT_OPENGL
+    export QT_XCB_GL_INTEGRATION=xcb_egl QSG_RHI_BACKEND=opengl QSG_RHI_GL_USE_GLES=1 QSG_INFO=1
+fi
+steamos_software_fallback() {
+    steamos_gpu=0
+    unset LD_LIBRARY_PATH LIBGL_DRIVERS_PATH __EGL_VENDOR_LIBRARY_FILENAMES MESA_LOADER_DRIVER_OVERRIDE GALLIUM_DRIVER LR_STEAMOS_GPU
+    unset QSG_RHI_BACKEND QSG_RHI_GL_USE_GLES QSG_INFO
+    export QT_QUICK_BACKEND=software QT_OPENGL=software LIBGL_ALWAYS_SOFTWARE=1 QT_XCB_GL_INTEGRATION=none
+    echo 'GUI_SESSION: SteamOS GPU check failed; starting the software desktop (see graphics.log and xorg.log)'
+}
 # A fresh X server belongs to this guest root; DISPLAY is session-scoped.
 width=640 height=480
 if [ -f "$session/geometry" ]; then
@@ -213,12 +303,24 @@ if [ -f "$session/geometry" ]; then
     width=${geometry%x*};height=${geometry#*x}
     if [ "$width" -lt 320 ] || [ "$width" -gt 2560 ] || [ "$height" -lt 240 ] || [ "$height" -gt 1600 ] || [ $((width % 2)) -ne 0 ] || [ $((height % 2)) -ne 0 ]; then echo 'GUI_SESSION: invalid display geometry'; exit 2; fi
 fi
+if [ "$steamos_gpu" = 1 ] && ! /opt/linuxrunner/steamos-gpu/bin/graphics-check > "$session/graphics.log" 2>&1; then
+    steamos_software_fallback
+fi
 export XAUTHORITY="$session/authority"
 umask 077
 xauth -f "$XAUTHORITY" add "$DISPLAY" . "$(cat "$session/cookie")"
-echo "GUI_SESSION: root=${LINUXRUNNER_ENVIRONMENT:-current} distribution=$distro DISPLAY=$DISPLAY geometry=${width}x${height} backend=xvfb-rfb interpreter-baseline"
-echo "GUI_SESSION: starting X.Org software display, ${width}x${height}, no JIT"
-Xvfb "$DISPLAY" -screen 0 "${width}x${height}x24" -nolisten tcp -auth "$XAUTHORITY" "$shm_switch" MIT-SHM "$glx_switch" GLX > "$session/xvfb.log" 2>&1 & xpid=$!
+echo "GUI_SESSION: root=${LINUXRUNNER_ENVIRONMENT:-current} distribution=$distro DISPLAY=$DISPLAY geometry=${width}x${height} backend=$([ "$steamos_gpu" = 1 ] && echo xorg-virgl-rfb || echo xvfb-rfb) interpreter-baseline"
+if [ "$steamos_gpu" = 1 ]; then
+    cp ./steamos-xorg.conf "$session/xorg.conf"
+    echo 'xorg-virgl' > "$session/display-backend"
+    echo "GUI_SESSION: starting Xorg modesetting/glamor on virgl/Metal, ${width}x${height}, no JIT"
+    /usr/lib/Xorg "$DISPLAY" -config "$session/xorg.conf" -logfile "$session/xorg.log" -noreset -nolisten tcp \
+        -novtswitch -sharevts -auth "$XAUTHORITY" > "$session/xvfb.log" 2>&1 & xpid=$!
+else
+    echo 'xvfb-software' > "$session/display-backend"
+    echo "GUI_SESSION: starting X.Org software display, ${width}x${height}, no JIT"
+    Xvfb "$DISPLAY" -screen 0 "${width}x${height}x24" -nolisten tcp -auth "$XAUTHORITY" "$shm_switch" MIT-SHM "$glx_switch" GLX > "$session/xvfb.log" 2>&1 & xpid=$!
+fi
 i=0
 while [ ! -S "/tmp/.X11-unix/X$display" ]; do
     [ ! -f "$session/stop" ] || exit 0
@@ -226,6 +328,7 @@ while [ ! -S "/tmp/.X11-unix/X$display" ]; do
     i=$((i+1)); [ "$i" -lt 100 ] || { echo 'GUI_SESSION: X server timeout'; exit 5; }; sleep .1
 done
 echo "GUI_SESSION: stage=x11-ready socket=/tmp/.X11-unix/X$display polls=$i"
+lr_stage display_init "server=Xvfb"
 if [ "$mode" != desktop ]; then
 # Session-wide focus policy for all X11 clients; no app-name/key special cases.
 ./focus-manager "$session/stop" > "$session/focus.log" 2>&1 & wpid=$!
@@ -245,7 +348,7 @@ xmodmap -pm >> "$session/keymap.log" 2>&1 || true
 xkb=-xkb
 if [ -f "$session/xkb-mode" ] && [ "$(cat "$session/xkb-mode")" = noxkb ]; then xkb=-noxkb; fi
 focus_policy=managed; [ "$mode" != desktop ] || focus_policy=window-manager
-echo "GUI_SESSION: keyboard=$xkb focus=$focus_policy encoding=Hextile/Raw software-rendering"
+echo "GUI_SESSION: keyboard=$xkb focus=$focus_policy encoding=Hextile/Raw renderer=$([ "$steamos_gpu" = 1 ] && echo virgl-metal || echo software)"
 # A Linux sockaddr_un path holds at most 107 bytes. A support-directory UUID
 # path plus GVFS/Qt socket suffix exceeds it. Use a uniquely owned short path
 # for every GUI mode, with restrictive permissions and no preexisting reuse.
@@ -253,6 +356,7 @@ runtime_dir=$(mktemp -d /tmp/lr-runtime.XXXXXXXXXX) || { echo 'GUI_SESSION: runt
 chmod 700 "$runtime_dir"
 export XDG_RUNTIME_DIR="$runtime_dir"
 echo "GUI_SESSION: runtime_directory=$XDG_RUNTIME_DIR (short Unix socket namespace)"
+lr_stage session_environment
 export SHELL="${SHELL:-/bin/sh}" LANG="${LANG:-C.UTF-8}"
 if [ "$mode" = desktop ]; then export XDG_CURRENT_DESKTOP=LXDE DESKTOP_SESSION=LinuxRunner; fi
 # Reusable session bus, when installed. This is not a systemd/system bus.
@@ -271,6 +375,11 @@ if command -v dbus-daemon >/dev/null; then
             if dbus-update-activation-environment DISPLAY XAUTHORITY XDG_RUNTIME_DIR HOME PATH DBUS_SESSION_BUS_ADDRESS; then
                 echo 'GUI_SESSION: dbus_activation_environment=PASS (explicit session variables, no systemd required)'
             else echo 'GUI_SESSION: dbus_activation_environment=FAIL; inspect bus.log'; fi
+            if [ "$steamos_gpu" = 1 ]; then
+                dbus-update-activation-environment LD_LIBRARY_PATH LIBGL_DRIVERS_PATH __EGL_VENDOR_LIBRARY_FILENAMES \
+                    MESA_LOADER_DRIVER_OVERRIDE GALLIUM_DRIVER LR_STEAMOS_GPU QT_STYLE_OVERRIDE \
+                    QT_XCB_GL_INTEGRATION QSG_RHI_BACKEND QSG_RHI_GL_USE_GLES || true
+            fi
         fi;;
         *) echo 'GUI_SESSION: dbus_session=unavailable; inspect bus.log (applications still attempted)';;
     esac
@@ -285,6 +394,7 @@ if [ -n "$audio_port" ] && command -v pulseaudio >/dev/null && command -v parec 
     $setsid_cmd /bin/sh ./audio-session.sh "$session" "$audio_port" > "$session/audio.log" 2>&1 & spid=$!
     echo "GUI_SESSION: audio=pulseaudio group=$spid"
 elif [ -n "$audio_port" ]; then echo 'GUI_SESSION: audio=unavailable (Desktop > Install Desktop Support adds sound)'; fi
+lr_stage dbus_audio
 # Terminals of the same account join this desktop (DISPLAY, X authority,
 # runtime directory, session bus); see desktop-env.sh. Private to the account.
 if [ "$mode" = desktop ]; then
@@ -313,7 +423,9 @@ echo "GUI_INPUT: mode=$input_mode experimental=$([ "$input_mode" = eager ] && ec
 # autocomplete splice typed URLs (2 of 5 gate runs), so it stays opt-in.
 # The others are latency experiments.
 vnc_timing=default
+[ "$steamos_gpu" != 1 ] || vnc_timing=adaptive
 [ ! -f "$session/vnc-timing" ] || vnc_timing=$(cat "$session/vnc-timing")
+if [ "$vnc_timing" = default ] && [ "$steamos_gpu" = 1 ]; then vnc_timing=adaptive; fi
 case "$vnc_timing" in
  default|legacy) vnc_timing_options="-noxdamage -defer 16 -wait 25";;
  threads) vnc_timing_options="-noxdamage -defer 16 -wait 25 -threads";;
@@ -331,6 +443,13 @@ esac
 echo "GUI_VNC: timing=$vnc_timing options=$vnc_timing_options"
 vnc_lifetime="-once -timeout 60"
 [ "$mode" != desktop ] || vnc_lifetime="-forever"
+# Clipboard: only the CLIPBOARD selection (explicit copy, e.g. Ctrl+C) is
+# offered to the app, which keeps it until the user copies it to iOS; PRIMARY
+# (mere selection) is not synced.
+# Cursor shapes go to the app (RFB Cursor pseudo-encoding), which draws the
+# pointer itself: x11vnc did not repaint a framebuffer-drawn cursor when the
+# app's own touchpad moved it. Viewers without cursor-shape support still get
+# x11vnc's drawn cursor.
 # KMS compositors (Hyprland; Wayfire on the GPU) draw their own pointer into
 # the output the bridge shows: x11vnc must not paint a second one.
 vnc_cursor_option=
@@ -339,8 +458,25 @@ case "$mode:$(cat "$session/desktop-environment" 2>/dev/null)" in
     desktop:wayfire) if [ -c /dev/dri/card1 ] && command -v wayfire >/dev/null; then vnc_cursor_option=-nocursor; fi;;
 esac
 [ -z "$vnc_cursor_option" ] || echo 'GUI_SESSION: pointer=compositor (x11vnc draws none)'
-x11vnc -norc -display "$DISPLAY" -auth "$XAUTHORITY" -localhost -no6 -rfbport "$port" -passwdfile "$session/password" $vnc_lifetime $vnc_shm_option $vnc_timing_options -noxrecord -noscr -nosel -noclipboard -nocursorshape $vnc_cursor_option -nolookup $input_option "$xkb" > "$session/display.log" 2>&1 & vpid=$!
+start_transport() {
+    # A login/profile hook can inherit the previous desktop's Wayland socket.
+    # x11vnc 0.9.17 rejects even an explicit Xvfb display when that variable is
+    # present. Isolate only this X11 capture process; compositor/client Wayland
+    # state belongs to their own process trees and must remain available.
+    (
+        unset WAYLAND_DISPLAY
+        export XDG_SESSION_TYPE=x11
+        echo 'GUI_TRANSPORT: backend=x11 WAYLAND_DISPLAY=unset'
+        exec $capture_launcher "$(command -v x11vnc)" -norc -display "$DISPLAY" -auth "$XAUTHORITY" -localhost -no6 -rfbport "$port" -passwdfile "$session/password" $vnc_lifetime $vnc_shm_option $vnc_timing_options -noxrecord -noscr -noprimary $vnc_cursor_option -nolookup $input_option "$xkb"
+    ) >> "$session/display.log" 2>&1 & vpid=$!
+}
+: > "$session/display.log"; start_transport
+# Diagnostic identity for this owned child; consumers must recheck both its
+# parent and start time before signalling it (a PID alone can be reused).
+capture_start=$(sed 's/.*) //' "/proc/$vpid/stat" 2>/dev/null | cut -d ' ' -f 20)
+[ -z "$capture_start" ] || printf '%s %s %s\n' "$vpid" "$$" "$capture_start" > "$session/capture-process"
 echo "GUI_SESSION: stage=vnc-started port=$port"
+lr_stage transport_init "transport=x11vnc"
 if [ "$mode" = test ]; then ./gui-test > "$session/application.log" 2>&1 &
 elif [ "$mode" = xterm ]; then xterm -geometry 80x24+0+0 -fn fixed -xrm 'XTerm*renderFont: false' > "$session/application.log" 2>&1 &
 elif [ "$mode" = qt ]; then
@@ -358,6 +494,7 @@ fi
 apid=$!
 case "$mode" in custom|desktop) appgroup=$apid;; esac
 echo "GUI_SESSION: application started mode=$mode"
+lr_stage application_started "mode=$mode desktop=$(cat "$session/desktop-environment" 2>/dev/null || echo none)"
 # A launcher may hand off to a child and exit successfully. Keep its owned
 # process group, rather than its initial PID, as the custom session lifetime.
 application_live() {
@@ -365,6 +502,7 @@ application_live() {
         kill -0 "$apid" 2>/dev/null && return 0
         code=0; wait "$apid" || code=$?; apid=
         echo "GUI_SESSION: application leader exited status=$code (128+ may indicate signal; see application.log)"
+        app_exit_code=$code
     fi
     [ -n "$appgroup" ] && [ "$appgroup" -gt 1 ] || return 1
     [ "$(cat "$session/application-group" 2>/dev/null || true)" = "$appgroup" ] || return 1
@@ -372,7 +510,34 @@ application_live() {
     # Exclude zombies; a terminated orphan must not keep the viewer alive.
     ps -o pgid,stat | awk -v group="$appgroup" '$1 == group && $2 !~ /^Z/ { alive=1 } END { exit !alive }'
 }
-# Disconnect or the last owned app process exiting tears down this session.
-while [ ! -f "$session/stop" ] && application_live && kill -0 "$vpid" 2>/dev/null && { [ "$mode" = desktop ] || kill -0 "$wpid" 2>/dev/null; }; do sleep .2; done
+# The session ends when the user stops it, the desktop/application exits or the
+# display server exits. The display transport (x11vnc) alone ending is not the
+# desktop ending: while the X server and the desktop run it is restarted (at
+# most 3 times), and the viewer reconnects to the same port.
+# Every end is reported as DESKTOP_EXIT component=… exit_code=… reason=….
+lr_exit() { echo "DESKTOP_EXIT: component=$1 exit_code=${2:-unknown} reason=$3"; }
+lr_status() { code=0; wait "$1" 2>/dev/null || code=$?; if [ "$code" -gt 128 ] && [ "$code" -lt 160 ]; then echo "$code signal=$((code - 128))"; else echo "$code"; fi; }
+transport_restarts=0 app_exit_code=
+while :; do
+    while [ ! -f "$session/stop" ] && application_live && kill -0 "$xpid" 2>/dev/null && kill -0 "$vpid" 2>/dev/null && { [ "$mode" = desktop ] || kill -0 "$wpid" 2>/dev/null; }; do sleep .2; done
+    if [ -f "$session/stop" ]; then lr_exit session 0 user-stop; break; fi
+    if ! application_live; then
+        lr_exit "${mode}-application" "${app_exit_code:-unknown}" "application-exited (its log: application.log; compositor logs in the session directory)"; break
+    fi
+    if ! kill -0 "$xpid" 2>/dev/null; then
+        lr_exit display-server "$(lr_status "$xpid")" display-server-exited; tail -n 20 "$session/xvfb.log" 2>/dev/null | sed 's/^/XVFB: /'; break
+    fi
+    if [ "$mode" != desktop ] && ! kill -0 "$wpid" 2>/dev/null; then
+        lr_exit focus-manager "$(lr_status "$wpid")" focus-manager-exited; tail -n 10 "$session/focus.log" 2>/dev/null | sed 's/^/FOCUS: /'; break
+    fi
+    # Only the transport ended.
+    status=$(lr_status "$vpid"); tail -n 10 "$session/display.log" 2>/dev/null | sed 's/^/X11VNC: /'
+    if [ "$mode" = desktop ] && [ "$transport_restarts" -lt 3 ]; then
+        transport_restarts=$((transport_restarts + 1))
+        lr_exit transport "$status" "transport-exited; restarting it ($transport_restarts/3), desktop kept"
+        start_transport; continue
+    fi
+    lr_exit transport "$status" transport-failed; break
+done
 if application_live; then echo 'GUI_SESSION: display disconnected'
 else echo 'GUI_SESSION: application process group ended'; fi

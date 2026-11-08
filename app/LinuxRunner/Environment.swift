@@ -85,8 +85,9 @@ enum PackageOperation {
         !value.isEmpty && value.utf8.count <= 128 && value.range(of: "^[A-Za-z0-9][A-Za-z0-9+._:-]*$", options: .regularExpression) != nil
     }
     static func command(_ operation: String, value: String = "") throws -> [String] {
-        guard ["installed", "search", "details", "updates", "update", "install", "upgrade", "remove", "diagnose", "configure", "dependencies", "repair"].contains(operation),
-              !["search", "details", "install", "upgrade", "remove"].contains(operation) || validName(value) else { throw EnvironmentError.invalidCommand }
+        let named = ["search", "details", "install", "upgrade", "remove", "plan-install", "plan-remove", "plan-upgrade", "apply-install", "apply-remove", "apply-upgrade"]
+        guard (["installed", "updates", "update", "diagnose", "configure", "dependencies", "repair", "catalog"] + named).contains(operation),
+              !named.contains(operation) || validName(value) else { throw EnvironmentError.invalidCommand }
         return ["/bin/sh", "/home/mobile/Downloads/.linuxrunner/gui/package-manager.sh", operation, value]
     }
 }

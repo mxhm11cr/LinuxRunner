@@ -26,6 +26,7 @@
 #include "platform/host_context_aarch64.h"
 #include "platform/native_fault.h"
 #include "xX_main_Xx.h"
+#include "fs/sock.h"
 
 // Thread-local JIT recovery state (defined in asbestos.c)
 extern __thread volatile sig_atomic_t in_jit;
@@ -212,6 +213,10 @@ int main(int argc, char *const argv[]) {
     dup2(STDERR_FILENO, 666);
 
 #ifdef GUEST_ARM64
+    // Test hook: host directory+prefix for guest AF_UNIX backing sockets, so
+    // device-length paths (iOS container temp dir) can be reproduced here.
+    const char *sock_prefix = getenv("ISH_SOCK_TMP_PREFIX");
+    if (sock_prefix && *sock_prefix) sock_tmp_prefix = sock_prefix;
     const char *trace_highbits = getenv("ISH_TRACE_HIGHBITS");
     g_trace_highbits = trace_highbits && trace_highbits[0] && strcmp(trace_highbits, "0") != 0;
     const char *trace_syscalls = getenv("ISH_SYSTRACE");

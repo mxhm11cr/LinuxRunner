@@ -58,6 +58,8 @@
 #define DRM_MODE_CURSOR2_ 0xc02464bbU
 #define DRM_MODE_GETFB2_ 0xc06864ceU
 #define DRM_CRTC_GET_SEQUENCE_ 0xc018643bU
+#define DRM_CRTC_QUEUE_SEQUENCE_ 0xc018643cU
+#define DRM_WAIT_VBLANK_ 0xc018643aU
 #define DRM_MODE_CREATE_LEASE_ 0xc01864c6U
 #define DRM_MODE_CLOSEFB_ 0xc00864d0U
 // virtio-gpu (include/uapi/drm/virtgpu_drm.h), render node LR_VIRGL_RENDER_MINOR
@@ -113,10 +115,18 @@ struct get_plane { uint32_t plane_id, crtc_id, fb_id, possible_crtcs, gamma_size
 struct obj_get_properties { uint64_t props, prop_values; uint32_t count_props, obj_id, obj_type, pad; };
 struct obj_set_property { uint64_t value; uint32_t prop_id, obj_id, obj_type, pad; };
 struct crtc_sequence { uint32_t crtc_id, active; uint64_t sequence; int64_t sequence_ns; };
+struct queue_sequence { uint32_t crtc_id, flags; uint64_t sequence, user_data; };
+union wait_vblank {
+    struct { uint32_t type, sequence; uint64_t signal; } request;
+    struct { uint32_t type, sequence; int64_t sec, usec; } reply;
+};
 struct vblank_event { uint32_t type, length; uint64_t user_data; uint32_t tv_sec, tv_usec, sequence, crtc_id; };
+struct sequence_event { uint32_t type, length; uint64_t user_data; int64_t time_ns; uint64_t sequence; };
+union display_event { struct vblank_event vblank; struct sequence_event sequence; };
 _Static_assert(sizeof(struct card_res) == 64 && sizeof(struct modeinfo) == 68 && sizeof(struct mode_crtc) == 104 &&
     sizeof(struct get_connector) == 80 && sizeof(struct get_property) == 64 && sizeof(struct fb_cmd2) == 104 &&
-    sizeof(struct get_plane) == 32 && sizeof(struct obj_get_properties) == 32 && sizeof(struct vblank_event) == 32,
+    sizeof(struct get_plane) == 32 && sizeof(struct obj_get_properties) == 32 && sizeof(union display_event) == 32 &&
+    sizeof(struct queue_sequence) == 24 && sizeof(union wait_vblank) == 24,
     "struct layouts must match Linux's drm_mode.h");
 
 // A buffer is a page-aligned range of a memfd: its own (dumb) or the one
@@ -138,8 +148,13 @@ struct drm_file {
     bool ctx_created;
     uint32_t ctx_id;
     struct buffer *handles[MAX_HANDLES]; // handle n is handles[n - 1]
-    struct vblank_event events[EVENT_QUEUE];
+    union display_event events[EVENT_QUEUE];
     unsigned event_count;
+    struct { uint64_t sequence, user_data; uint32_t type; } pending[EVENT_QUEUE];
+    unsigned pending_count, flip_reservations;
+    pthread_t vblank_thread;
+    pthread_cond_t vblank_wake;
+    bool vblank_started, vblank_stop;
 };
 
 static atomic_ullong allocated;
@@ -215,14 +230,20 @@ static int release_handle(struct drm_file *f, uint32_t handle) {
     return 0;
 }
 
+static void exported_buffer_put(void *buffer) { buffer_put(buffer); }
+
 static int handle_to_fd(struct drm_file *f, struct prime *p) {
     lock(&f->lock);
     struct buffer *b = lookup(f, p->handle);
     struct fd *source = b ? fd_retain(b->source) : NULL;
+    if (b) atomic_fetch_add(&b->refs, 1);
     uint64_t offset = b ? b->offset : 0, size = b ? b->size : 0;
     unlock(&f->lock);
     if (!source) return _ENOENT;
-    int fd = software_dmabuf_export(source, offset, size, p->flags & DRM_CLOEXEC_ ? 1 : 0);
+    // A dma-buf owns the GEM object, not only its CPU pages. KWin exports a
+    // GBM BO, destroys the BO and subsequently imports the still-live dma-buf.
+    int fd = software_dmabuf_export_owned(source, offset, size, p->flags & DRM_CLOEXEC_ ? 1 : 0,
+            b, exported_buffer_put);
     if (fd < 0) return fd;
     p->fd = fd;
     return 0;
@@ -298,7 +319,6 @@ static struct {
     bool mode_valid;
     struct modeinfo mode, modes[MAX_MODES];
     unsigned mode_count;
-    uint32_t sequence;
     uint64_t last_flip_ns;
 } kms;
 static pthread_once_t kms_once = PTHREAD_ONCE_INIT;
@@ -339,6 +359,133 @@ void drm_set_display_size(unsigned width, unsigned height) {
 static uint64_t monotonic_ns(void) {
     struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
     return (uint64_t) t.tv_sec * 1000000000 + t.tv_nsec;
+}
+// The virtual 60 Hz display keeps scanning even when no client flips a
+// buffer. Xorg/Present query this clock while scheduling swaps; counting only
+// page flips leaves their media-stream counter frozen and stalls KWin.
+#define VBLANK_PERIOD_NS 16666667ULL
+static struct crtc_sequence vblank_now(void) {
+    uint64_t sequence = monotonic_ns() / VBLANK_PERIOD_NS;
+    return (struct crtc_sequence) {.sequence = sequence,
+        .sequence_ns = (int64_t) (sequence * VBLANK_PERIOD_NS)};
+}
+
+// One sleeping worker per card file that requests vblank notifications.
+// close() wakes and joins it before freeing the file; no callback retains a
+// stale fd, and an idle file has no periodic timer wakeups.
+static void *vblank_worker(void *opaque) {
+    struct fd *fd = opaque;
+    struct drm_file *f = fd->data;
+    lock(&f->lock);
+    while (!f->vblank_stop) {
+        if (!f->pending_count) {
+            pthread_cond_wait(&f->vblank_wake, &f->lock.m);
+            f->lock.owner = pthread_self();
+            continue;
+        }
+        struct crtc_sequence sample = vblank_now();
+        bool wake = false;
+        uint64_t next = UINT64_MAX;
+        for (unsigned i = 0; i < f->pending_count;) {
+            if (f->pending[i].sequence > sample.sequence) {
+                if (f->pending[i].sequence < next) next = f->pending[i].sequence;
+                i++; continue;
+            }
+            union display_event *event = &f->events[f->event_count++];
+            if (f->pending[i].type == 3) {
+                event->sequence = (struct sequence_event) {.type = 3, .length = sizeof *event,
+                    .user_data = f->pending[i].user_data, .time_ns = sample.sequence_ns,
+                    .sequence = sample.sequence};
+            } else {
+                event->vblank = (struct vblank_event) {.type = 1, .length = sizeof *event,
+                    .user_data = f->pending[i].user_data, .tv_sec = sample.sequence_ns / 1000000000,
+                    .tv_usec = sample.sequence_ns % 1000000000 / 1000,
+                    .sequence = (uint32_t) sample.sequence, .crtc_id = CRTC_ID};
+            }
+            f->pending[i] = f->pending[--f->pending_count];
+            wake = true;
+        }
+        if (wake) {
+            unlock(&f->lock); poll_wakeup(fd, POLL_READ); lock(&f->lock);
+            continue;
+        }
+        uint64_t due = next * VBLANK_PERIOD_NS, now = monotonic_ns();
+        if (now >= due) continue;
+        uint64_t remaining = due - now;
+        struct timespec wait = {.tv_sec = remaining / 1000000000, .tv_nsec = remaining % 1000000000};
+#ifdef __APPLE__
+        pthread_cond_timedwait_relative_np(&f->vblank_wake, &f->lock.m, &wait);
+#else
+        struct timespec deadline = {.tv_sec = due / 1000000000, .tv_nsec = due % 1000000000};
+        pthread_cond_timedwait(&f->vblank_wake, &f->lock.m, &deadline);
+#endif
+        f->lock.owner = pthread_self();
+    }
+    unlock(&f->lock);
+    return NULL;
+}
+
+static int queue_vblank(struct fd *fd, uint64_t sequence, uint64_t user_data, uint32_t type) {
+    if (sequence > INT64_MAX / VBLANK_PERIOD_NS) return _EINVAL;
+    struct drm_file *f = fd->data;
+    lock(&f->lock);
+    if (f->event_count + f->pending_count + f->flip_reservations >= EVENT_QUEUE) { unlock(&f->lock); return _EBUSY; }
+    unsigned n = f->pending_count++;
+    f->pending[n].sequence = sequence; f->pending[n].user_data = user_data; f->pending[n].type = type;
+    if (!f->vblank_started) {
+        int err = pthread_create(&f->vblank_thread, NULL, vblank_worker, fd);
+        if (err) { f->pending_count--; unlock(&f->lock); return _EAGAIN; }
+        f->vblank_started = true;
+    }
+    pthread_cond_signal(&f->vblank_wake);
+    unlock(&f->lock);
+    return 0;
+}
+
+// Match the kernel's guest-aware sleep protocol: a pending guest signal can
+// outlive its host SIGUSR1 notification, so host nanosleep alone is insufficient.
+static int wait_vblank_deadline(uint64_t due) {
+    cond_t condition;
+    lock_t mutex;
+    cond_init(&condition);
+    lock_init(&mutex);
+    int error = 0;
+    lock(&mutex);
+    for (;;) {
+        uint64_t now = monotonic_ns();
+        if (now >= due) break;
+        uint64_t remaining = due - now;
+        struct timespec wait = {.tv_sec = remaining / 1000000000, .tv_nsec = remaining % 1000000000};
+        int result = wait_for(&condition, &mutex, &wait);
+        if (result < 0 && result != _ETIMEDOUT) { error = result; break; }
+        // Blocked signals and spurious wakeups must not complete the wait early.
+    }
+    unlock(&mutex);
+    cond_destroy(&condition);
+    pthread_mutex_destroy(&mutex.m);
+    return error;
+}
+
+static int wait_vblank(struct fd *fd, union wait_vblank *v) {
+    uint32_t type = v->request.type;
+    if (type & ~(1U | 0x04000000U | 0x10000000U)) return _EINVAL;
+    struct crtc_sequence sample = vblank_now();
+    int32_t delta = (int32_t) (v->request.sequence - (uint32_t) sample.sequence);
+    uint64_t target = type & 1 ? sample.sequence + v->request.sequence :
+        sample.sequence + (delta > 0 ? delta : 0);
+    if (target <= sample.sequence && (type & 0x10000000U)) target = sample.sequence + 1;
+    if (type & 0x04000000U) {
+        int err = queue_vblank(fd, target, v->request.signal, 1);
+        if (!err) v->reply.sequence = (uint32_t) target;
+        return err;
+    }
+    int error = wait_vblank_deadline(target * VBLANK_PERIOD_NS);
+    if (error) return error;
+    sample = vblank_now();
+    v->reply.sequence = (uint32_t) sample.sequence;
+    v->reply.sec = sample.sequence_ns / 1000000000;
+    v->reply.usec = sample.sequence_ns % 1000000000 / 1000;
+    return 0;
 }
 static int put_ids(uint64_t address, uint32_t capacity, const uint32_t *ids, uint32_t count) {
     if (address && capacity >= count && count && user_write((addr_t) address, ids, count * sizeof *ids)) return _EFAULT;
@@ -447,12 +594,14 @@ static int set_crtc(struct mode_crtc *c) {
 }
 
 static void queue_event(struct fd *fd, struct drm_file *f, uint64_t user_data) {
-    uint64_t now = monotonic_ns();
+    struct crtc_sequence sample = vblank_now();
+    uint64_t now = (uint64_t) sample.sequence_ns;
     lock(&f->lock);
-    if (f->event_count < EVENT_QUEUE)
-        f->events[f->event_count++] = (struct vblank_event) {.type = 2 /* FLIP_COMPLETE */, .length = sizeof(struct vblank_event),
+    assert(f->flip_reservations > 0);
+    f->flip_reservations--;
+    f->events[f->event_count++].vblank = (struct vblank_event) {.type = 2 /* FLIP_COMPLETE */, .length = sizeof(struct vblank_event),
             .user_data = user_data, .tv_sec = (uint32_t) (now / 1000000000), .tv_usec = (uint32_t) (now % 1000000000 / 1000),
-            .sequence = kms.sequence, .crtc_id = CRTC_ID};
+            .sequence = (uint32_t) sample.sequence, .crtc_id = CRTC_ID};
     unlock(&f->lock);
     poll_wakeup(fd, POLL_READ);
 }
@@ -461,9 +610,17 @@ static int page_flip(struct fd *fd, struct drm_file *f, struct page_flip *p) {
     if (p->crtc_id != CRTC_ID || (p->flags & ~3U)) return _EINVAL;
     lock(&kms.lock);
     bool ok = kms.mode_valid && fb_lookup(p->fb_id);
-    uint64_t due = kms.last_flip_ns + 16666667;
+    uint64_t due = kms.last_flip_ns + VBLANK_PERIOD_NS;
     unlock(&kms.lock);
     if (!ok) return _EINVAL;
+    if (p->flags & 1) {
+        lock(&f->lock);
+        if (f->event_count + f->pending_count + f->flip_reservations >= EVENT_QUEUE) {
+            unlock(&f->lock); return _EBUSY;
+        }
+        f->flip_reservations++;
+        unlock(&f->lock);
+    }
     scanout_sync(p->fb_id);
     // One flip per refresh: the flip completes at the next 60 Hz slot, so a
     // software compositor is paced as by vblank instead of spinning.
@@ -471,7 +628,7 @@ static int page_flip(struct fd *fd, struct drm_file *f, struct page_flip *p) {
     if (now < due) { struct timespec wait = {.tv_nsec = (long) (due - now)}; nanosleep(&wait, NULL); }
     lock(&kms.lock);
     uint32_t previous = kms.scanout;
-    kms.scanout = p->fb_id; kms.sequence++; kms.last_flip_ns = monotonic_ns();
+    kms.scanout = p->fb_id; kms.last_flip_ns = monotonic_ns();
     struct buffer *dropped = drop_closed_scanout(previous);
     unlock(&kms.lock);
     if (dropped) buffer_put(dropped);
@@ -621,6 +778,8 @@ static ssize_t drm_ioctl_size(int command) {
         case DRM_MODE_CURSOR2_: return 36;
         case DRM_MODE_GETGAMMA_: case DRM_MODE_SETGAMMA_: return 32;
         case DRM_CRTC_GET_SEQUENCE_: return sizeof(struct crtc_sequence);
+        case DRM_CRTC_QUEUE_SEQUENCE_: return sizeof(struct queue_sequence);
+        case DRM_WAIT_VBLANK_: return sizeof(union wait_vblank);
         case DRM_MODE_CREATE_LEASE_: return 24;
         case DRM_MODE_CLOSEFB_: return 8;
     }
@@ -639,8 +798,9 @@ static int drm_ioctl(struct fd *fd, int command, void *arg) {
     if (drm_trace_enabled()) {
         struct drm_file *f = fd->data;
         uint32_t flags = (command & 0xff) == 0xb0 ? ((struct page_flip *) arg)->flags : 0;
-        fprintf(stderr, "DRM_IOCTL pid=%d file=%p nr=%#x flags=%#x result=%d scanout=%u seq=%u queued=%u\n", current->pid, (void *) f,
-            (uint32_t) command & 0xff, flags, result, kms.scanout, kms.sequence, f ? f->event_count : 0);
+        fprintf(stderr, "DRM_IOCTL pid=%d file=%p nr=%#x flags=%#x result=%d scanout=%u seq=%llu queued=%u\n", current->pid, (void *) f,
+            (uint32_t) command & 0xff, flags, result, kms.scanout,
+            (unsigned long long) vblank_now().sequence, f ? f->event_count : 0);
     }
     return result;
 }
@@ -896,11 +1056,24 @@ static int drm_ioctl_dispatch(struct fd *fd, int command, void *arg) {
         case DRM_CRTC_GET_SEQUENCE_: {
             struct crtc_sequence *q = arg;
             if (q->crtc_id != CRTC_ID) return _ENOENT;
-            lock(&kms.lock);
-            q->active = kms.mode_valid; q->sequence = kms.sequence; q->sequence_ns = (int64_t) kms.last_flip_ns;
-            unlock(&kms.lock);
+            struct crtc_sequence sample = vblank_now();
+            lock(&kms.lock); q->active = kms.mode_valid; unlock(&kms.lock);
+            q->sequence = sample.sequence; q->sequence_ns = sample.sequence_ns;
             return 0;
         }
+        case DRM_CRTC_QUEUE_SEQUENCE_: {
+            struct queue_sequence *q = arg;
+            if (q->crtc_id != CRTC_ID) return _ENOENT;
+            if (q->flags & ~3U) return _EINVAL;
+            uint64_t sequence = vblank_now().sequence;
+            if (q->flags & 1) {
+                if (q->sequence > UINT64_MAX - sequence) return _EINVAL;
+                q->sequence += sequence;
+            }
+            if (q->sequence <= sequence) q->sequence = sequence + ((q->flags & 2) != 0);
+            return queue_vblank(fd, q->sequence, q->user_data, 3);
+        }
+        case DRM_WAIT_VBLANK_: return wait_vblank(fd, arg);
         case DRM_GET_MAGIC_: *(uint32_t *) arg = 1; return 0;
         case DRM_AUTH_MAGIC_: case DRM_SET_MASTER_: case DRM_DROP_MASTER_: return 0;
         case DRM_MODE_CREATE_DUMB_: return create_dumb(f, arg);
@@ -969,6 +1142,11 @@ static int drm_poll(struct fd *fd) {
 static int drm_close(struct fd *fd) {
     struct drm_file *f = fd->data;
     if (!f) return 0;
+    if (f->vblank_started) {
+        lock(&f->lock); f->vblank_stop = true; pthread_cond_signal(&f->vblank_wake); unlock(&f->lock);
+        pthread_join(f->vblank_thread, NULL);
+    }
+    pthread_cond_destroy(&f->vblank_wake);
     // A file's framebuffers go with it (and the output if it showed one).
     lock(&kms.lock);
     struct buffer *released[MAX_FBS]; unsigned n = 0;
@@ -987,6 +1165,16 @@ static int drm_close(struct fd *fd) {
     return 0;
 }
 
+static void vblank_cond_init(pthread_cond_t *condition) {
+    pthread_condattr_t attributes;
+    pthread_condattr_init(&attributes);
+#ifdef __linux__
+    pthread_condattr_setclock(&attributes, CLOCK_MONOTONIC);
+#endif
+    pthread_cond_init(condition, &attributes);
+    pthread_condattr_destroy(&attributes);
+}
+
 static int drm_open(int major, int minor, struct fd *fd) {
     (void) major;
     if (minor == LR_VIRGL_RENDER_MINOR || minor == LR_VIRGL_CARD_MINOR) {
@@ -996,6 +1184,7 @@ static int drm_open(int major, int minor, struct fd *fd) {
         struct drm_file *f = calloc(1, sizeof *f);
         if (!f) return _ENOMEM;
         lock_init(&f->lock);
+        vblank_cond_init(&f->vblank_wake);
         f->virgl = true;
         f->ctx_id = atomic_fetch_add(&next_virgl_ctx, 1);
         if (minor == LR_VIRGL_CARD_MINOR) pthread_once(&kms_once, kms_init);
@@ -1009,6 +1198,7 @@ static int drm_open(int major, int minor, struct fd *fd) {
     struct drm_file *f = calloc(1, sizeof *f);
     if (!f) return _ENOMEM;
     lock_init(&f->lock);
+    vblank_cond_init(&f->vblank_wake);
     fd->data = f;
     return 0;
 }

@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "date": "2026-11-02",
+  "hardware": "iPad Air 13-inch (M4)",
+  "os": "iPadOS 27.2",
+  "cli": "MobileBuildMCP 2.7.1, physical device XCTest runner",
+  "configuration": "Release LinuxRunner 1.1.0 build 900 local integration, JIT disabled, virgl compiled",
+  "installation": "PASS: verified native Arch package installer; previous SteamOS and Alpine roots preserved, exactly one Arch root added",
+  "terminal": {
+    "architecture": "aarch64",
+    "account": "root; no test password or regular account created",
+    "distribution": "archarm",
+    "glibc": "2.43+r22+g8362e8ce10b2-2",
+    "bash": "5.3.20-1",
+    "pacman": "7.1.0.r9.g54d9411-3"
+  },
+  "desktop": {
+    "components": [
+      "Openbox",
+      "LXQt panel",
+      "PCManFM-Qt"
+    ],
+    "framebuffer_pixels": [
+      960,
+      540
+    ],
+    "display": "Xvfb/RFB; Core Graphics presenter; software rendering; shared images off; default VNC timing",
+    "physical_ui_tests": "PASS in both matched storage-policy runs: desktop ready, managed xterm, synthesized tap/text, visible LR REF INPUT aarch64",
+    "session_state": "ready=1, wm=1, panel=1, surface=1, D-Bus ready"
+  },
+  "unix_socket_regression": {
+    "before": "Expected-failure test confirmed UNIX_NAMESPACE_FAIL stage=abstract-bind cycle=9 errno=36",
+    "after": "PASS: UNIX_NAMESPACE_PASS abstract_cycles=100 filesystem_path_bytes=100",
+    "host": "PASS: ID roundtrip and maximum-value pairs, bounds/canaries, verified /private/var alias, real Darwin bind/send/receive"
+  },
+  "limits": [
+    "Basic launch and input qualification, not sustained application compatibility or an actual Magic Keyboard automation test.",
+    "Arch uses its existing lightweight software desktop at 960x540; SteamOS uses Plasma and accelerated Xorg at 1560x1112. These runs are not an apples-to-apples graphics benchmark.",
+    "The storage comparison includes all coinstalled roots. Its counters are recorded separately on the storage PR.",
+    "Intermediate harness retries included landscape OCR and marker-recognition failures; passing physical tests are the final paired storage runs."
+  ]
+}

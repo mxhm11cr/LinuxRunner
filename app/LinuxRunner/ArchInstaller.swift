@@ -198,8 +198,13 @@ private final class ArchCancellation: @unchecked Sendable {
 @MainActor final class ArchInstaller: ObservableObject {
     static let mirrors = ["https://fl.us.mirror.archlinuxarm.org/aarch64", "https://de.mirror.archlinuxarm.org/aarch64", "https://eu.mirror.archlinuxarm.org/aarch64"]
     @Published var message = "Arch Linux ARM (aarch64) · official signed packages · experimental"
-    @Published var fraction = 0.0
-    @Published var running = false { didSet { if running != oldValue { running ? LRRuntimeBridge.beginAwake("arch-install") : LRRuntimeBridge.endAwake("arch-install") } } }
+    @Published var fraction = 0.0 { didSet { if let longTask { LongTaskCenter.shared.update(longTask, detail: message, fraction: fraction) } } }
+    private var longTask: String?
+    private func trackLongTask(_ title: String) {
+        if running { longTask = LongTaskCenter.shared.begin(title: title, detail: message, userStarted: true) }
+        else if let token = longTask { longTask = nil; LongTaskCenter.shared.end(token, success: failure == nil, message: failure ?? message) }
+    }
+    @Published var running = false { didSet { if running != oldValue { running ? LRRuntimeBridge.beginAwake("arch-install") : LRRuntimeBridge.endAwake("arch-install"); trackLongTask("Installing Arch Linux ARM") } } }
     @Published var failure: String?
     private var operation: Task<Void, Never>?
     private var cancellation = ArchCancellation()

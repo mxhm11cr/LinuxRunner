@@ -36,9 +36,9 @@ Only one modifying package operation should run in an environment. If a lock is 
 
 ## Desktop Installation Problems or Missing Dependencies
 
-Use **Set Up Linux… → Install Desktop Components**, or **Desktop → Desktop Settings… → Desktop Session → Install / Repair Desktop Components**. Keep the app open during installation. **Details** and **GUI Logs** show the failing component/package step.
+Use **Distributions → your distribution → Continue Setup → Install Desktop Components**, or **Desktop → Desktop Settings… → Desktop Session → Install / Repair Desktop Components**. Keep the app open during installation. **Details** and **GUI Logs** show the failing component/package step.
 
-Try LinuxRunner Desktop or LXQt before a more demanding desktop. **Settings → Desktop Environment** offers the current installation controls. Arch Plasma is not validated; Debian Enlightenment is disabled because it stops at the splash screen. Alpine's desktop path has less coverage.
+Try LinuxRunner Desktop or LXQt before a more demanding desktop. **Settings → Desktop Environment** offers the current installation controls. Debian Enlightenment is disabled because it stops at the splash screen. Alpine's desktop path has less coverage.
 
 If dependencies are missing, use **Check Dependencies** and the package manager's supported repair flow. Do not download unrelated libraries from arbitrary sites or globally replace system libraries.
 
@@ -108,7 +108,7 @@ Hyprland is experimental, Arch-only and requires at least 8 GB RAM; Metal is rec
 
 ## Metal Is Selected but Rendering Is Still Software
 
-Use **Settings → Graphics → Linux GPU Device → GPU → Metal GPU · Experimental**, then fully close and reopen the app. Check **Active renderer** and its reason. Automatic uses software in Build 900. A Metal viewer/presentation label alone does not mean the Linux application used GPU rendering. A workload can use an unsupported API or fall back even with Metal selected.
+Use **Settings → Graphics → Linux GPU Device → GPU → Metal GPU · Experimental**, then fully close and reopen the app. Check **Active renderer** and its reason. Automatic starts the virtual GPU with Linux and falls back to software rendering if it cannot start. A Metal viewer/presentation label alone does not mean the Linux application used GPU rendering. A workload can use an unsupported API or fall back even with Metal selected.
 
 ## JIT Is Unavailable
 

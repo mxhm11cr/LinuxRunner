@@ -87,7 +87,9 @@ void mem_page_counts(struct mem *mem, unsigned long *mapped, unsigned long *shar
 
 #define LEAK_DEBUG 0
 
+struct guest_page_slab;
 struct data {
+    struct guest_page_slab *page_pool; // host page owner for small anonymous backing
     void *data; // immutable
     size_t size; // also immutable
     atomic_uint refcount;
@@ -107,6 +109,7 @@ struct data {
 };
 // Strong backing reference used by shared futex keys across munmap.
 void data_release(struct data *data);
+int mem_discard_private(struct mem *mem, page_t start, pages_t pages);
 
 struct pt_entry {
     struct data *data;

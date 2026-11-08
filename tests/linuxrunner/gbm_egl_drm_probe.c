@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <gbm.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 
 int main(int argc, char **argv) {
@@ -31,11 +32,24 @@ int main(int argc, char **argv) {
     PFNEGLCREATEIMAGEKHRPROC create_image = (void *) eglGetProcAddress("eglCreateImageKHR");
     PFNGLEGLIMAGETARGETRENDERBUFFERSTORAGEOESPROC target = (void *) eglGetProcAddress("glEGLImageTargetRenderbufferStorageOES");
     int dmabuf = gbm_bo_get_fd(bo);
+    if (dmabuf < 0) { perror("GBM_EGL FAIL export"); return 1; }
+    unsigned stride = gbm_bo_get_stride(bo);
+    // KWin's allocator drops its GBM object after exporting it. A live dma-buf
+    // must retain the GEM resource, not only the buffer's shared CPU pages.
+    int dropped = argc > 2 && !strcmp(argv[2], "--destroy-before-import");
+    if (dropped) {
+        int duplicate = dup(dmabuf);
+        if (duplicate < 0) { perror("GBM_EGL FAIL dup export"); return 1; }
+        close(dmabuf); dmabuf = duplicate;
+        gbm_bo_destroy(bo); bo = NULL;
+    }
     EGLint img_attrs[] = {EGL_WIDTH, 256, EGL_HEIGHT, 256, EGL_LINUX_DRM_FOURCC_EXT, GBM_FORMAT_XRGB8888,
         EGL_DMA_BUF_PLANE0_FD_EXT, dmabuf, EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
-        EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint) gbm_bo_get_stride(bo), EGL_NONE};
+        EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint) stride, EGL_NONE};
     EGLImageKHR image = create_image ? create_image(d, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, img_attrs) : EGL_NO_IMAGE_KHR;
     if (image == EGL_NO_IMAGE_KHR || !target) { printf("GBM_EGL FAIL eglCreateImage 0x%x\n", eglGetError()); return 1; }
+    // The imported image now owns its own handle; the export may close too.
+    close(dmabuf);
     GLuint rb, fb;
     glGenRenderbuffers(1, &rb); glBindRenderbuffer(GL_RENDERBUFFER, rb); target(GL_RENDERBUFFER, image);
     glGenFramebuffers(1, &fb); glBindFramebuffer(GL_FRAMEBUFFER, fb);
@@ -51,6 +65,13 @@ int main(int argc, char **argv) {
     glReadPixels(80, 80, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, q);
     printf("GBM_EGL pixels background=%d,%d,%d scissor=%d,%d,%d\n", p[0], p[1], p[2], q[0], q[1], q[2]);
     int ok = p[0] == 51 && p[1] == 153 && p[2] == 255 && q[0] == 255 && q[1] == 0 && q[2] == 0;
+    glDeleteFramebuffers(1, &fb); glDeleteRenderbuffers(1, &rb);
+    PFNEGLDESTROYIMAGEKHRPROC destroy_image = (void *) eglGetProcAddress("eglDestroyImageKHR");
+    if (destroy_image) destroy_image(d, image);
+    if (bo) gbm_bo_destroy(bo);
+    eglMakeCurrent(d, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    eglDestroyContext(d, ctx); eglTerminate(d); gbm_device_destroy(gbm); close(fd);
+    printf("GBM_EGL exported_resource_survives_bo_close=%s\n", dropped ? "tested" : "not requested");
     puts(ok ? "GBM_EGL PASS" : "GBM_EGL FAIL pixels");
     return !ok;
 }

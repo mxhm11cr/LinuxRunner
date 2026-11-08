@@ -1,3 +1,6 @@
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
 #include "fs/proc.h"
 #include "fs/proc/ish.h"
 #include "kernel/errno.h"
@@ -5,6 +8,7 @@
 #include "kernel/memory.h"
 #include "kernel/futex.h"
 #include "kernel/calls.h"
+#include "kernel/ipc.h"
 #include "asbestos/asbestos.h"
 #include <stdbool.h>
 #include <stdio.h>
@@ -98,8 +102,17 @@ static void task_stack_snapshot(struct task *task, struct proc_data *buf) {
 // Runtime-specific, read-only diagnostics, not a fabricated Linux wchan.
 // PC/SP and last syscall are sampled while tasks continue executing; they
 // are best-effort observations, not a coherent stopped register frame.
+extern _Atomic uint64_t asbestos_stat_retired_bytes;
 extern _Atomic uint64_t asbestos_stat_instances, asbestos_stat_blocks, asbestos_stat_code_words, asbestos_stat_idle_flushes, asbestos_stat_cap_flushes, asbestos_stat_pressure_flushes;
 static int proc_ish_show_memory(struct proc_entry *UNUSED(entry), struct proc_data *buf) {
+#ifdef __APPLE__
+    task_vm_info_data_t info = {};
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) == KERN_SUCCESS)
+        proc_printf(buf, "host_footprint_bytes=%llu\nhost_resident_bytes=%llu\n",
+            (unsigned long long)info.phys_footprint, (unsigned long long)info.resident_size);
+#endif
+    proc_printf(buf, "retired_code_bytes=%llu\n", (unsigned long long)atomic_load(&asbestos_stat_retired_bytes));
     uint64_t blocks = asbestos_stat_blocks, words = asbestos_stat_code_words;
     proc_printf(buf, "idle_flushes=%llu\ncap_flushes=%llu\npressure_flushes=%llu\n", (unsigned long long)asbestos_stat_idle_flushes, (unsigned long long)asbestos_stat_cap_flushes, (unsigned long long)asbestos_stat_pressure_flushes);
     proc_printf(buf, "translation_tables=%llu\nblocks=%llu\ncode_bytes=%llu\n",
@@ -287,7 +300,14 @@ static int proc_ish_show_fds(struct proc_entry *UNUSED(entry),struct proc_data *
 static int proc_ish_show_compat(struct proc_entry *UNUSED(entry),struct proc_data *buf) {
     compat_census(proc_fds_emit,buf);return 0;
 }
+static int proc_ish_show_shm(struct proc_entry *UNUSED(entry), struct proc_data *buf) {
+    struct ipc_shm_usage u; ipc_shm_usage(&u);
+    proc_printf(buf, "segments=%llu backing_fds=%llu bytes=%llu attachments=%llu capture_segments=%llu scopes=%llu close_failures=%llu\n",
+        u.segments, u.backing_fds, u.bytes, u.attachments, u.capture_segments, u.scopes, u.close_failures);
+    return 0;
+}
 struct proc_children proc_ish_children = PROC_CHILDREN({
+    {"shm", S_IFREG | 0444, .show = proc_ish_show_shm},
     {"fds", S_IFREG | 0400, .show = proc_ish_show_fds},
     {"compat", S_IFREG | 0444, .show = proc_ish_show_compat},
     {"tasks", S_IFREG | 0400, .show = proc_ish_show_tasks},

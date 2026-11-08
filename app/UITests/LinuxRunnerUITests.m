@@ -3,6 +3,64 @@
 @interface LinuxRunnerUITests : XCTestCase
 @end
 @implementation LinuxRunnerUITests
+- (void)testSteamOSDeviceDesktopPerformance {
+    // Explicit opt-in: never import fixtures or change a normal test device's
+    // selected environment. This test reuses the operator's installed SteamOS.
+    NSDictionary *env=NSProcessInfo.processInfo.environment;
+    NSString *bundle=env[@"LR_STEAMOS_DEVICE_BUNDLE"],*root=env[@"LR_STEAMOS_DEVICE_ROOT"];
+    XCTSkipIf(!bundle.length||!root.length,@"Requires the connected SteamOS experiment and explicit bundle/root");
+    self.continueAfterFailure=NO;
+    XCUIDevice.sharedDevice.orientation=UIDeviceOrientationLandscapeLeft;
+    XCUIApplication *app=[[XCUIApplication alloc]initWithBundleIdentifier:bundle];
+    NSMutableArray *args=[@[@"-Default Root",root,@"-LinuxRunnerDesktop.performanceDiagnostics",@"YES"] mutableCopy];
+    if(env[@"LR_STEAMOS_TEST_PRESENTER"])[args addObjectsFromArray:@[@"-LinuxRunnerDesktop.metalPresentation",env[@"LR_STEAMOS_TEST_PRESENTER"]]];
+    if(env[@"LR_STEAMOS_TEST_SHARED_IMAGES"])[args addObjectsFromArray:@[@"-LinuxRunnerGUISharedImages",env[@"LR_STEAMOS_TEST_SHARED_IMAGES"]]];
+    app.launchArguments=args;
+    [app launch];
+    XCUIElement *open=app.buttons[@"Open Desktop"];
+    XCTAssertTrue([open waitForExistenceWithTimeout:60],@"%@",app.debugDescription);
+    [open tap];
+    XCUIElement *surface=[[app descendantsMatchingType:XCUIElementTypeAny] matchingIdentifier:@"Linux GUI surface"].firstMatch;
+    NSPredicate *ready=[NSPredicate predicateWithFormat:@"value CONTAINS 'Desktop ready'"];
+    XCTAssertEqual([XCTWaiter waitForExpectations:@[[[XCTNSPredicateExpectation alloc]initWithPredicate:ready object:surface]] timeout:240],XCTWaiterResultCompleted);
+    NSString *state=surface.value;
+    XCTAttachment *desktop=[XCTAttachment attachmentWithScreenshot:app.screenshot];desktop.name=@"Physical SteamOS desktop before interaction";desktop.lifetime=XCTAttachmentLifetimeKeepAlways;[self addAttachment:desktop];
+    NSLog(@"STEAMOS_DEVICE_DESKTOP %@ surface=%@",state,NSStringFromCGRect(surface.frame));
+    unsigned w=0,h=0;NSRange range=[state rangeOfString:@"framebuffer "];
+    XCTAssertNotEqual(range.location,NSNotFound);
+    XCTAssertEqual(sscanf([state substringFromIndex:NSMaxRange(range)].UTF8String,"%ux%u",&w,&h),2);
+    XCTAssertTrue(w>=640&&h>=480);
+    // Quiet window: native performance.jsonl captures CPU/thermal/frame counts.
+    if(![env[@"LR_STEAMOS_TEST_SKIP_QUIET_WINDOWS"] isEqual:@"YES"])[NSThread sleepForTimeInterval:35];
+    CGRect b=surface.frame;CGFloat scale=MIN(b.size.width/w,b.size.height/h);
+    XCUICoordinate *origin=[surface coordinateWithNormalizedOffset:CGVectorMake(0,0)];
+    [[origin coordinateWithOffset:CGVectorMake((b.size.width-w*scale)/2+48*scale,(b.size.height-h*scale)/2+(h-24)*scale)] tap];
+    [NSThread sleepForTimeInterval:2];
+    [app typeText:@"Konsole"];
+    XCTAssertTrue([self waitForRenderedText:@"Konsole" app:app timeout:30]);
+    // Search providers populate asynchronously; sending Return in the same
+    // text batch can arrive before KDE has a launchable result.
+    [NSThread sleepForTimeInterval:3];[app typeText:@"\n"];
+    [NSThread sleepForTimeInterval:4];
+    XCTAttachment *launched=[XCTAttachment attachmentWithScreenshot:app.screenshot];launched.name=@"Physical SteamOS launcher result";launched.lifetime=XCTAttachmentLifetimeKeepAlways;[self addAttachment:launched];
+    // Ensure the terminal owns the click and keyboard focus, away from chrome.
+    [[surface coordinateWithNormalizedOffset:CGVectorMake(.5,.5)] tap];
+    [app typeText:@"printf 'LR PERF %s\\n' \"$(uname -m)\"\n"];
+    XCTAssertTrue([self waitForRenderedText:@"LR PERF aarch64" app:app timeout:45]);
+    XCTAttachment *terminal=[XCTAttachment attachmentWithScreenshot:app.screenshot];terminal.name=@"Physical SteamOS Konsole aarch64 through native input";terminal.lifetime=XCTAttachmentLifetimeKeepAlways;[self addAttachment:terminal];
+    if([env[@"LR_STEAMOS_GRAPHICS_AUDIT"] isEqual:@"YES"]){
+        // Read-only guest/font/display audit plus a bounded terminal repaint
+        // workload. The export stays in this explicit experiment's exchange.
+        [app typeText:@"{ uname -m; fc-match; fc-match monospace; printenv | grep -E '^(QT_|QSG_|GDK_|LIBGL|GALLIUM|MESA_)'; xrdb -query; xrandr --current; } > /home/mobile/Downloads/linuxrunner-graphics-audit.txt 2>&1\n"];
+        // Split the marker in the command so terminal input echo cannot satisfy
+        // the OCR assertion before the repaint workload has completed.
+        [app typeText:@"i=0; while [ $i -lt 30 ]; do printf 'Rendering sample %02d: ABCDEFG abcdefg 0123456789\\n' \"$i\"; i=$((i+1)); sleep .1; done; printf 'LR GRAPHICS WORKLOAD %s\\n' DONE\n"];
+        XCTAssertTrue([self waitForRenderedText:@"LR GRAPHICS WORKLOAD DONE" app:app timeout:45]);
+        XCTAttachment *audit=[XCTAttachment attachmentWithScreenshot:app.screenshot];audit.name=@"Physical SteamOS text and repaint workload";audit.lifetime=XCTAttachmentLifetimeKeepAlways;[self addAttachment:audit];
+    }
+    if(![env[@"LR_STEAMOS_TEST_SKIP_QUIET_WINDOWS"] isEqual:@"YES"])[NSThread sleepForTimeInterval:35];
+    XCTAssertEqual(app.state,XCUIApplicationStateRunningForeground);
+}
 - (void)testRealLinuxGUIAndCLIRegression {
     self.continueAfterFailure = NO;
     XCUIApplication *app = [XCUIApplication new];
@@ -263,7 +321,16 @@
         request.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
         request.recognitionLanguages = @[@"en-US"];
         request.usesLanguageCorrection = NO;
-        VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:app.screenshot.image.CGImage options:@{}];
+        UIImage *image = app.screenshot.image;
+        // Physical landscape screenshots can carry orientation in UIImage
+        // metadata. CGImage alone discards it and leaves OCR reading sideways.
+        const CGImagePropertyOrientation orientations[] = {
+            kCGImagePropertyOrientationUp, kCGImagePropertyOrientationDown,
+            kCGImagePropertyOrientationLeft, kCGImagePropertyOrientationRight,
+            kCGImagePropertyOrientationUpMirrored, kCGImagePropertyOrientationDownMirrored,
+            kCGImagePropertyOrientationLeftMirrored, kCGImagePropertyOrientationRightMirrored
+        };
+        VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:image.CGImage orientation:orientations[image.imageOrientation] options:@{}];
         NSError *error = nil;
         if (![handler performRequests:@[request] error:&error]) { NSLog(@"Terminal OCR: %@", error); return NO; }
         NSMutableString *text = [NSMutableString new];

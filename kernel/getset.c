@@ -66,18 +66,19 @@ uid_t_ userns_view_gid(struct user_ns *ns, uid_t_ global) { return view(ns, glob
 #define VIEW_UID(x) userns_view_uid(current->userns, (x))
 #define VIEW_GID(x) userns_view_gid(current->userns, (x))
 
-// Capability in the caller's own namespace. The initial namespace keeps the
-// runtime's established euid==0 rule; inside a new namespace the sets decide.
+// Capability in the caller's own guest namespace. File capabilities may grant
+// a non-root process a subset; capset must also genuinely narrow root's sets.
 bool ns_capable(int cap) {
-    if (!current->userns) return superuser();
-    return (current->cap_effective >> cap) & 1;
+    return cap >= 0 && cap < 41 && ((current->cap_effective >> cap) & 1);
 }
-// execve inside a user namespace: in-namespace root gets the full set, any
-// other uid loses its capabilities (no file capabilities are supported).
+// File grants are not applied across user namespaces. In-namespace root still
+// obeys bounding-set and no_new_privs restrictions on exec gains.
 void userns_exec_capabilities(void) {
     if (!current->userns) return;
     bool root = VIEW_UID(current->euid) == 0;
-    current->cap_permitted = current->cap_effective = root ? CAP_FULL_SET_ : 0;
+    uint64_t next = root ? current->cap_bounding | current->cap_inheritable : 0;
+    if (current->no_new_privs || current->ptrace.traced) next &= current->cap_permitted;
+    current->cap_permitted = current->cap_effective = next;
 }
 
 int userns_show_map(struct task *task, int kind, char *buf, size_t size) {
@@ -135,6 +136,14 @@ static void reset_dumpable_on_credential_change(uid_t_ old_uid, uid_t_ old_gid) 
         mm_set_dumpable(current->mm, 0);
 }
 
+static void capabilities_uid_changed(uid_t_ old_r, uid_t_ old_e, uid_t_ old_s) {
+    if ((old_r == 0 || old_e == 0 || old_s == 0) &&
+            current->uid != 0 && current->euid != 0 && current->suid != 0 && !current->keep_caps)
+        current->cap_permitted = current->cap_effective = 0;
+    if (old_e == 0 && current->euid != 0) current->cap_effective = 0;
+    if (old_e != 0 && current->euid == 0) current->cap_effective = current->cap_permitted;
+}
+
 // PID-namespace views: identity unless the caller is in a new PID namespace.
 pid_t_ sys_getpid() {
     STRACE("getpid()");
@@ -182,6 +191,7 @@ dword_t sys_geteuid() {
 }
 
 int_t sys_setuid(uid_t_ uid) {
+    uid_t_ old_ruid = current->uid, old_suid = current->suid;
     uid_t_ old_euid = current->euid;
     uid_t_ old_egid = current->egid;
     STRACE("setuid(%d)", uid);
@@ -193,11 +203,13 @@ int_t sys_setuid(uid_t_ uid) {
             return _EPERM;
     }
     current->euid = uid;
+    capabilities_uid_changed(old_ruid, old_euid, old_suid);
     reset_dumpable_on_credential_change(old_euid, old_egid);
     return 0;
 }
 
 dword_t sys_setresuid(uid_t_ ruid, uid_t_ euid, uid_t_ suid) {
+    uid_t_ old_ruid = current->uid, old_suid = current->suid;
     uid_t_ old_euid = current->euid;
     uid_t_ old_egid = current->egid;
     STRACE("setresuid(%d, %d, %d)", ruid, euid, suid);
@@ -216,6 +228,7 @@ dword_t sys_setresuid(uid_t_ ruid, uid_t_ euid, uid_t_ suid) {
         current->euid = euid;
     if (suid != (uid_t) -1)
         current->suid = suid;
+    capabilities_uid_changed(old_ruid, old_euid, old_suid);
     reset_dumpable_on_credential_change(old_euid, old_egid);
     return 0;
 }
@@ -233,6 +246,7 @@ int_t sys_getresuid(addr_t ruid_addr, addr_t euid_addr, addr_t suid_addr) {
 }
 
 int_t sys_setreuid(uid_t_ ruid, uid_t_ euid) {
+    uid_t_ old_suid = current->suid;
     uid_t_ old_euid = current->euid;
     uid_t_ old_egid = current->egid;
     uid_t_ old_ruid = current->uid;
@@ -246,6 +260,7 @@ int_t sys_setreuid(uid_t_ ruid, uid_t_ euid) {
     if (euid != (uid_t_) -1) current->euid = euid;
     if (ruid != (uid_t_) -1 || (euid != (uid_t_) -1 && euid != old_ruid))
         current->suid = current->euid;
+    capabilities_uid_changed(old_ruid, old_euid, old_suid);
     reset_dumpable_on_credential_change(old_euid, old_egid);
     return 0;
 }
@@ -366,17 +381,15 @@ int_t sys_setgroups(dword_t size, addr_t list) {
 }
 
 // Linux capget/capset (v1 32-bit, v2/v3 64-bit). Inside a user namespace the
-// stored sets are authoritative; in the initial namespace they are reported from
-// the established euid==0 model and capset only narrows within it.
+// stored sets describe guest authority, never privileges outside the host/iOS
+// sandbox. Non-root file grants are visible and capset can only narrow them.
 #define CAP_V1_ 0x19980330u
 #define CAP_V2_ 0x20071026u
 #define CAP_V3_ 0x20080522u
 struct cap_header_ { uint32_t version; int32_t pid; };
 struct cap_data_ { uint32_t effective, permitted, inheritable; };
 static void current_caps(uint64_t *eff, uint64_t *perm, uint64_t *inh) {
-    if (current->userns) { *eff = current->cap_effective; *perm = current->cap_permitted; *inh = current->cap_inheritable; return; }
-    uint64_t base = superuser() ? CAP_FULL_SET_ : 0;
-    *perm = base & current->cap_permitted; *eff = base & current->cap_effective; *inh = current->cap_inheritable;
+    *eff = current->cap_effective; *perm = current->cap_permitted; *inh = current->cap_inheritable;
 }
 static int cap_header(addr_t header_addr, unsigned *words) {
     struct cap_header_ h;
@@ -411,7 +424,8 @@ int_t sys_capset(addr_t header_addr, addr_t data_addr) {
     uint64_t inh = d[0].inheritable | (uint64_t) d[1].inheritable << 32;
     uint64_t old_eff, old_perm, old_inh; current_caps(&old_eff, &old_perm, &old_inh);
     if ((perm & ~old_perm) || (eff & ~perm)) return _EPERM;
-    if (inh & ~(old_inh | old_perm)) return _EPERM;
+    if (!ns_capable(8) && (inh & ~(old_inh | old_perm))) return _EPERM;
+    if (inh & ~(old_inh | current->cap_bounding)) return _EPERM;
     current->cap_permitted = perm; current->cap_effective = eff; current->cap_inheritable = inh;
     return 0;
 }

@@ -284,9 +284,16 @@ indirect_cache_dispatch:
     sub x0, _tlb, #TLB_entries   // struct tlb *
     bl NAME(asbestos_flush_dirty_page)
     restore_c
+    ldr x10, [_cpu, #CPU_pc]
+    and x10, x10, #0xffffffffffff
     b 1f
 2:  mov x8, #1                   // TLB_PAGE_EMPTY
     str x8, [_tlb, #(-TLB_entries+TLB_dirty_page)]
+    // The code-page check above uses x10 as scratch (and the C call clobbers
+    // it): reload the target, or every lookup after a guest store misses.
+    // (Python left ~40 % of its block transitions to the dispatcher this way.)
+    ldr x10, [_cpu, #CPU_pc]
+    and x10, x10, #0xffffffffffff
 1:
     // Stale cache? tlb->block_cache_gen != mmu->asbestos->invalidate_gen
     ldr x8, [_tlb, #(-TLB_entries+TLB_mmu)]
@@ -316,6 +323,42 @@ indirect_cache_dispatch:
     add _pc, x9, #FIBER_BLOCK_code
     b fiber_ret_chain
 8:  b fiber_ret
+
+/*
+ * RET as above; a return the ret_cache does not know (ret_cache slot taken by
+ * another call site, return into code reached by BR/longjmp, deeper than its
+ * entries) tries the per-thread block cache like BR before leaving for the
+ * dispatcher. Python spent ~40 % of its block transitions in the dispatcher,
+ * almost all from indirect branches and returns.
+ * Code stream: [gadget addr][rn (64-bit)]
+ */
+.gadget ret_cached
+    ldr x8, [_pc]           // rn
+    and x8, x8, #0x1f
+    add x9, _cpu, #CPU_x0
+    ldr x10, [x9, x8, lsl #3]   // x10 = return address (guest PC)
+    str x10, [_cpu, #CPU_pc]
+#ifndef DISABLE_RET_CACHE
+    ubfx w12, w10, #4, #12
+    add x13, _cpu, #LOCAL_ret_cache
+    ldr x14, [x13, x12, lsl #3]
+    cbz x14, 1f
+    ldr x9, [x14, #8]
+    cmp x10, x9
+    b.ne 1f
+    ldr _pc, [x14, #16]
+    tbnz _pc, #63, 2f
+    sub x8, _pc, #FIBER_BLOCK_code
+    str x8, [_cpu, #LOCAL_last_block]
+    gret
+2:  // Known return site, continuation not chained yet: the dispatcher patches it.
+    ldr x8, [x14]
+    str x8, [_cpu, #LOCAL_last_block]
+    b fiber_ret
+1:
+#endif
+    and x10, x10, #0xffffffffffff
+    b indirect_cache_dispatch
 
 /*
  * BR through the block cache.

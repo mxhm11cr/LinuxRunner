@@ -1,5 +1,8 @@
 #import "RuntimeBridge.h"
+#include "tools/steamos_image.h"
 #include "LinuxAccountPolicy.h"
+#include "DisplayPolicy.h"
+#import "CapturePolicy.h"
 #import "GuestMetalBackend.h"
 #import "FileTransfer.h"
 #import "FileArchive.h"
@@ -193,6 +196,7 @@ extern void (*runtime_memory_failure)(const char *, uint64_t, uint64_t, int, int
 extern int fakefs_bind_mount(const char *, const char *, bool);
 extern int fakefs_bind_mount_set_owner(const char *, uint32_t, uint32_t);
 static BOOL bootAttempted;
+static atomic_bool environmentDeletionActive; // also read by background importers
 static NSString *bootedRoot;
 static int bootResult;
 static NSMutableArray<NSString *> *events;
@@ -292,10 +296,22 @@ static NSString *desktopRoot;
 }
 + (UIViewController *)desktopControllerIfCreated { return [desktopRoot isEqual:self.activeRootName] ? desktopNavigation : nil; }
 + (NSDictionary *)desktopSessionSummary {
-    if(!desktopNavigation||![desktopRoot isEqual:self.activeRootName])return @{@"state":@"Stopped",@"alive":@NO,@"connected":@NO};
-    return [(LRGUIViewController *)desktopNavigation.viewControllers.firstObject desktopSessionSummary];
+    NSDictionary *summary=(!desktopNavigation||![desktopRoot isEqual:self.activeRootName])?@{@"state":@"Stopped",@"alive":@NO,@"connected":@NO}:
+        [(LRGUIViewController *)desktopNavigation.viewControllers.firstObject desktopSessionSummary];
+    // Diagnostic: record what the Home status is based on, only when it changes.
+    static NSString *last;NSString *now=[NSString stringWithFormat:@"nav=%d root=%@ active=%@ vcs=%lu state=%@ alive=%@",desktopNavigation!=nil,desktopRoot,self.activeRootName,(unsigned long)desktopNavigation.viewControllers.count,summary[@"state"],summary[@"alive"]];
+    if(![now isEqual:last]){last=now;[self logCategory:@"DESKTOP_STATUS" event:now];}
+    return summary;
 }
 + (NSDictionary *)graphicsSummary { return [LRGUIViewController latestGraphicsSummary]; }
++ (void)setDesktopPreviewWanted:(BOOL)wanted {
+    if(!desktopNavigation||![desktopRoot isEqual:self.activeRootName])return;
+    [(LRGUIViewController *)desktopNavigation.viewControllers.firstObject setPreviewWanted:wanted];
+}
++ (UIImage *)desktopPreviewImageIfChangedSince:(uint64_t *)generation {
+    if(!desktopNavigation||![desktopRoot isEqual:self.activeRootName])return nil;
+    return [(LRGUIViewController *)desktopNavigation.viewControllers.firstObject previewImageIfChangedSince:generation];
+}
 + (void)stopDesktopSession {
     if([desktopRoot isEqual:self.activeRootName])[(LRGUIViewController *)desktopNavigation.viewControllers.firstObject stopDesktopSession];
 }
@@ -318,6 +334,11 @@ static NSString *desktopRoot;
     NSAssert(NSThread.isMainThread, @"Boot is serialized on the main thread");
     if (bootAttempted) return NO; // Partial initialization cannot safely restart.
     bootAttempted = YES;
+#if TARGET_OS_IOS && !TARGET_OS_SIMULATOR
+    // Leave room for guest data, Metal and UIKit within the iOS app limit.
+    setenv("ISH_CODE_CAP_MB", "32", 0);
+    setenv("ISH_CODE_IDLE_FLUSH_S", "5", 0);
+#endif
     // Select once before any guest execution/decoded blocks. A live toggle
     // would mix incompatible gadget operand streams; preferences apply only
     // after a full process relaunch. On by default from build 884 (validated on
@@ -331,15 +352,26 @@ static NSString *desktopRoot;
     LRInstallGuestMetalBackend();
     LRBootEvent("[GUEST_GPU] experimental EGL/GLES subset backend registered; existing Mesa libraries unchanged");
 #if LINUXRUNNER_VIRGL_BUILD
-    // Opt-in GPU acceleration: guest Mesa's virgl driver on the Apple GPU. If
-    // ANGLE/Metal cannot start, the virtio-gpu device stays absent and
-    // everything renders in software as before.
-    if ([LRRuntimeBridge.gpuMode isEqual:@"metal"]) {
+    // GPU acceleration (on by default via Automatic): guest Mesa's virgl
+    // driver on the Apple GPU. If ANGLE/Metal cannot start, the virtio-gpu
+    // device stays absent and everything renders in software as before.
+    // Launch guard: a start that never finished (the app ended during it)
+    // is not repeated automatically, so a GPU problem cannot loop at launch.
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSString *gpuMode = LRRuntimeBridge.gpuMode;
+    BOOL interrupted = [defaults boolForKey:@"LinuxRunnerGraphics.virglStarting"];
+    if (interrupted && ![gpuMode isEqual:@"software"]) {
+        LRVirglStatus = @"the previous Metal GPU start did not finish; software rendering this time. Select Metal GPU in Settings › Graphics to try again";
+        LRBootEvent("[GPU] previous Metal GPU start did not complete; software rendering for this launch");
+        [defaults removeObjectForKey:@"LinuxRunnerGraphics.virglStarting"];
+    } else if (![gpuMode isEqual:@"software"]) {
+        [defaults setBool:YES forKey:@"LinuxRunnerGraphics.virglStarting"]; [defaults synchronize];
         const struct lr_virgl_backend *virgl = lr_virgl_host_start();
         lr_virgl_install(virgl);
         LRVirglActive = virgl != NULL;
         LRVirglStatus = [NSString stringWithUTF8String:lr_virgl_host_status()];
         if (virgl) setenv("ISH_VIRGL", "1", 1);
+        [defaults removeObjectForKey:@"LinuxRunnerGraphics.virglStarting"];
         LRBootEvent([[NSString stringWithFormat:virgl ? @"[GPU] virtio-gpu device active: virglrenderer on %@" : @"[GPU] Metal GPU unavailable (%@); software rendering", LRVirglStatus] UTF8String]);
     }
 #endif
@@ -407,7 +439,7 @@ static NSString *desktopRoot;
     NSMutableArray<NSURL *> *sessions=[NSMutableArray new];
     for(NSURL *child in children){NSNumber *link=nil,*directory=nil;[child getResourceValue:&link forKey:NSURLIsSymbolicLinkKey error:nil];[child getResourceValue:&directory forKey:NSURLIsDirectoryKey error:nil];if([child.lastPathComponent hasPrefix:@"session-"]&&directory.boolValue&&!link.boolValue)[sessions addObject:child];}
     [sessions sortUsingComparator:^NSComparisonResult(NSURL *a,NSURL *b){NSDate *ad=nil,*bd=nil;[a getResourceValue:&ad forKey:NSURLContentModificationDateKey error:nil];[b getResourceValue:&bd forKey:NSURLContentModificationDateKey error:nil];return [(bd?:NSDate.distantPast) compare:ad?:NSDate.distantPast];}];
-    NSDictionary *components=@{@"session.log":@"Session",@"xvfb.log":@"X11",@"display.log":@"Display",@"bus.log":@"D-Bus",@"wm.log":@"Window Manager",@"panel.log":@"Panel",@"desktop.log":@"Desktop",@"plasma.log":@"Plasma",@"application.log":@"Application",@"focus.log":@"Input",@"window.log":@"Windows",@"desktop-state":@"Status"};
+    NSDictionary *components=@{@"session.log":@"Session",@"xvfb.log":@"X11",@"xorg.log":@"Xorg",@"graphics.log":@"Graphics",@"display.log":@"Display",@"bus.log":@"D-Bus",@"wm.log":@"Window Manager",@"panel.log":@"Panel",@"desktop.log":@"Desktop",@"plasma.log":@"Plasma",@"application.log":@"Application",@"focus.log":@"Input",@"window.log":@"Windows",@"desktop-state":@"Status"};
     for(NSURL *session in [sessions subarrayWithRange:NSMakeRange(0,MIN(sessions.count,3))]) {
         for(NSString *name in [components.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
             NSURL *url=[session URLByAppendingPathComponent:name];
@@ -504,6 +536,7 @@ static NSString *LRThermalState(void) {
 + (NSString *)activeRootName { return bootedRoot ?: Roots.instance.defaultRoot; }
 + (NSString *)nextRootName { return Roots.instance.defaultRoot; }
 + (void)setNextRootName:(NSString *)name {
+    if (environmentDeletionActive) return;
     if (validRoot(name) && [Roots.instance.roots containsObject:name]) Roots.instance.defaultRoot = name;
 }
 + (NSURL *)rootURL:(NSString *)name {
@@ -572,8 +605,8 @@ static NSString *LRJITLastFailure;   // reason of the last refused or failed act
 }
 + (BOOL)virglActive { return LRVirglActive; }
 + (void)setDesktopDisplayWidth:(NSUInteger)width height:(NSUInteger)height { drm_set_display_size((unsigned) width, (unsigned) height); }
-// Settings › Graphics: "automatic", "metal" or "software". Automatic renders in
-// software until Metal is validated on iPhone hardware; the former on/off
+// Settings › Graphics: "automatic", "metal" or "software". Automatic starts the
+// Metal GPU and falls back to software when it cannot start; the former on/off
 // setting maps to metal/software.
 + (NSString *)gpuMode {
     NSUserDefaults *d=NSUserDefaults.standardUserDefaults;NSString *mode=[d stringForKey:@"LinuxRunnerGraphics.gpuMode"];
@@ -585,6 +618,7 @@ static NSString *LRJITLastFailure;   // reason of the last refused or failed act
     if(![@[@"automatic",@"metal",@"software"] containsObject:mode])mode=@"automatic";
     [NSUserDefaults.standardUserDefaults setObject:mode forKey:@"LinuxRunnerGraphics.gpuMode"];
     [NSUserDefaults.standardUserDefaults removeObjectForKey:@"LinuxRunnerGraphics.virgl"];
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:@"LinuxRunnerGraphics.virglStarting"];   // an explicit choice retries
 }
 // The renderer this run actually has, never the requested one.
 + (NSDictionary *)gpuStatus {
@@ -592,10 +626,9 @@ static NSString *LRJITLastFailure;   // reason of the last refused or failed act
     if(!self.virglCompiledIn){active=@"Software";detail=@"This build has no Metal GPU device";}
     else if(LRVirglActive){active=@"Metal GPU (virgl) · Experimental";detail=[NSString stringWithFormat:@"virtio-gpu device active · %@",LRVirglStatus?:@"ANGLE/Metal"];}
     else if(LRVirglStatus.length){active=@"Software (fallback)";detail=[NSString stringWithFormat:@"Metal GPU did not start: %@",LRVirglStatus];}
-    else if([mode isEqual:@"metal"]){active=@"Software";detail=@"Metal GPU selected · takes effect after LinuxRunner restarts";}
-    else if([mode isEqual:@"automatic"]){active=@"Software";detail=@"Automatic uses software rendering until Metal is validated on iPhone";}
+    else if([mode isEqual:@"metal"]||[mode isEqual:@"automatic"]){active=@"Software";detail=@"Metal GPU starts with the Linux runtime · takes effect after LinuxRunner restarts";}
     else {active=@"Software";detail=@"Software rendering selected";}
-    return @{@"mode":mode,@"active":active,@"detail":detail,@"device":@(LRVirglActive),@"restartNeeded":@([mode isEqual:@"metal"]!=LRVirglActive&&!LRVirglStatus.length)};
+    return @{@"mode":mode,@"active":active,@"detail":detail,@"device":@(LRVirglActive),@"restartNeeded":@(![mode isEqual:@"software"]!=LRVirglActive&&!LRVirglStatus.length)};
 }
 + (BOOL)jitCompiledIn {
 #ifdef LINUXRUNNER_JIT_BUILD
@@ -689,6 +722,26 @@ static NSString *LRJITLastFailure;   // reason of the last refused or failed act
         if([key hasPrefix:@"LinuxRunnerDesktop.resolution."]&&[d integerForKey:key]==4)[d setInteger:3 forKey:key];
     [d setBool:YES forKey:@"LinuxRunnerDesktop.landscapeDefault.v1"];
 }
++ (NSInteger)desktopResolutionIndex {
+    NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
+    NSString *root=self.activeRootName;
+    NSString *key=[@"LinuxRunnerDesktop.resolution." stringByAppendingString:root];
+    NSString *migration=[@"LinuxRunnerDesktop.steamosIPadFit.v1." stringByAppendingString:root];
+    id saved=[d objectForKey:key];
+    // Owner decision: 960x540 landscape stays the default everywhere; Fit is
+    // opt-in (also for SteamOS on iPad, which PR #20 had defaulted to Fit).
+    BOOL steamosIPad=NO;
+    NSInteger choice=lr_desktop_resolution(saved?(int)MAX(0,MIN(4,[saved integerValue])):-1,steamosIPad,[d boolForKey:migration]);
+    if(steamosIPad&&![d boolForKey:migration]) {
+        [d setInteger:choice forKey:key];
+        [d setBool:YES forKey:migration];
+    }
+    return choice;
+}
++ (BOOL)desktopMetalPresentationEnabled {
+    id choice=[NSUserDefaults.standardUserDefaults objectForKey:@"LinuxRunnerDesktop.metalPresentation"];
+    return choice?[choice boolValue]:(self.activeEnvironmentIsSteamOS&&self.virglActive&&UIDevice.currentDevice.userInterfaceIdiom==UIUserInterfaceIdiomPad);
+}
 + (void)prepareExecutionBackendAtLaunch {
     [self migrateDesktopSizeToLandscape];
     static dispatch_once_t observe;
@@ -709,13 +762,19 @@ static NSString *LRJITLastFailure;   // reason of the last refused or failed act
     if(!self.requiresPreparedJITRegion||self.debuggerAttached){NSString *why=nil;[self activateJIT:&why];}
     else LRJITDetail=@"Interpreter · attach with StikDebug in Settings › Execution Engine to start the JIT";
 }
-+ (BOOL)activeEnvironmentIsDebian {
++ (NSString *)activeDistributionID {
     // Catalog identity is authoritative; no inference from a library name.
     NSDictionary *catalog=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:self.catalogURL]?:[NSData data] options:0 error:nil];
-    for(NSDictionary *e in catalog[@"environments"])if([e[@"rootfsName"] isEqual:self.activeRootName])return [e[@"distributionID"] isEqual:@"debian"];
+    for(NSDictionary *e in catalog[@"environments"])if([e[@"rootfsName"] isEqual:self.activeRootName])return e[@"distributionID"];
     NSDictionary *installation=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:[[self rootURL:self.activeRootName] URLByAppendingPathComponent:@"environment-install.json"]]?:[NSData data] options:0 error:nil];
-    return [installation[@"distributionID"] isEqual:@"debian"];
+    return installation[@"distributionID"];
 }
+// Debian family: Debian itself and Kali (Debian-based, apt, same packages).
++ (BOOL)activeEnvironmentIsDebian {
+    NSString *d=self.activeDistributionID;
+    return [d isEqual:@"debian"]||[d isEqual:@"kali"];
+}
++ (BOOL)activeEnvironmentIsKali { return [self.activeDistributionID isEqual:@"kali"]; }
 + (BOOL)assembleDebianPackages:(NSArray<NSString *> *)packages toArchive:(NSURL *)archive progress:(void (^)(double))progress cancel:(BOOL (^)(void))cancel error:(NSError **)error {
     LRInstallProgress *reporter=[LRInstallProgress new];reporter.progress=^(double value,NSString *message){progress(value);};reporter.cancel=cancel;
     const char **paths=calloc(packages.count,sizeof(char *));if(!paths){if(error)*error=lrError(ENOMEM,@"Package path allocation failed");return NO;}
@@ -745,8 +804,21 @@ static NSString *LRJITLastFailure;   // reason of the last refused or failed act
     if(result&&error)*error=lrError(result,[NSString stringWithUTF8String:message]);return result==0;
 }
 + (BOOL)importVerifiedEnvironment:(NSURL *)archive root:(NSString *)root sha256:(NSString *)sha256 metadata:(NSDictionary<NSString *,NSString *> *)metadata progress:(void (^)(double,NSString *))progress cancel:(BOOL (^)(void))cancel error:(NSError **)error {
+    if (environmentDeletionActive) { if (error) *error=lrError(EBUSY, @"Wait for distribution deletion to finish."); return NO; }
     LRInstallProgress *reporter=[LRInstallProgress new];reporter.progress=progress;reporter.cancel=cancel;
     return [Roots.instance importVerifiedRootFromArchive:archive name:root sha256:sha256 metadata:metadata error:error progressReporter:reporter];
+}
++ (BOOL)importVerifiedEnvironment:(NSURL *)archive root:(NSString *)root sha256:(NSString *)sha256 topLevel:(NSString *)topLevel metadata:(NSDictionary<NSString *,NSString *> *)metadata progress:(void (^)(double,NSString *))progress cancel:(BOOL (^)(void))cancel error:(NSError **)error {
+    if (environmentDeletionActive) { if (error) *error=lrError(EBUSY, @"Wait for distribution deletion to finish."); return NO; }
+    LRInstallProgress *reporter=[LRInstallProgress new];reporter.progress=progress;reporter.cancel=cancel;
+    return [Roots.instance importVerifiedRootFromArchive:archive name:root sha256:sha256 topLevel:topLevel metadata:metadata error:error progressReporter:reporter];
+}
+// Request policy only; session.sh independently probes the runtime cleanup
+// capability before allowing x11vnc to create shared capture buffers.
++ (BOOL)desktopSharedImagesEnabled {
+    NSDictionary *catalog=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:self.catalogURL]?:[NSData data] options:0 error:nil];
+    NSDictionary *installation=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:[[self rootURL:self.activeRootName] URLByAppendingPathComponent:@"environment-install.json"]]?:[NSData data] options:0 error:nil];
+    return LRDesktopSharedCaptureEnabled(NSUserDefaults.standardUserDefaults,self.activeRootName,catalog[@"environments"],installation);
 }
 + (BOOL)activeEnvironmentIsArch {
     NSDictionary *catalog=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:self.catalogURL]?:[NSData data] options:0 error:nil];
@@ -754,12 +826,104 @@ static NSString *LRJITLastFailure;   // reason of the last refused or failed act
     NSDictionary *installation=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:[[self rootURL:self.activeRootName] URLByAppendingPathComponent:@"environment-install.json"]]?:[NSData data] options:0 error:nil];
     return [installation[@"distributionID"] isEqual:@"arch"];
 }
++ (BOOL)activeEnvironmentIsFedora {
+    NSDictionary *catalog=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:self.catalogURL]?:[NSData data] options:0 error:nil];
+    for(NSDictionary *e in catalog[@"environments"])if([e[@"rootfsName"] isEqual:self.activeRootName])return [e[@"distributionID"] isEqual:@"fedora"];
+    NSDictionary *installation=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:[[self rootURL:self.activeRootName] URLByAppendingPathComponent:@"environment-install.json"]]?:[NSData data] options:0 error:nil];
+    return [installation[@"distributionID"] isEqual:@"fedora"];
+}
++ (BOOL)activeEnvironmentIsSteamOS {
+    NSDictionary *installation=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:[[self rootURL:self.activeRootName] URLByAppendingPathComponent:@"environment-install.json"]]?:[NSData data] options:0 error:nil];
+    return [installation[@"distributionID"] isEqual:@"steamos"];
+}
 + (BOOL)importVerifiedEnvironment:(NSURL *)archive root:(NSString *)root sha256:(NSString *)sha256 progress:(void (^)(double,NSString *))progress cancel:(BOOL (^)(void))cancel error:(NSError **)error {
+    if (environmentDeletionActive) { if (error) *error=lrError(EBUSY, @"Wait for distribution deletion to finish."); return NO; }
     LRInstallProgress *reporter=[LRInstallProgress new];reporter.progress=progress;reporter.cancel=cancel;
     return [Roots.instance importVerifiedRootFromArchive:archive name:root sha256:sha256 metadata:@{@"distributionID":@"debian",@"distribution":@"Debian GNU/Linux",@"version":@"13.7",@"packageManager":@"apt",@"defaultShell":@"/bin/bash"} error:error progressReporter:reporter];
 }
+struct LRSteamOSStage { __unsafe_unretained LRInstallProgress *reporter; double start, span; __unsafe_unretained NSString *message; };
+static bool LRSteamOSStageProgress(void *context, double fraction, const char *detail) {
+    struct LRSteamOSStage *stage = context;
+    (void)detail;
+    if (fraction >= 0) [stage->reporter updateProgress:stage->start + stage->span * MIN(1, fraction) message:stage->message];
+    return !stage->reporter.shouldCancel;
+}
+static NSError *LRSteamOSError(int code, const char *message) {
+    if (code == ECANCELED) return [NSError errorWithDomain:NSCocoaErrorDomain code:NSUserCancelledError userInfo:nil];
+    return lrError(code ?: EIO, [NSString stringWithUTF8String:message] ?: @"SteamOS installation failed.");
+}
+// Installs SteamOS straight from Valve's published recovery image: verify the
+// pinned image and packages, unpack only the root partition, then stream that
+// read-only Btrfs filesystem (plus the pinned display packages) into a new
+// fakefs root. Nothing from the image is executed during installation.
++ (BOOL)installSteamOSFromImage:(NSURL *)image imageSHA256:(NSString *)imageSHA256 packages:(NSArray<NSURL *> *)packages packageSHA256:(NSArray<NSString *> *)packageSHA256 work:(NSURL *)work root:(NSString *)root metadata:(NSDictionary<NSString *, NSString *> *)metadata progress:(void (^)(double, NSString *))progress cancel:(BOOL (^)(void))cancel error:(NSError **)error {
+    if (environmentDeletionActive) { if (error) *error = lrError(EBUSY, @"Wait for distribution deletion to finish."); return NO; }
+    if (packages.count != packageSHA256.count || packages.count > 8) { if (error) *error = lrError(EINVAL, @"Invalid SteamOS package list."); return NO; }
+    LRInstallProgress *reporter = [LRInstallProgress new]; reporter.progress = progress; reporter.cancel = cancel;
+    char message[512] = "", hex[65];
+    struct LRSteamOSStage stage = {reporter, 0, .08, @"Verifying Valve's SteamOS image"};
+    if (lr_steamos_sha256_file(image.fileSystemRepresentation, hex, LRSteamOSStageProgress, &stage, message, sizeof(message))) {
+        if (error) *error = LRSteamOSError(errno == ECANCELED ? ECANCELED : EIO, message); return NO;
+    }
+    if (![[NSString stringWithUTF8String:hex] isEqualToString:imageSHA256]) {
+        if (error) *error = lrError(EINVAL, @"The downloaded SteamOS image does not match the published checksum. Delete it and download again.");
+        return NO;
+    }
+    for (NSUInteger i = 0; i < packages.count; i++) {
+        if (lr_steamos_sha256_file(packages[i].fileSystemRepresentation, hex, NULL, NULL, message, sizeof(message))) { if (error) *error = LRSteamOSError(EIO, message); return NO; }
+        if (![[NSString stringWithUTF8String:hex] isEqualToString:packageSHA256[i]]) {
+            if (error) *error = lrError(EINVAL, [NSString stringWithFormat:@"%@ does not match its pinned checksum.", packages[i].lastPathComponent]);
+            return NO;
+        }
+    }
+    if (![NSFileManager.defaultManager createDirectoryAtURL:work withIntermediateDirectories:YES attributes:nil error:error]) return NO;
+    NSURL *partition = [work URLByAppendingPathComponent:@"rootfs-A.img"];
+    [NSFileManager.defaultManager removeItemAtURL:partition error:nil];
+    stage = (struct LRSteamOSStage){reporter, .08, .42, @"Unpacking the SteamOS system partition"};
+    if (lr_steamos_extract_partition(image.fileSystemRepresentation, "rootfs-A", partition.fileSystemRepresentation, LRSteamOSStageProgress, &stage, message, sizeof(message))) {
+        if (error) *error = LRSteamOSError(errno == ECANCELED ? ECANCELED : EIO, message); return NO;
+    }
+    int pipeFDs[2];
+    if (pipe(pipeFDs) < 0) { if (error) *error = lrError(errno, @"Could not start the SteamOS import."); [NSFileManager.defaultManager removeItemAtURL:partition error:nil]; return NO; }
+    // A failed import closes its end early: report EPIPE instead of SIGPIPE.
+    fcntl(pipeFDs[1], F_SETNOSIGPIPE, 1);
+    fcntl(pipeFDs[0], F_SETFD, FD_CLOEXEC); fcntl(pipeFDs[1], F_SETFD, FD_CLOEXEC);
+    __block int producerResult = 0, producerErrno = 0;
+    char *producerMessage = calloc(1, 512);
+    NSMutableArray<NSString *> *packagePaths = [NSMutableArray new];
+    for (NSURL *package in packages) [packagePaths addObject:package.path];
+    dispatch_group_t group = dispatch_group_create();
+    struct LRSteamOSStage *streamStage = calloc(1, sizeof(*streamStage));
+    *streamStage = (struct LRSteamOSStage){reporter, .5, .48, @"Installing SteamOS"};
+    int writeFD = pipeFDs[1];
+    dispatch_group_async(group, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        const char *paths[8];
+        for (NSUInteger i = 0; i < packagePaths.count; i++) paths[i] = packagePaths[i].fileSystemRepresentation;
+        producerResult = lr_steamos_install_stream(partition.fileSystemRepresentation, paths, packagePaths.count, writeFD,
+                                                   LRSteamOSStageProgress, streamStage, producerMessage, 512);
+        producerErrno = errno;
+        close(writeFD);
+    });
+    NSError *importError = nil;
+    BOOL imported = [Roots.instance importRootFromStream:pipeFDs[0] name:root metadata:metadata error:&importError progressReporter:reporter];
+    close(pipeFDs[0]); // unblocks the producer if the import stopped early
+    dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+    free(streamStage);
+    [NSFileManager.defaultManager removeItemAtURL:partition error:nil];
+    if (producerResult) {
+        // The image reader's error explains a truncated stream better than the importer's.
+        if (imported) [Roots.instance destroyRootNamed:root error:nil];
+        if (error) *error = reporter.shouldCancel ? LRSteamOSError(ECANCELED, "") : LRSteamOSError(producerErrno == ECANCELED ? ECANCELED : EIO, producerMessage);
+        free(producerMessage);
+        return NO;
+    }
+    free(producerMessage);
+    if (!imported) { if (error) *error = importError; return NO; }
+    [reporter updateProgress:1 message:@"SteamOS installed"];
+    return YES;
+}
 + (void)createEnvironment:(NSString *)root completion:(void (^)(NSError *))completion {
-    if (!validRoot(root) || [Roots.instance.roots containsObject:root]) {
+    if (environmentDeletionActive || !validRoot(root) || [Roots.instance.roots containsObject:root]) {
         completion(lrError(EINVAL, @"Invalid or duplicate environment identifier.")); return;
     }
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -771,7 +935,55 @@ static NSString *LRJITLastFailure;   // reason of the last refused or failed act
         dispatch_async(dispatch_get_main_queue(), ^{ completion(error); });
     });
 }
++ (NSString *)environmentDeletionUnavailableReason:(NSString *)root {
+    if (!validRoot(root) || ![Roots.instance.roots containsObject:root]) return @"This distribution is no longer installed.";
+    if (environmentDeletionActive || [NSUserDefaults.standardUserDefaults boolForKey:@"InstallerActive"])
+        return @"Wait for the current distribution operation to finish.";
+    if ([root isEqual:bootedRoot] || (bootAttempted && [root isEqual:self.activeRootName]))
+        return @"This distribution is mounted. Choose another distribution for the next launch, fully close LinuxRunner, then reopen it before deleting this one.";
+    if ([root isEqual:Roots.instance.defaultRoot])
+        return @"Choose another distribution for the next launch before deleting this one.";
+    return nil;
+}
++ (void)deleteEnvironment:(NSString *)root completion:(void (^)(NSError *))completion {
+    NSAssert(NSThread.isMainThread, @"Environment deletion starts on the main thread");
+    NSString *reason = [self environmentDeletionUnavailableReason:root];
+    if (reason) { completion(lrError(EBUSY, reason)); return; }
+    environmentDeletionActive = YES;
+    [self beginAwake:@"environment-delete"];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSError *error = nil;
+        BOOL removed = [Roots.instance destroyRootNamed:root error:&error];
+        if (removed) {
+            // removeItem unlinks directory symlinks; shared-folder targets are
+            // never followed or removed. This is this root's exchange only.
+            NSURL *exchange = [self exchangeURL:root];
+            NSError *cleanup = nil;
+            if (![NSFileManager.defaultManager removeItemAtURL:exchange error:&cleanup] && cleanup.code != NSFileNoSuchFileError)
+                error = lrError(EIO, [@"The distribution was deleted, but its imported-file folder could not be removed: " stringByAppendingString:cleanup.localizedDescription]);
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            environmentDeletionActive = NO;
+            [self endAwake:@"environment-delete"];
+            if (removed) {
+                [NSUserDefaults.standardUserDefaults removeObjectForKey:[@"LinuxRunnerDefaultUser." stringByAppendingString:root]];
+                if ([[NSUserDefaults.standardUserDefaults stringForKey:@"LinuxRunnerSetup.root"] isEqual:root]) {
+                    [NSUserDefaults.standardUserDefaults removeObjectForKey:@"LinuxRunnerSetup.root"];
+                    [NSUserDefaults.standardUserDefaults setObject:@"welcome" forKey:@"LinuxRunnerSetup.step"];
+                }
+            }
+            completion(error ?: (removed ? nil : lrError(EIO, @"The distribution could not be deleted. Its catalog entry has been kept.")));
+        });
+    });
+}
++ (NSString *)boundedDiagnosticTail:(NSURL *)url maxBytes:(NSUInteger)bytes {
+    return LRDiagnosticTailString(LRReadDiagnosticTail(url,MIN(bytes,(NSUInteger)262144)))?:@"";
+}
 + (NSArray *)discoverApplications {
+#if TARGET_OS_SIMULATOR
+    NSTimeInterval scanStarted=NSProcessInfo.processInfo.systemUptime;
+    BOOL scanOnMain=NSThread.isMainThread;
+#endif
     // Retain a VFS context while holding the task locks; do not borrow a task
     // pointer across unlock or mutate another process's thread-local current.
     struct fs_info *fs = NULL;
@@ -788,6 +1000,7 @@ static NSString *LRJITLastFailure;   // reason of the last refused or failed act
     // VFS permission checks require thread-local credentials. This private
     // read-only context has the guest's root credentials and retained fs only.
     struct task context = {.euid = 0, .egid = 0, .fs = fs};
+    struct task *previous = current;
     current = &context;
     NSMutableArray *result = [NSMutableArray new];
     for (NSString *name in @[@"python3", @"git", @"vim", @"nano", @"node", @"curl", @"htop", @"gcc", @"ffmpeg"]) {
@@ -801,10 +1014,25 @@ static NSString *LRJITLastFailure;   // reason of the last refused or failed act
             if (executable) { [result addObject:@{@"name":name, @"command":path}]; break; }
         }
     }
-    current = NULL;
+    current = previous;
     fs_info_release(fs);
+#if TARGET_OS_SIMULATOR
+    [NSNotificationCenter.defaultCenter postNotificationName:@"LRSimulatorApplicationDiscovery" object:nil userInfo:@{@"kind":@"terminal",@"mainThread":@(scanOnMain),@"milliseconds":@((NSProcessInfo.processInfo.systemUptime-scanStarted)*1000),@"entries":@(result.count)}];
+#endif
     return result;
 }
+#if TARGET_OS_SIMULATOR
++ (NSDictionary *)applicationDiscoveryContextContract {
+    // Native VFS readers must leave their caller's thread-local context alone.
+    // This canary is never registered as a guest task or used for guest I/O.
+    struct task canary={0};struct task *previous=current;current=&canary;
+    NSArray *commands=[self discoverApplications];BOOL commandsRestored=current==&canary;
+    current=&canary;
+    NSArray *graphical=[self discoverGraphicalApplications];BOOL graphicalRestored=current==&canary;
+    current=previous;
+    return @{@"terminal_context_restored":@(commandsRestored),@"graphical_context_restored":@(graphicalRestored),@"terminal_entries":@(commands.count),@"graphical_entries":@(graphical.count)};
+}
+#endif
 // Only inspect the current guest VFS. Host sandbox paths are never interpreted
 // as desktop executables. Retain fs while reading, restore thread-local state.
 static NSString *GuestExecutable(struct fs_info *fs, NSString *command) {
@@ -835,6 +1063,10 @@ static NSData *GuestApplicationIcon(struct fs_info *fs, NSString *icon) {
     return nil;
 }
 + (NSArray *)discoverGraphicalApplications {
+#if TARGET_OS_SIMULATOR
+    NSTimeInterval scanStarted=NSProcessInfo.processInfo.systemUptime;
+    BOOL scanOnMain=NSThread.isMainThread;
+#endif
     struct fs_info *fs=NULL;lock(&pids_lock);struct task *task=pid_get_task(1);
     if(task){lock(&task->general_lock);fs=task->fs;if(fs)atomic_fetch_add(&fs->refcount,1);unlock(&task->general_lock);}unlock(&pids_lock);
     if(!fs)return @[];
@@ -860,6 +1092,10 @@ static NSData *GuestApplicationIcon(struct fs_info *fs, NSString *icon) {
         }fd_close(directory);
     }
     current=previous;fs_info_release(fs);
+#if TARGET_OS_SIMULATOR
+    // Test instrumentation only: no paths, argv, icons or guest data exported.
+    [NSNotificationCenter.defaultCenter postNotificationName:@"LRSimulatorApplicationDiscovery" object:nil userInfo:@{@"mainThread":@(scanOnMain),@"milliseconds":@((NSProcessInfo.processInfo.systemUptime-scanStarted)*1000),@"entries":@(result.count)}];
+#endif
     return result;
 }
 // Retain PID 1's fs rather than reading fakefs host backing paths. The private
@@ -1114,7 +1350,7 @@ static NSArray<NSString *> *LRLoginCommand(NSString *name, NSError **error) {
     // locking and duplicate-name checks are authoritative, not this UI list.
     NSString *passwd=LRAccountTool(@[@"/usr/bin/passwd", @"/bin/passwd"]);
     // shadow's useradd on glibc distributions (Debian, Arch Linux ARM); BusyBox adduser on Alpine.
-    NSString *create=LRAccountTool(self.activeEnvironmentIsDebian || self.activeEnvironmentIsArch ? @[@"/usr/sbin/useradd", @"/usr/bin/useradd"] : @[@"/usr/sbin/adduser", @"/sbin/adduser", @"/usr/bin/adduser", @"/bin/adduser"]);
+    NSString *create=LRAccountTool(self.activeEnvironmentIsDebian || self.activeEnvironmentIsArch || self.activeEnvironmentIsFedora || self.activeEnvironmentIsSteamOS ? @[@"/usr/sbin/useradd", @"/usr/bin/useradd"] : @[@"/usr/sbin/adduser", @"/sbin/adduser", @"/usr/bin/adduser", @"/bin/adduser"]);
     if (!passwd || !create) { if(error)*error=lrError(ENOENT, @"Account tools are not installed yet. Use Create Account in Linux Users; it installs them automatically."); return nil; }
     // Administrator: the distribution's sudo group (sudo on Debian, wheel on
     // Alpine); sudo then asks for the user's own password.
@@ -1122,12 +1358,12 @@ static NSArray<NSString *> *LRLoginCommand(NSString *name, NSError **error) {
     if (administrator) {
         if (!self.canGrantAdministrator) { if(error)*error=lrError(ENOENT, @"sudo is not installed in this environment; install it first, or create the user without administrator access."); return nil; }
         grant=self.activeEnvironmentIsDebian ? @" && { getent group sudo >/dev/null || groupadd --system sudo; } && usermod -aG sudo -- \"$1\"" :
-            self.activeEnvironmentIsArch ? @" && { getent group wheel >/dev/null || groupadd --system wheel; } && usermod -aG wheel -- \"$1\""
+            (self.activeEnvironmentIsArch || self.activeEnvironmentIsFedora || self.activeEnvironmentIsSteamOS) ? @" && { getent group wheel >/dev/null || groupadd --system wheel; } && usermod -aG wheel -- \"$1\""
              " && { [ -e /etc/sudoers.d/linuxrunner-wheel ] || { mkdir -p /etc/sudoers.d && printf '%%wheel ALL=(ALL:ALL) ALL\\n' > /etc/sudoers.d/linuxrunner-wheel && chmod 0440 /etc/sudoers.d/linuxrunner-wheel; }; }" :
             @" && { getent group wheel >/dev/null || addgroup -S wheel; } && addgroup \"$1\" wheel"
              " && { [ -e /etc/sudoers.d/linuxrunner-wheel ] || { mkdir -p /etc/sudoers.d && printf '%%wheel ALL=(ALL:ALL) ALL\\n' > /etc/sudoers.d/linuxrunner-wheel && chmod 0440 /etc/sudoers.d/linuxrunner-wheel; }; }";
     }
-    NSString *script=[NSString stringWithFormat:self.activeEnvironmentIsDebian || self.activeEnvironmentIsArch ?
+    NSString *script=[NSString stringWithFormat:self.activeEnvironmentIsDebian || self.activeEnvironmentIsArch || self.activeEnvironmentIsFedora || self.activeEnvironmentIsSteamOS ?
         @"\"$2\" --create-home --shell /bin/bash -- \"$1\"%@ && exec \"$3\" \"$1\"" :
         @"\"$2\" -D -h \"/home/$1\" -s /bin/sh \"$1\"%@ && exec \"$3\" \"$1\"", grant];
     return [self terminalForCommand:@[@"/bin/sh", @"-c", script, @"linuxrunner-create-user", name, create, passwd] directory:@"/"];
@@ -1169,7 +1405,7 @@ static void LRWaitForProcess(TerminalViewController *process, NSTimeInterval tim
     char salt[17], hash[160];
     if (lr_random_salt(salt) || lr_sha512_crypt(password.UTF8String, salt, hash, sizeof hash)) { completion(lrError(EIO, @"The password could not be prepared.")); return; }
     NSString *hashed = @(hash); memset(hash, 0, sizeof hash);
-    BOOL debian = self.activeEnvironmentIsDebian, arch = self.activeEnvironmentIsArch;
+    BOOL debian = self.activeEnvironmentIsDebian, arch = self.activeEnvironmentIsArch || self.activeEnvironmentIsFedora || self.activeEnvironmentIsSteamOS;
     void (^create)(void) = ^{
         progress(@"Creating your account");
         NSString *grant = !administrator ? @"" : debian ?
@@ -1243,9 +1479,25 @@ static void LRWaitForProcess(TerminalViewController *process, NSTimeInterval tim
     [self runDesktopProfile:@"plasma" progress:progress completion:completion];
 }
 + (BOOL)plasmaInstalled {
+    if ((self.activeEnvironmentIsArch || self.activeEnvironmentIsFedora) && (!LRReadGuestFile(@"/usr/bin/startplasma-x11",4).length || !LRReadGuestFile(@"/usr/bin/kwin_x11",4).length)) {
+        for (NSString *path in @[@"/usr/bin/kwin_wayland",@"/usr/bin/plasmashell",@"/usr/bin/konsole",@"/usr/bin/dolphin"]) if (!LRReadGuestFile(path,4).length) return NO;
+        NSURL *bridge=[[[self exchangeURL:self.activeRootName] URLByAppendingPathComponent:@".linuxrunner/gui"] URLByAppendingPathComponent:@"lr-plasma-bridge"];
+        return [NSFileManager.defaultManager fileExistsAtPath:bridge.path];
+    }
     for (NSString *path in @[@"/usr/bin/startplasma-x11", @"/usr/bin/kwin_x11", @"/usr/bin/plasmashell"]) if (!LRReadGuestFile(path, 4).length) return NO;
     return YES;
 }
++ (void)installXfce:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion {
+    [self runDesktopProfile:@"xfce" progress:progress completion:completion];
+}
++ (BOOL)xfceInstalled {
+    for (NSString *path in @[@"/usr/bin/startxfce4", @"/usr/bin/xfce4-panel", @"/usr/bin/xfwm4", @"/usr/bin/xfdesktop"]) if (!LRReadGuestFile(path, 4).length) return NO;
+    return YES;
+}
++ (void)installKaliTools:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion {
+    [self runDesktopProfile:@"kali-tools" progress:progress completion:completion];
+}
++ (BOOL)kaliToolsInstalled { return LRReadGuestFile(@"/var/lib/dpkg/info/kali-linux-default.list", 4).length > 0; }
 + (void)installLXQt:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion {
     [self runDesktopProfile:@"lxqt" progress:progress completion:completion];
 }
@@ -1323,7 +1575,7 @@ static NSString *LRInstallFailureMessage(NSString *category, NSString *detail) {
     LRActiveInstall = title;
     [self beginAwake:@"installation"];
     [self logCategory:@"SETUP" event:[NSString stringWithFormat:@"support install started: %@ (%@)", title, [arguments componentsJoinedByString:@" "]]];
-    NSDate *start = NSDate.date; __block NSDate *endedAt = nil; __block NSString *reported = nil;
+    NSDate *start = NSDate.date; __block NSDate *endedAt = nil; __block NSString *reported = nil; __block NSDate *lastChange = NSDate.date; __block NSUInteger lastSignature = 0;
     [self postInstall:title phase:@"running" stage:@"Checking existing installation" detail:@"" fraction:-1 elapsed:0 error:nil log:nil];
     [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
         NSString *log = [NSString stringWithContentsOfURL:logURL encoding:NSUTF8StringEncoding error:nil] ?: @"";
@@ -1358,7 +1610,13 @@ static NSString *LRInstallFailureMessage(NSString *category, NSString *detail) {
         NSString *result = [[NSString stringWithContentsOfURL:resultURL encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         if (installer.sessionPid <= 0 && !endedAt) endedAt = NSDate.date;
         NSTimeInterval elapsed = -[start timeIntervalSinceNow];
-        BOOL finished = result.length || (endedAt && -[endedAt timeIntervalSinceNow] > 5) || elapsed > 3600;
+        // No fixed time limit: large installs (Kali's tools) legitimately run
+        // for over an hour. Fail only when neither the log nor apt's progress
+        // has changed for 45 minutes while the installer is still running.
+        NSUInteger signature = log.length ^ ([[NSString stringWithContentsOfURL:statusURL encoding:NSUTF8StringEncoding error:nil] ?: @"" hash] << 1);
+        if (signature != lastSignature) { lastSignature = signature; lastChange = NSDate.date; }
+        BOOL stalled = -[lastChange timeIntervalSinceNow] > 45 * 60;
+        BOOL finished = result.length || (endedAt && -[endedAt timeIntervalSinceNow] > 5) || stalled;
         if (finished) {
             [timer invalidate]; (void)installer;
             LRActiveInstall = nil;
@@ -1372,7 +1630,7 @@ static NSString *LRInstallFailureMessage(NSString *category, NSString *detail) {
             NSString *message = category ? LRInstallFailureMessage(category, failureDetail) :
                 result.length ? [NSString stringWithFormat:@"The installation failed at “%@”. Export the Open Desktop Report and try again.", stage ?: @"start"] :
                 endedAt ? @"The installer stopped before finishing. Try again; if it repeats, export the Open Desktop Report." :
-                @"The installation did not finish within an hour. Restart LinuxRunner and try again.";
+                @"The installation made no progress for 45 minutes. Restart LinuxRunner and try again; completed packages are kept.";
             NSArray *lines = [log componentsSeparatedByString:@"\n"];
             NSString *tail = [[lines subarrayWithRange:NSMakeRange(lines.count > 25 ? lines.count - 25 : 0, MIN((NSUInteger)25, lines.count))] componentsJoinedByString:@"\n"];
             [self postInstall:title phase:@"failed" stage:stage ?: @"Starting" detail:detail fraction:-1 elapsed:elapsed error:message log:tail];
@@ -1421,7 +1679,7 @@ static NSCountedSet<NSString *> *LRAwakeSet;
         if(error)*error=lrError(EPERM,@"System accounts and the default login cannot be removed. Select a different default login first.");
         return nil;
     }
-    BOOL shadow = self.activeEnvironmentIsDebian || self.activeEnvironmentIsArch;
+    BOOL shadow = self.activeEnvironmentIsDebian || self.activeEnvironmentIsArch || self.activeEnvironmentIsFedora || self.activeEnvironmentIsSteamOS;
     NSString *remove = LRAccountTool(shadow ? @[@"/usr/sbin/userdel", @"/usr/bin/userdel"] :
         @[@"/usr/sbin/deluser", @"/sbin/deluser", @"/usr/bin/deluser", @"/bin/deluser"]);
     if (!remove) { if(error)*error=lrError(ENOENT,@"The distribution's account-removal tool is missing. Install it using Package Center."); return nil; }
@@ -1582,7 +1840,7 @@ static void LRDesktopTraceAppend(NSString *line) {
         NSMutableArray<NSURL *> *sessions=[NSMutableArray new];
         for(NSURL *u in children)if([u.lastPathComponent hasPrefix:@"session-"]){NSNumber *link=nil;[u getResourceValue:&link forKey:NSURLIsSymbolicLinkKey error:nil];if(!link.boolValue)[sessions addObject:u];}
         [sessions sortUsingComparator:^NSComparisonResult(NSURL *a,NSURL *b){NSDate *ad=nil,*bd=nil;[a getResourceValue:&ad forKey:NSURLContentModificationDateKey error:nil];[b getResourceValue:&bd forKey:NSURLContentModificationDateKey error:nil];return [(bd?:NSDate.distantPast) compare:(ad?:NSDate.distantPast)];}];
-        for(NSURL *session in [sessions subarrayWithRange:NSMakeRange(0,MIN(sessions.count,3))])for(NSString *name in @[@"session.log",@"application.log",@"focus.log",@"window.log",@"display.log",@"xvfb.log",@"bus.log",@"window-state",@"wm.log",@"panel.log",@"desktop.log",@"plasma.log",@"xfconf.log",@"desktop-state"]){
+        for(NSURL *session in [sessions subarrayWithRange:NSMakeRange(0,MIN(sessions.count,3))])for(NSString *name in @[@"session.log",@"application.log",@"focus.log",@"window.log",@"display.log",@"xvfb.log",@"xorg.log",@"graphics.log",@"bus.log",@"window-state",@"wm.log",@"panel.log",@"desktop.log",@"plasma.log",@"xfconf.log",@"desktop-state"]){
             NSURL *url=[session URLByAppendingPathComponent:name];int fd=open(url.fileSystemRepresentation,O_RDONLY|O_NOFOLLOW);if(fd<0)continue;struct stat st;if(fstat(fd,&st)||!S_ISREG(st.st_mode)){close(fd);continue;}
             off_t offset=st.st_size>1024*1024?st.st_size-1024*1024:0;NSMutableData *data=[NSMutableData dataWithLength:st.st_size-offset];ssize_t n=pread(fd,data.mutableBytes,data.length,offset);close(fd);if(n<0)continue;data.length=n;
             NSString *text=[[NSString alloc]initWithData:data encoding:NSUTF8StringEncoding]?:@"non-UTF8 application output omitted";

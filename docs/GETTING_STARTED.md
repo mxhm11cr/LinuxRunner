@@ -16,11 +16,21 @@ The app has **Home**, **Distributions**, **Sessions** and **Settings** tabs. Hom
 
 Select **Distributions**. Existing installations appear under **Installed**. Their files and package databases are separate.
 
+To remove an installation, open its details and choose **Delete Distribution…**, or swipe left on its
+row and choose **Delete**. A confirmation lists what will be removed. Export important Linux home
+and exchange files first. Files in **On My iPhone/iPad → LinuxRunner → Shared**, linked external folders
+and other installations are kept.
+
+A mounted distribution cannot be deleted, even after its shell exits. Select another installation with
+**Use on Next Launch**, fully close LinuxRunner and reopen it, then delete the old installation. Deletion
+is also unavailable during distribution installation. This follows the existing relaunch requirement;
+it does not stop an active desktop or unmount a running filesystem.
+
 To use a different installed environment, open it and choose **Use on Next Launch**, then fully close LinuxRunner from the app switcher and reopen it. This switches the active root filesystem; it does not reinstall Linux.
 
-## 4. Select Set Up Linux…
+## 4. Choose a Distribution
 
-Choose **Set Up Linux…** under **Add Environment**, then **Continue**. This is the unified installation/configuration workflow. An environment's detail screen also has **Set Up Linux…** for configuring that existing installation.
+Under **Add a Distribution**, tap **Install** on the distribution you want. This is the unified installation/configuration workflow. An environment's detail screen also has the setup assistant for configuring that existing installation.
 
 ## 5. Choose a Linux Distribution
 
@@ -30,6 +40,9 @@ On **Choose Linux**, select:
 | --- | --- |
 | **Debian GNU/Linux 13 (ARM64) — recommended** | Recommended `apt` environment; LinuxRunner Desktop, LXQt and experimental KDE Plasma/Wayfire. |
 | **Arch Linux ARM (ARM64) — experimental** | Rolling `pacman` environment; the most desktop choices, including experimental Hyprland. The app still labels this distribution experimental. |
+| **Fedora Linux 44 (ARM64)** | Official Fedora userspace with DNF and normal Linux accounts. Lightweight desktop and KDE Plasma. Sound is not yet qualified. |
+| **Kali Linux 2026.3 (ARM64)** | Official Kali root filesystem with Xfce and optional tool sets, for legitimate development, diagnostics and authorized security research. |
+| **SteamOS ARM64 · Experimental** | Installed from Valve's recovery image; terminal and Plasma X11. See [SteamOS ARM64](STEAMOS.md). |
 | **Alpine Linux 3.24 (ARM64)** | A small, mainly terminal-oriented environment using `apk`. |
 
 If the selected distribution is already installed, **Already Installed** offers **Configure <environment name>**. Use that to retain its files and accounts. Choose **Install Another Environment** only when you actually want a separate installation. Otherwise, choose **Continue**.
@@ -44,11 +57,11 @@ Keep the app in the foreground during long operations. **Settings → General �
 
 ## 7. Install the Distribution
 
-Use the button matching your choice: **Install Debian**, **Install Arch Linux ARM** or **Install Alpine**.
+Use the button matching your choice: **Install Debian**, **Install Arch Linux ARM**, **Install Fedora Linux** (development build) or **Install Alpine**.
 
-Debian and Arch download official packages and verify the signed package data. Arch retains verified downloads for retry. Alpine unpacks the root filesystem included in the app. Follow the progress text; percentages are shown when the operation can measure them. Download and installation times depend on your connection and device.
+Debian and Arch download official packages and verify the signed package data. Arch retains verified downloads for retry. Fedora downloads the official Fedora 44 AArch64 WSL userspace image, checks its pinned digest authenticated from Fedora's signed checksum, then imports an isolated root. LinuxRunner runs it without WSL, systemd or a Linux kernel. Fedora needs at least 2 GB free for its base installation, plus desktop/application space. First start validates RPM/DNF and installs the required signed tools; keep networking available. Alpine unpacks the root filesystem included in the app. Follow the progress text; percentages are shown when the operation can measure them. Download and installation times depend on your connection and device.
 
-Debian and Arch offer **Cancel** during downloading and **Try Again** after a reported failure. Wait for cancellation to finish before retrying. Read the error instead of starting another installation over an existing environment. [Installation recovery](TROUBLESHOOTING.md#distribution-installation-fails-or-stops)
+Debian, Arch and Fedora offer **Cancel** during downloading and **Try Again** after a reported failure. Wait for cancellation to finish before retrying. Read the error instead of starting another installation over an existing environment. [Installation recovery](TROUBLESHOOTING.md#distribution-installation-fails-or-stops)
 
 ## 8. Complete Initial Setup and Create an Account
 
@@ -76,6 +89,13 @@ uname -m
 ```sh
 cat /etc/os-release
 pacman -Q
+```
+
+**Fedora (development build)**
+
+```sh
+cat /etc/os-release
+rpm -q bash
 ```
 
 **Alpine**
@@ -142,6 +162,15 @@ sudo pacman -Syu --needed nano
 
 Arch is a rolling distribution: use a consistent full-system upgrade when adding packages, rather than synchronizing databases and installing against an old system. Back up important files before upgrades.
 
+**Fedora (development build)**
+
+```sh
+sudo dnf install hello
+hello
+```
+
+Fedora's Package Center supports package inventory, search, details and ordinary DNF operations. Retain signature verification. Fedora sound is not yet qualified.
+
 **Alpine**
 
 ```sh
@@ -155,7 +184,7 @@ Application compatibility varies by distribution, package version and workload. 
 
 ## 13. Select Graphics, External Output or Optional JIT
 
-For the accelerated path, use **Settings → Graphics → Linux GPU Device → GPU → Metal GPU · Experimental**. Fully close/reopen the app, then check **Active renderer**. Automatic uses software in Build 900. See [graphics and performance](PERFORMANCE.md).
+For the accelerated path, use **Settings → Graphics → Linux GPU Device → GPU → Metal GPU · Experimental**. Fully close/reopen the app, then check **Active renderer**. Automatic starts the virtual GPU with Linux and falls back to software rendering if it cannot start. See [graphics and performance](PERFORMANCE.md).
 
 For an external display, enable **Settings → Devices → External Desktop Output**, connect a compatible wired/AirPlay display, open the desktop and choose **Desktop → Use iPhone as Trackpad**. Independent controls require a separate iOS external scene. [Display guide](NETWORKING_AND_DISPLAYS.md)
 

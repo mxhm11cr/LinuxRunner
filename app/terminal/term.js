@@ -22,6 +22,7 @@ const ansiColorNames = [
 
 let term;
 let styleState = {
+    sharpness: 'sharp',
     foregroundColor: '#f0f0f0',
     backgroundColor: '#000000',
     cursorColor: undefined,
@@ -178,6 +179,7 @@ function installBridgeExports() {
         term.options.cursorBlink = !!styleState.blinkCursor;
         term.options.cursorStyle = cursorStyleForGhostty(styleState.cursorShape);
         term.options.theme = themeForGhostty(styleState);
+        applyPixelRatio();
 
         fitTerminal();
         forceFullRepaint();
@@ -214,11 +216,29 @@ function applyDocumentStyle(style) {
 }
 
 function preferredDevicePixelRatio() {
-    // Canvas2D was kept for iPad rendering stability. On 3x iPhones, a full
-    // DPR canvas is expensive and was the likely source of whole-app slowness.
-    if (/\biPhone\b/.test(navigator.userAgent || '') || navigator.platform === 'iPhone')
-        return 1;
-    return window.devicePixelRatio || 1;
+    // The canvas backing store must match the screen's pixel density or text
+    // is upscaled and blurry (a forced 1x on 3x iPhones was the blur users saw).
+    // The renderer redraws only changed rows, so native density is the default;
+    // "balanced" caps it at 2x and "battery" restores the old 1x.
+    const native = window.devicePixelRatio || 1;
+    switch (styleState.sharpness) {
+        case 'battery': return 1;
+        case 'balanced': return Math.min(2, native);
+        default: return native;
+    }
+}
+
+function applyPixelRatio() {
+    const renderer = term?.renderer;
+    if (!renderer)
+        return;
+    const ratio = preferredDevicePixelRatio();
+    if (renderer.fixedDevicePixelRatio === ratio)
+        return;
+    renderer.fixedDevicePixelRatio = ratio;
+    renderer.devicePixelRatio = ratio;
+    if (renderer.resize)
+        renderer.resize(term.cols, term.rows);
 }
 
 function installFocusBridge() {

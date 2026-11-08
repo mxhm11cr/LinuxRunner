@@ -20,6 +20,14 @@ The Vesktop sign-in QR code is permanently covered in the public copy; the origi
 
 The old blurry `linuxrunner-terminal.png` is preserved but not displayed in the presentation. The owner requested that `linuxrunner-distributions.png` not appear in the README or preview gallery; its file remains in the collection. The old Firefox capture is retained but replaced in the showcase. Older UI images illustrate the app; current guide labels describe Build 900.
 
+## Version 1.1.1 gallery (`v1.1.1/`)
+
+| File | Placement |
+| --- | --- |
+| `home-iphone.jpg`, `distributions-iphone.jpg` | App gallery |
+| `kali-desktop-viewer-iphone.jpg`, `terminal-iphone.jpg` | App gallery: desktop viewer and terminal |
+| `kali-xfce-iphone.jpg`, `fedora-kde-plasma.png`, `steamos-plasma.png` | Linux desktops gallery |
+
 ## Optional New Captures
 
 A current blank account/setup screen, Metal GPU settings, a nonidentifying networking terminal, and iPad desktop/interface captures would improve the guides. They are optional handoff items, not broken image placeholders. iPad testing is already confirmed by the maintainer.

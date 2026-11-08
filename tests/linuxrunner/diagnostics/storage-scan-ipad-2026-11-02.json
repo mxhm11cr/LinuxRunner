@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "date": "2026-11-02",
+  "hardware": "iPad Air 13-inch (M4)",
+  "os": "iPadOS 27.2",
+  "workload": "Idle KDE Plasma X11 desktop, 1560x1112, ARM64 interpreter, virgl/ANGLE/Metal; before scripted interaction",
+  "provenance": "Paired local SteamOS integration builds based on d141978. Graphics and UI workload held fixed; after adds the initial cover-based storage-lifecycle patch at 554949d1a001699d4af8237ff8a03a8c75dcdf15. The subsequent shared-activity fix is not measured here. Integration support and temporary sampling instrumentation are outside this PR.",
+  "sampling": "Cumulative getrusage(RUSAGE_SELF) user+system CPU seconds and CLOCK_MONOTONIC snapshots. Three samples, 30-60 seconds after metrics began. thermal_state 0 means nominal. No typed input, device identifiers, paths or raw logs included.",
+  "runs": {
+    "before": {
+      "binary_uuid": "7AAD93F0-A52E-3F15-A9B4-94D01271185C",
+      "samples": [
+        {
+          "monotonic_s": 394505.585148,
+          "cpu_s": 89.496916,
+          "frames": 152,
+          "thermal_state": 0
+        },
+        {
+          "monotonic_s": 394520.584557,
+          "cpu_s": 107.801141,
+          "frames": 152,
+          "thermal_state": 0
+        },
+        {
+          "monotonic_s": 394535.583196,
+          "cpu_s": 126.181794,
+          "frames": 153,
+          "thermal_state": 0
+        }
+      ]
+    },
+    "after": {
+      "binary_uuid": "216FD94C-AB50-3E29-9802-A4978F6351C4",
+      "samples": [
+        {
+          "monotonic_s": 395377.634226,
+          "cpu_s": 59.891802,
+          "frames": 139,
+          "thermal_state": 0
+        },
+        {
+          "monotonic_s": 395392.634156,
+          "cpu_s": 65.525576,
+          "frames": 139,
+          "thermal_state": 0
+        },
+        {
+          "monotonic_s": 395407.633247,
+          "cpu_s": 71.06211499999999,
+          "frames": 139,
+          "thermal_state": 0
+        }
+      ]
+    }
+  },
+  "storage_source_sha256": {
+    "app/LinuxRunner/Diagnostics.swift": "7c165d331be3c51c9745b516a3328de065b1285caec65cda16cc26ae9d5cf538",
+    "app/LinuxRunner/ManagerView.swift": "aea872f6dff512a5a723d465ae451fa13564ab0f0e052af24d13fcb4b705c2be"
+  }
+}

@@ -6,6 +6,21 @@
 #include "fs/fd.h"
 #include "misc.h"
 
+static int directory_getpath(struct fd *fd, char *path) {
+    // Relative *at walks require a directory, including for ".". Anonymous
+    // descriptors expose diagnostic names (pipe:[...], unknown:[...]), not
+    // filesystem paths. Reject them before normalizing or asserting on a name.
+    // Guest-opened directories cache their immutable type, avoiding extra VFS
+    // reads on the normal path; imported descriptors may need an actual fstat.
+    if (fd->type != S_IFDIR) {
+        struct statbuf stat;
+        int err = fd->mount->fs->fstat(fd, &stat);
+        if (err < 0) return err;
+        if (!S_ISDIR(stat.mode)) return _ENOTDIR;
+    }
+    return generic_getpath(fd, path);
+}
+
 static int __path_normalize(const char *at_path, const char *path, char *out,
         int flags, int levels, const char *root_path, struct fd **target) {
     // you must choose one
@@ -187,7 +202,7 @@ int path_normalize_target(struct fd *at, const char *path, char *out, int flags,
 
     char at_path[MAX_PATH];
     if (at != NULL) {
-        int err = generic_getpath(at, at_path);
+        int err = directory_getpath(at, at_path);
         if (err < 0)
             return err;
         assert(path_is_normalized(at_path));
@@ -209,9 +224,9 @@ int path_normalize_in_fs(struct fs_info *fs, struct fd *at,
     else if (at == AT_PWD) at = fs->pwd;
     if (!root || !at || IS_ERR(root) || IS_ERR(at)) return _EBADF;
     char root_path[MAX_PATH], at_path[MAX_PATH];
-    int err = generic_getpath(root, root_path);
+    int err = directory_getpath(root, root_path);
     if (err < 0) return err;
-    err = generic_getpath(at, at_path);
+    err = directory_getpath(at, at_path);
     if (err < 0) return err;
     if (!strcmp(root_path, "/")) root_path[0] = '\0';
     size_t n = strlen(root_path);

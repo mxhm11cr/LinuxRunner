@@ -22,7 +22,14 @@ _lr_desktop_read() {
         esac
     done < "$1"
     case "$_lr_x$_lr_r$_lr_w" in *..*) return 1;; esac
-    [ -n "$_lr_d" ] && [ -n "$_lr_x" ] && [ -r "$_lr_x" ] && [ -S "/tmp/.X11-unix/X${_lr_d#:}" ]
+    if [ -n "$_lr_d" ]; then
+        [ -n "$_lr_x" ] && [ -r "$_lr_x" ] && [ -S "/tmp/.X11-unix/X${_lr_d#:}" ]
+    else
+        # KWin's managed virtual-output session has no X server. Only its
+        # selected user's owned, live Wayland socket may provide this context.
+        [ "$(id -u)" != 0 ] && [ -O "$1" ] && [ -n "$_lr_r" ] && [ -O "$_lr_r" ] && [ -n "$_lr_b" ] || return 1
+        case "$_lr_w" in "$_lr_r"/wayland-*) [ -S "$_lr_w" ];; *) return 1;; esac
+    fi
 }
 linuxrunner_desktop() {
     _lr_found=
@@ -38,14 +45,17 @@ linuxrunner_desktop() {
         unset _lr_d _lr_x _lr_r _lr_b _lr_v _lr_n _lr_line _lr_f _lr_found
         return 1
     fi
-    export DISPLAY="$_lr_d" XAUTHORITY="$_lr_x" XDG_SESSION_TYPE=x11
-    export QT_QPA_PLATFORM=${QT_QPA_PLATFORM:-xcb} QT_FORCE_STDERR_LOGGING=${QT_FORCE_STDERR_LOGGING:-1}
+    if [ -n "$_lr_d" ]; then
+        export DISPLAY="$_lr_d" XAUTHORITY="$_lr_x" XDG_SESSION_TYPE=x11
+        export QT_QPA_PLATFORM=${QT_QPA_PLATFORM:-xcb}
+    else unset DISPLAY XAUTHORITY; fi
+    export QT_FORCE_STDERR_LOGGING=${QT_FORCE_STDERR_LOGGING:-1}
     if [ "$(id -u)" != 0 ]; then
         if [ -n "$_lr_r" ] && [ -d "$_lr_r" ] && [ -O "$_lr_r" ]; then export XDG_RUNTIME_DIR="$_lr_r"; fi
         [ -z "$_lr_b" ] || export DBUS_SESSION_BUS_ADDRESS="$_lr_b"
         _lr_wayland "$_lr_w"
     fi
-    [ "${1:-}" = --quiet ] || echo "LinuxRunner desktop: DISPLAY=$DISPLAY; graphical programs started here open on the desktop."
+    [ "${1:-}" = --quiet ] || echo "LinuxRunner desktop: DISPLAY=${DISPLAY:-none} WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-none}; graphical programs started here open on the desktop."
     unset _lr_d _lr_x _lr_r _lr_b _lr_w _lr_v _lr_n _lr_line _lr_f _lr_found
     return 0
 }

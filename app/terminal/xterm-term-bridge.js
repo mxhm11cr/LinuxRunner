@@ -154,6 +154,15 @@
         resizeFrame = requestAnimationFrame(() => {
             resizeFrame = null;
             fitAddon.fit();
+            // The glyph atlas is built for the pixel density seen when the
+            // terminal opened (1x while the web view was still offscreen);
+            // WKWebView sends no DPR change, so rebuild it when the density
+            // differs from the one the atlas was drawn at.
+            if (window.devicePixelRatio !== fitTerminal.atlasRatio) {
+                fitTerminal.atlasRatio = window.devicePixelRatio;
+                term.clearTextureAtlas?.();
+                term.refresh(0, term.rows - 1);
+            }
             native.resize();
             scheduleScrollSync();
         });

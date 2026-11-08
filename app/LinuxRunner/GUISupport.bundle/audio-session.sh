@@ -8,7 +8,13 @@
 set -u
 cd "$(dirname "$0")"
 session=$1 port=$2
-echo $$ > "$session/audio-group"
+# Plasma already owns the whole session process group; keep its audio
+# children there so the same shutdown covers them without an orphan race.
+case "${3:-own}" in
+ own) echo $$ > "$session/audio-group";;
+ inherited-group) ;;
+ *) echo 'AUDIO: invalid process-group mode'; exit 2;;
+esac
 pulseaudio --daemonize=no --exit-idle-time=-1 --disallow-exit -n --use-pid-file=no --log-target=stderr \
     -L "module-native-protocol-unix auth-anonymous=1" \
     -L "module-null-sink sink_name=linuxrunner sink_properties=device.description=LinuxRunner rate=48000 channels=2 format=s16le" &

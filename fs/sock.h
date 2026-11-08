@@ -316,7 +316,7 @@ static inline int sock_opt_to_real(int fake, int level) {
             case IP_TOS_: return IP_TOS;
             case IP_TTL_: return IP_TTL;
             case IP_HDRINCL_: return IP_HDRINCL;
-            case IP_RETOPTS_: return IP_RETOPTS;
+            case IP_RETOPTS_: return IP_RECVRETOPTS; // Linux IP_RECVRETOPTS == IP_RETOPTS
             case IP_RECVERR_:
 #ifdef IP_RECVERR
                 return IP_RECVERR;

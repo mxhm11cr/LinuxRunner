@@ -32,6 +32,22 @@ ip route
 
 Routes reflect available host routing information, not a separately controlled Linux network namespace. VPNs and platform policy can affect what is visible. Available host-compatible interfaces can carry connections through iOS, without granting Linux ownership of Ethernet/USB/radio hardware.
 
+### Diagnostics Tools (Build 902)
+
+Everything below comes from what iOS really reports; nothing is synthesized.
+Mac fixture results; physical iPhone results are still required.
+
+| Tool / interface | Status |
+|---|---|
+| `ping` (ICMP datagram sockets) | Works. `IP_RETOPTS` (Linux's receive-options flag) is accepted and the reply TTL is reported correctly. |
+| `tracepath`, `traceroute -U` | Works. `IP_RECVERR`/`MSG_ERRQUEUE` deliver the routers' real ICMP errors (hop address, port-unreachable, frag-needed MTU) through a companion unprivileged ICMP socket; `IP_MTU_DISCOVER` sets the DF bit. |
+| `ip route`, `ip route get ADDR` | Works: the host's routing table; `route get` uses the host's own route choice (source address, device, gateway). |
+| `ip addr`, `ip link` | Works (host interfaces). |
+| `ip neigh` | **Not supported** (`Operation not supported`): iOS gives apps no public way to read the ARP/neighbour table. LinuxRunner does not return a fake empty table. |
+| Connections to some localhost ports (seen: 22, 23 on iPhone) | iOS refuses them with `EPERM` before any packet is sent; Nmap reports them filtered. Other ports refuse normally (`ECONNREFUSED`). |
+| Error-queue payload | The quoted data is exactly what the ICMP sender included: routers usually quote the probe; Darwin's own loopback errors quote only the UDP header. |
+| IPv6 error queue (`IPV6_RECVERR`) | Not implemented yet. |
+
 Bluetooth networking, unrestricted raw packet capture, radio scanning and host-interface/route administration are unsupported. Bluetooth keyboards/mice are a separate platform input feature.
 
 ### Diagnose a Connection

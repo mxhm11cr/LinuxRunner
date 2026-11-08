@@ -1,0 +1,6 @@
+Zstandard 1.5.7, decompression sources only.
+Source: https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+SHA-256: eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3 (matches the release's .sha256)
+Copied unmodified: LICENSE, lib/zstd.h, lib/zstd_errors.h, lib/common/*.[ch], lib/decompress/*.[ch] (no assembly).
+lr_zstd_decompress.c is LinuxRunner's include list, equivalent to upstream build/single_file_libs/zstddeclib-in.c.
+Used by tools/steamos_image.c to read zstd-compressed Btrfs extents in Valve's SteamFrame image.

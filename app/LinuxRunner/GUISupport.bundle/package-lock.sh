@@ -51,7 +51,7 @@ package_processes() {
         lr_cmd=$( { tr '\000' ' ' < "$lr_proc/cmdline"; } 2>/dev/null) || continue
         lr_arg0=${lr_cmd%% *} lr_rest=${lr_cmd#* }; lr_arg1=${lr_rest%% *}
         case "${lr_arg0##*/}" in
-            dpkg|apt-get|apt|apk|aptitude|unattended-upgrade|pacman|pacman-key|initialize-debian.sh|initialize-arch.sh) echo "$lr_pid $lr_cmd";;
+            dpkg|apt-get|apt|apk|aptitude|unattended-upgrade|pacman|pacman-key|dnf|dnf5|rpm|initialize-debian.sh|initialize-arch.sh) echo "$lr_pid $lr_cmd";;
             sh|dash|bash) case "${lr_arg1##*/}" in initialize-debian.sh|initialize-arch.sh|pacman-key) echo "$lr_pid $lr_cmd";; esac;;
             *) case "$lr_arg0" in /usr/lib/apt/methods/*) echo "$lr_pid $lr_cmd";; esac;;
         esac
@@ -140,6 +140,25 @@ pacman_database_ready() {
 # operation. Progress: PACKAGE_STAGE lines (shown by the app). Fails with
 # category PACKAGE_MANAGER_STUCK only when nothing progresses for 15 minutes.
 package_system_ready() {
+    if [ "$(id -u)" = 0 ] && [ -f /etc/fedora-release ] &&
+        { [ ! -f /var/lib/linuxrunner/initialized ] || ! command -v awk >/dev/null 2>&1; } &&
+        [ -r ./initialize-fedora.sh ]; then
+        echo 'PACKAGE_STAGE: Validating Fedora first-start package state'
+        /bin/sh ./initialize-fedora.sh >> /var/log/linuxrunner-initialize.log 2>&1 || {
+            echo 'PACKAGE_LOCK: category=PACKAGE_DATABASE_RECOVERY_REQUIRED Fedora first-start validation failed'
+            tail -n 8 /var/log/linuxrunner-initialize.log | sed 's/^/PACKAGE_DETAIL: /'
+            return 1
+        }
+    fi
+    if [ "$(id -u)" = 0 ] && grep -qx 'ID=kali' /etc/os-release 2>/dev/null &&
+        [ ! -f /var/lib/linuxrunner/initialized ] && [ -r ./initialize-kali.sh ]; then
+        echo 'PACKAGE_STAGE: Validating Kali Linux first-start package state'
+        /bin/sh ./initialize-kali.sh >> /var/log/linuxrunner-initialize.log 2>&1 || {
+            echo 'PACKAGE_LOCK: category=PACKAGE_DATABASE_RECOVERY_REQUIRED Kali first-start validation failed'
+            tail -n 8 /var/log/linuxrunner-initialize.log | sed 's/^/PACKAGE_DETAIL: /'
+            return 1
+        }
+    fi
     if [ -x /usr/lib/linuxrunner/initialize-arch.sh ] && [ "$(id -u)" = 0 ] && [ ! -f /var/lib/linuxrunner/initialized ]; then
         echo 'PACKAGE_STAGE: Finishing Arch Linux ARM setup (first start)'
         # The initializer has its own inherited flock, shared with boot init.

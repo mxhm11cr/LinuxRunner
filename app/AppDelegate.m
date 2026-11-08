@@ -20,12 +20,15 @@
 #endif
 #import "AppDelegate.h"
 #import "AppGroup.h"
+#import "UnixSocketDirectory.h"
 #import "CurrentRoot.h"
 #import "ExceptionExfiltrator.h"
 #import "iOSFS.h"
 #import "SceneDelegate.h"
 #import "PasteboardDevice.h"
 #import "LocationDevice.h"
+#import "BLESerial.h"
+#import "MIDISerial.h"
 #import "NSObject+SaneKVO.h"
 #import "Roots.h"
 #import "TerminalViewController.h"
@@ -257,6 +260,9 @@ static int bootError;
     // CPU rendering only. Its /dev nodes exist only while a Hyprland desktop
     // runs (session.sh), so other desktops see no DRM device.
     setenv("ISH_SOFTWARE_DRM", "1", 0);
+    // Anonymous shared-buffer exports for the managed KWin virtual output.
+    // No device is exposed until the selected desktop prepares its nodes.
+    setenv("ISH_SOFTWARE_DMABUF", "1", 0);
     do_mount(&sysfs, "sysfs", "/sys", "", 0);
 #endif
     do_mount(&devptsfs, "devpts", "/dev/pts", "", 0);
@@ -274,11 +280,24 @@ static int bootError;
     exit_hook = ios_handle_exit;
     die_handler = ios_handle_die;
 #if !TARGET_OS_SIMULATOR
-    NSString *sockTmp = [NSTemporaryDirectory() stringByAppendingString:@"ishsock"];
+    // Host backing paths for guest AF_UNIX sockets (X11, D-Bus, ...) must fit
+    // sun_path (104 bytes). The container temp dir is long; /var is the
+    // system's own link to /private/var, so use the shorter spelling, and a
+    // one-letter prefix (fs/sock.c appends at most 14 bytes). Without this,
+    // devices with 5-digit process IDs failed every bind: Xvfb "Cannot
+    // establish any listening sockets", D-Bus "File name too long".
+    NSString *tmp = NSTemporaryDirectory();
+    if ([tmp hasPrefix:@"/private/var/"]) tmp = [tmp substringFromIndex:@"/private".length];
+    NSString *sockTmp = [tmp stringByAppendingString:@"s"];
     sock_tmp_prefix = strdup(sockTmp.UTF8String);
+    size_t worst = strlen(sock_tmp_prefix) + 14; // base-36 pid (<=6) "." id (<=7)
+    NSLog(@"[SOCKET] AF_UNIX host prefix length %zu, worst-case path %zu of 103", strlen(sock_tmp_prefix), worst);
+    if (worst > 103) [LRRuntimeBridge logCategory:@"SOCKET" event:[NSString stringWithFormat:@"AF_UNIX host path may exceed sun_path (%zu bytes); local sockets can fail with ENAMETOOLONG", worst]];
 #endif
     
     tty_drivers[TTY_CONSOLE_MAJOR] = &ios_console_driver;
+    LRBLESerialInstall();
+    LRMIDISerialInstall();
     set_console_device(TTY_CONSOLE_MAJOR, 1);
     err = create_stdio("/dev/console", TTY_CONSOLE_MAJOR, 1);
     if (err < 0)
@@ -291,7 +310,21 @@ static int bootError;
     NSArray<NSString *> *command;
     command = UserPreferences.shared.bootCommand;
 #ifdef LINUXRUNNER
-    if ([LRRuntimeBridge activeEnvironmentIsDebian] || [LRRuntimeBridge activeEnvironmentIsArch]) command = @[@"/bin/sh", @"/usr/lib/linuxrunner/init.sh"];
+    BOOL kali = [LRRuntimeBridge activeEnvironmentIsKali];
+    if (!kali && ([LRRuntimeBridge activeEnvironmentIsDebian] || [LRRuntimeBridge activeEnvironmentIsArch] || [LRRuntimeBridge activeEnvironmentIsSteamOS])) command = @[@"/bin/sh", @"/usr/lib/linuxrunner/init.sh"];
+    if ([LRRuntimeBridge activeEnvironmentIsFedora] || kali) {
+        // The official Fedora and Kali userspace images expect systemd init. Run
+        // only LinuxRunner's bundled first-start validator and a userspace PID 1.
+        // Do not copy host files into fakefs behind its metadata database.
+        NSURL *support = [NSBundle.mainBundle URLForResource:@"GUISupport" withExtension:@"bundle"];
+        NSString *initializer = support ? [NSString stringWithContentsOfURL:[support URLByAppendingPathComponent:kali ? @"initialize-kali.sh" : @"initialize-fedora.sh"] encoding:NSUTF8StringEncoding error:nil] : nil;
+        if (!initializer.length || initializer.length > 4000) {
+            LRBootEvent("Distribution initializer resource missing or invalid");
+            return _EINVAL;
+        }
+        NSString *script = [NSString stringWithFormat:@"mkdir -p /var/log || exit 1\n(\n%@\n) >>/var/log/linuxrunner-initialize.log 2>&1\nwhile :; do sleep 3600; done\n", initializer];
+        command = @[@"/bin/sh", @"-c", script];
+    }
 #endif
     if (command.count == 0) {
         NSLog(@"boot command is empty");

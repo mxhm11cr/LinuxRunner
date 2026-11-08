@@ -7,7 +7,9 @@
 #include "kernel/task.h"
 #include "kernel/guest_profile.h"
 #include "kernel/memory.h"
+#include "asbestos/asbestos.h"
 #include "kernel/native_offload.h"
+#include "kernel/ipc.h"
 #include "emu/tlb.h"
 #include "platform/platform.h"
 #include "fs/fd.h"
@@ -193,8 +195,10 @@ struct task *task_create_(struct task *parent) {
         memset(task->ns_pid, 0, sizeof(task->ns_pid));
     } else {
         task->cap_effective = task->cap_permitted = CAP_FULL_SET_;
+        task->cap_bounding = CAP_FULL_SET_;
     }
     task->pid = pid->id;
+    task->capture_shm = NULL; // explicitly retained by clone(CLONE_THREAD) only
     task->start_ticks = get_uptime().uptime_ticks * 100;
     task->diagnostic_faults = task->diagnostic_resolved_faults = 0;
     task->diagnostic_fault_ns = task->diagnostic_fault_address = 0;
@@ -323,6 +327,9 @@ static void task_run_tlb_cleanup(void *arg) {
     // critical section, so releasing now can't UAF the mem lock. This reclaims
     // the whole guest address space instead of leaking it forever. `current`
     // is a __thread TLS pointer, still valid inside pthread cleanup.
+    // This must not dereference current: guest teardown may already have
+    // cleared it or destroyed the task. TLS owns the running thread's lease.
+    ipc_capture_shm_exit_current();
     struct task *self = current;
     if (self != NULL && self->mm_release_deferred && self->mm != NULL) {
         self->mm_release_deferred = false;
@@ -353,6 +360,7 @@ __attribute__((constructor)) static void mem_writer_waiting_install(void) {
 }
 
 void task_run_current() {
+    ipc_capture_shm_enter_current();
     // Publish the real host owner even for PID 1 running on the calling thread.
     lock(&pids_lock); current->thread = pthread_self();
 #ifdef __APPLE__
@@ -395,6 +403,7 @@ void task_run_current() {
         int interrupt = cpu_run_to_interrupt(cpu, tlb);
         guest_profile_state(2);
         read_wrunlock(&self->mem->lock);
+        asbestos_collect(self->mem->mmu.asbestos);
         handle_interrupt(interrupt);
     }
 
@@ -420,6 +429,7 @@ __attribute__((constructor)) static void create_attr() {
 // task_destroy (the final PID/struct teardown), this drops all owned resources.
 // The task has never run, so there are no children or per-thread futex pipes.
 void task_discard_unstarted(struct task *task) {
+    ipc_capture_shm_discard(task);
     lock(&pids_lock);
     lock(&task->general_lock);
     struct mm *mm = task->mm;

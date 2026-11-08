@@ -11,7 +11,9 @@ static int files(Display*d,Window w,int depth){
  if(depth>8)return 0;
  XWindowAttributes a;XClassHint c={0};int found=0;
  if(XGetWindowAttributes(d,w,&a)&&a.map_state==IsViewable&&a.width>=200&&a.height>=150&&XGetClassHint(d,w,&c)){
-  if(c.res_class&&strstr(c.res_class,"pcmanfm-qt")){
+  const char *expected_class=getenv("QT_DESKTOP_EXPECT_CLASS");
+  if(!expected_class)expected_class="pcmanfm-qt";
+  if((c.res_class&&strstr(c.res_class,expected_class))||(c.res_name&&strstr(c.res_name,expected_class))){
    Atom type;int fmt;unsigned long n,left;unsigned char*p=0;
    Atom desk=XInternAtom(d,"_NET_WM_WINDOW_TYPE_DESKTOP",False);
    int desktop=0;XGetWindowProperty(d,w,XInternAtom(d,"_NET_WM_WINDOW_TYPE",False),0,16,False,XA_ATOM,&type,&fmt,&n,&left,&p);

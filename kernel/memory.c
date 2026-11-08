@@ -13,6 +13,7 @@
 #include "kernel/errno.h"
 #include "kernel/signal.h"
 #include "kernel/memory.h"
+#include "kernel/page_pool.h"
 #include "asbestos/asbestos.h"
 #include "kernel/vdso.h"
 #include "kernel/task.h"
@@ -520,19 +521,20 @@ bool pt_is_hole(struct mem *mem, page_t start, pages_t pages) {
 }
 
 static int pt_map_accounted(struct mem *mem, page_t start, pages_t pages,
-        void *memory, size_t offset, unsigned flags, bool precharged) {
+        void *memory, size_t offset, unsigned flags, bool precharged, struct guest_page_slab *pool) {
     (void)precharged; // also buildable with anonymous accounting disabled
     if (memory == MAP_FAILED)
         return errno_map();
 
     // If this fails, the munmap in pt_unmap would probably fail.
-    assert((uintptr_t) memory % real_page_size == 0 || memory == vdso_data);
+    assert(pool || (uintptr_t) memory % real_page_size == 0 || memory == vdso_data);
 
     struct data *data = malloc(sizeof(struct data));
     if (data == NULL)
         return _ENOMEM;
     *data = (struct data) {
         .data = memory,
+        .page_pool = pool,
         .size = pages * PAGE_SIZE + offset,
         .mapping_offset = offset,
 
@@ -561,7 +563,7 @@ static int pt_map_accounted(struct mem *mem, page_t start, pages_t pages,
 }
 
 int pt_map(struct mem *mem, page_t start, pages_t pages, void *memory, size_t offset, unsigned flags) {
-    return pt_map_accounted(mem, start, pages, memory, offset, flags, false);
+    return pt_map_accounted(mem, start, pages, memory, offset, flags, false, NULL);
 }
 
 int pt_unmap(struct mem *mem, page_t start, pages_t pages) {
@@ -573,7 +575,7 @@ int pt_unmap(struct mem *mem, page_t start, pages_t pages) {
 
 void data_release(struct data *data) {
     if (--data->refcount == 0) {
-        if (data->data != vdso_data) munmap(data->data, data->size);
+        if (data->data != vdso_data) guest_page_release(data->page_pool, data->data, data->size);
         if (data->memfd_maywrite) {
             lock(&data->fd->memfd->lock);
             data->fd->memfd->maywrite_maps--;
@@ -632,18 +634,68 @@ int pt_map_nothing(struct mem *mem, page_t start, pages_t pages, unsigned flags)
     if (charged && !anon_pages_reserve((long)pages))
         return _ENOMEM;
 #endif
-    void *memory = mmap(NULL, map_size, host_prot, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
+    struct guest_page_slab *pool = NULL;
+    void *memory = pages == 1 && host_prot != PROT_NONE
+        ? guest_page_allocate(real_page_size, PAGE_SIZE, &pool)
+        : mmap(NULL, map_size, host_prot, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
     if (memory == MAP_FAILED && runtime_memory_failure) runtime_memory_failure("mmap anonymous", 0, map_size, host_prot, MAP_PRIVATE | MAP_ANONYMOUS, errno);
     int err = memory == MAP_FAILED ? _ENOMEM :
-        pt_map_accounted(mem, start, pages, memory, 0, flags | P_ANONYMOUS, true);
+        pt_map_accounted(mem, start, pages, memory, 0, flags | P_ANONYMOUS, true, pool);
 #if ANON_MMAP_LIMIT_PAGES > 0
     // Explicit ownership transfer; no thread-local credit or transient double charge.
     if (err < 0 && charged)
         anon_pages_unreserve((long)pages);
 #endif
     if (err < 0 && memory != MAP_FAILED)
-        munmap(memory, map_size);
+        guest_page_release(pool, memory, map_size);
     return err;
+}
+
+// A full host page can be replaced only when every guest page is private
+// anonymous backing in this address space. CoW pages can still belong to a child.
+static bool discard_host_page(struct mem *mem, page_t page, page_t end) {
+    pages_t count = real_page_size / PAGE_SIZE;
+    if (!count || count > end - page) return false;
+    struct pt_entry *first = mem_pt(mem, page);
+    if (!first || first->data->page_pool) return false;
+    void *base = (char *)first->data->data + first->offset;
+    if ((uintptr_t)base % real_page_size) return false;
+    for (pages_t i = 0; i < count; i++) {
+        struct pt_entry *entry = mem_pt(mem, page + i);
+        if (!entry || entry->data != first->data || entry->data->fd ||
+                !(entry->flags & P_ANONYMOUS) || (entry->flags & (P_SHARED | P_COW)) ||
+                entry->offset != first->offset + i * PAGE_SIZE) return false;
+    }
+    void *zero = mmap(base, real_page_size, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    if (zero == MAP_FAILED) return false;
+    asbestos_invalidate_range(mem->mmu.asbestos, page, page + count);
+    mem_changed(mem);
+    return true;
+}
+
+int mem_discard_private(struct mem *mem, page_t start, pages_t pages) {
+    page_t end = page_range_end(start, pages);
+    int error = 0;
+    write_wrlock(&mem->lock);
+    for (page_t page = start; page < end; page++) {
+        struct pt_entry *entry = mem_pt(mem, page);
+        if (!entry) {
+            if (!mem_find_reservation(mem, page)) error = _ENOMEM;
+            continue;
+        }
+        if (!(entry->flags & P_ANONYMOUS) || (entry->flags & P_SHARED) || entry->data->fd)
+            continue;
+        if (discard_host_page(mem, page, end)) {
+            page += real_page_size / PAGE_SIZE - 1;
+            continue;
+        }
+        unsigned flags = entry->flags & ~P_COW;
+        int result = pt_map_nothing(mem, page, 1, flags);
+        if (result < 0) { error = result; break; }
+    }
+    write_wrunlock(&mem->lock);
+    return error;
 }
 
 // Metadata flags that must be preserved across mprotect — they track
@@ -671,8 +723,9 @@ int pt_set_flags(struct mem *mem, page_t start, pages_t pages, int flags) {
         int old_flags = entry->flags;
         unsigned new_flags = flags | (old_flags & P_META_FLAGS);
 
-        // check if protection is increasing
-        if ((flags & ~old_flags) & (P_READ|P_WRITE)) {
+        // Pool slots share host permissions. Guest flags enforce each slot.
+        // Change host permissions only for separate mappings.
+        if (!entry->data->page_pool && ((flags & ~old_flags) & (P_READ|P_WRITE))) {
             void *data = (char *) entry->data->data + entry->offset;
             // force to be page aligned
             data = (void *) ((uintptr_t) data & ~(real_page_size - 1));
@@ -931,9 +984,9 @@ have_entry:
                 bool precharged = false;
 #endif
                 void *copy = MAP_FAILED;
+                struct guest_page_slab *pool = NULL;
                 if (!failed) {
-                    copy = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE,
-                        MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
+                    copy = guest_page_allocate(real_page_size, PAGE_SIZE, &pool);
                     failed = copy == MAP_FAILED;
                     if (failed && runtime_memory_failure) runtime_memory_failure("mmap COW", 0, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, errno);
                 }
@@ -945,7 +998,7 @@ have_entry:
                     struct fd *backing = entry->data->fd ? fd_retain(entry->data->fd) : NULL;
                     size_t file_offset = entry->data->file_offset + entry->offset - entry->data->mapping_offset;
                     const char *name = entry->data->name;
-                    failed = pt_map_accounted(mem, page, 1, copy, 0, flags, precharged) < 0;
+                    failed = pt_map_accounted(mem, page, 1, copy, 0, flags, precharged, pool) < 0;
                     if (!failed) {
                         struct data *replacement = mem_pt(mem, page)->data;
                         replacement->fd = backing;
@@ -953,7 +1006,7 @@ have_entry:
                         replacement->name = name;
                     } else if (backing) fd_close(backing);
                 }
-                if (failed && copy != MAP_FAILED) munmap(copy, PAGE_SIZE);
+                if (failed && copy != MAP_FAILED) guest_page_release(pool, copy, PAGE_SIZE);
 #if ANON_MMAP_LIMIT_PAGES > 0
                 if (failed && reserved) anon_pages_unreserve(1);
 #endif

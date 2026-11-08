@@ -43,8 +43,13 @@ private final class InstallCancellation: @unchecked Sendable {
 }
 @MainActor final class DebianInstaller: ObservableObject {
     @Published var message = "Debian 13.7 ARM64 · authenticated official packages"
-    @Published var fraction = 0.0
-    @Published var running = false { didSet { if running != oldValue { running ? LRRuntimeBridge.beginAwake("debian-install") : LRRuntimeBridge.endAwake("debian-install") } } }
+    @Published var fraction = 0.0 { didSet { if let longTask { LongTaskCenter.shared.update(longTask, detail: message, fraction: fraction) } } }
+    private var longTask: String?
+    private func trackLongTask(_ title: String) {
+        if running { longTask = LongTaskCenter.shared.begin(title: title, detail: message, userStarted: true) }
+        else if let token = longTask { longTask = nil; LongTaskCenter.shared.end(token, success: failure == nil, message: failure ?? message) }
+    }
+    @Published var running = false { didSet { if running != oldValue { running ? LRRuntimeBridge.beginAwake("debian-install") : LRRuntimeBridge.endAwake("debian-install"); trackLongTask("Installing Debian") } } }
     @Published var failure: String?
     private var operation: Task<Void, Never>?
     private var cancellation = InstallCancellation()

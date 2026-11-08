@@ -9,6 +9,7 @@
 #include <EGL/eglext.h>
 #include <EGL/eglext_angle.h>
 #include <GLES3/gl3.h>
+#include <GLES2/gl2ext.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -18,6 +19,19 @@
 #include <unistd.h>
 #include <virgl/virglrenderer.h>
 #include "graphics/virgl_backend.h"
+#include "graphics/virgl_caps.h"
+
+// Private bridge for the transparent-zero border used by desktop samplers.
+// ANGLE keeps the full GLES border-color extension unadvertised. virglrenderer
+// validates that the border is zero before calling the Metal operation.
+// Requires GPU dependencies rebuilt with scripts/gpu/angle-zero-border.py and
+// virglrenderer-angle-zero-border.patch (scripts/build-gpu-deps.sh), which
+// define LINUXRUNNER_ANGLE_ZERO_BORDER. Older dependency builds keep the
+// previous sampler behaviour.
+#ifdef LINUXRUNNER_ANGLE_ZERO_BORDER
+extern GLboolean LinuxRunnerANGLESetSamplerZeroBorder(GLuint sampler, GLenum pname);
+void lr_vrend_set_zero_border_sampler(GLboolean (*operation)(GLuint, GLenum));
+#endif
 
 // virglrenderer's public header declares the transfer box opaquely; this is
 // its layout (src/virgl_hw.h), part of the transfer ABI.
@@ -29,6 +43,7 @@ static EGLContext root;
 static EGLSurface pbuffer = EGL_NO_SURFACE;   // only when surfaceless contexts are unavailable
 static uint32_t fence_issued, fence_done;
 static int cookie;   // virglrenderer passes it back to the callbacks; unused
+static bool timer_queries_supported;
 static struct iovec **backing;   // per resource handle: virglrenderer keeps the iovec pointer
 static uint32_t backing_count;
 
@@ -64,6 +79,9 @@ const char *lr_virgl_host_status(void) { return status; }
 
 static void *gpu_main(void *unused) {
     (void) unused;
+#ifdef LINUXRUNNER_ANGLE_ZERO_BORDER
+    lr_vrend_set_zero_border_sampler(LinuxRunnerANGLESetSamplerZeroBorder);
+#endif
     display = eglGetPlatformDisplayEXT(EGL_PLATFORM_ANGLE_ANGLE, (void *) EGL_DEFAULT_DISPLAY,
         (const EGLint[]) {EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE, EGL_NONE});
     EGLint major = 0, minor = 0, count = 0;
@@ -75,8 +93,21 @@ static void *gpu_main(void *unused) {
         if (!extensions || !strstr(extensions, "EGL_KHR_surfaceless_context"))
             pbuffer = eglCreatePbufferSurface(display, config, (const EGLint[]) {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE});
         root = eglCreateContext(display, config, EGL_NO_CONTEXT, (const EGLint[]) {EGL_CONTEXT_MAJOR_VERSION, 3, EGL_NONE});
-        ok = root != EGL_NO_CONTEXT && eglMakeCurrent(display, pbuffer, pbuffer, root) &&
-            virgl_renderer_init(&cookie, VIRGL_RENDERER_USE_GLES, &callbacks) == 0;   // a cookie is required with external contexts
+        ok = root != EGL_NO_CONTEXT && eglMakeCurrent(display, pbuffer, pbuffer, root);
+        if (ok) {
+            PFNGLGETQUERYIVEXTPROC query = (void *) eglGetProcAddress("glGetQueryivEXT");
+            GLint timestamp = 0, elapsed = 0;
+            const char *extensions = (const char *) glGetString(GL_EXTENSIONS);
+            if (query && extensions && strstr(extensions, "GL_EXT_disjoint_timer_query")) {
+                query(GL_TIMESTAMP_EXT, GL_QUERY_COUNTER_BITS_EXT, &timestamp);
+                GLenum timestamp_error = glGetError();
+                query(GL_TIME_ELAPSED_EXT, GL_QUERY_COUNTER_BITS_EXT, &elapsed);
+                GLenum elapsed_error = glGetError();
+                timer_queries_supported = timestamp_error == GL_NO_ERROR && elapsed_error == GL_NO_ERROR && timestamp > 0 && elapsed > 0;
+            }
+            fprintf(stderr, "VIRGL_HOST: timer queries timestamp_bits=%d elapsed_bits=%d supported=%s\n", timestamp, elapsed, timer_queries_supported ? "yes" : "no");
+            ok = virgl_renderer_init(&cookie, VIRGL_RENDERER_USE_GLES, &callbacks) == 0;
+        }
     }
     fprintf(stderr, "VIRGL_HOST: EGL %d.%d (%s) renderer=%s init=%s\n", major, minor,
         display ? eglQueryString(display, EGL_VENDOR) : "-", ok ? (const char *) "virglrenderer" : "-", ok ? "ok" : "FAILED");
@@ -95,6 +126,11 @@ static void *gpu_main(void *unused) {
         while (!job) pthread_cond_wait(&slot_cond, &slot_lock);
         void (*run)(void *) = job; void *arg = job_arg;
         pthread_mutex_unlock(&slot_lock);
+        // Context creation and global resource operations can change actual
+        // GL bindings without going through virglrenderer's guest-context
+        // cache. Start every embedder operation on its host context so later
+        // submissions switch to the right guest context and retain its FBOs.
+        virgl_renderer_force_ctx_0();
         run(arg);
         pthread_mutex_lock(&slot_lock);
         job = NULL; job_done = true;
@@ -128,6 +164,7 @@ static void do_caps(void *p) {
     void *caps = calloc(1, max_size);
     if (!caps) { o->result = -1; return; }
     virgl_renderer_fill_caps(o->a, o->b, caps);
+    lr_virgl_limit_timer_caps(o->a, caps, max_size, timer_queries_supported);
     memcpy(o->out, caps, o->size < max_size ? o->size : max_size);
     *o->outp = max_size;
     free(caps);

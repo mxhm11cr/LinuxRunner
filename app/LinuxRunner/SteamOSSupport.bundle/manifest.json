@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "architecture": "arm64",
+  "version": "0.3.0",
+  "sourceImageSHA256": "3a4a077f1b1f40688ab3279affcb56776bd97c54db1573e7c65fc52a97106676",
+  "archiveSHA256": "d8683fd3d18f15cdb75fae5dcda8b06f21dd5376abe8eb14565d5b90505dd86a",
+  "archiveBytes": 3883082382,
+  "installedBytes": 8870355438,
+  "entries": 226112,
+  "source": {
+    "url": "https://steamdeck-images.steamos.cloud/recovery/steamframe-oobe-repair-20260922.5153644-0.3.0.img.bz2",
+    "bytes": 4068109407,
+    "sha256": "3a4a077f1b1f40688ab3279affcb56776bd97c54db1573e7c65fc52a97106676",
+    "partition": "rootfs-A",
+    "partitionBytes": 5368709120
+  },
+  "packages": [
+    {
+      "name": "x11vnc-1:0.9.17-1-aarch64.pkg.tar.xz",
+      "url": "https://fl.us.mirror.archlinuxarm.org/aarch64/extra/x11vnc-1:0.9.17-1-aarch64.pkg.tar.xz",
+      "sha256": "28f757a6b8f495eda9a0c4d6385ad68d72ab143e5f0e613885ff8ca95cc58549",
+      "bytes": 661920
+    },
+    {
+      "name": "libvncserver-0.9.15-1-aarch64.pkg.tar.xz",
+      "url": "https://fl.us.mirror.archlinuxarm.org/aarch64/extra/libvncserver-0.9.15-1-aarch64.pkg.tar.xz",
+      "sha256": "c941976dedf7898dd485a6880b83162a13b143e3c33f9c808ccd4b2896c0fe4d",
+      "bytes": 212476
+    }
+  ],
+  "streamInstalledBytes": 8867237979
+}

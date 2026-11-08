@@ -6,6 +6,11 @@ NS_ASSUME_NONNULL_BEGIN
 #endif
 - (instancetype)initDesktop;
 - (NSDictionary *)desktopSessionSummary;
+/// Home's live preview: keep (or reconnect) this session's viewer while the
+/// preview is visible; never starts a desktop.
+- (void)setPreviewWanted:(BOOL)wanted;
+/// The latest frame, only when a newer one arrived than `generation`.
+- (nullable UIImage *)previewImageIfChangedSince:(uint64_t *)generation;
 /// Native desktop settings use these bounded actions; no arbitrary shell command.
 - (NSDictionary *)desktopControlState;
 - (void)performDesktopAction:(NSString *)action;

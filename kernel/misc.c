@@ -2,12 +2,17 @@
 #include <stdatomic.h>
 #include "kernel/calls.h"
 #include "kernel/task.h"
+#include "kernel/ipc.h"
+#include "kernel/capture_shm.h"
 
 #define PRCTL_SET_KEEPCAPS_ 8
 #define PRCTL_SET_NAME_ 15
 
 int_t sys_prctl(dword_t option, addr_t arg2, addr_t arg3, addr_t arg4, addr_t arg5) {
     switch (option) {
+        case LR_PR_CAPTURE_SHM:
+            if (arg2 != LR_CAPTURE_SHM_VERSION || arg3 || arg4 || arg5) return _EINVAL;
+            return ipc_capture_shm_enable();
         case 1: // PR_SET_PDEATHSIG
             if (arg2 >= NUM_SIGS) return _EINVAL;   // 0 clears
             current->pdeath_signal = (int) arg2;
@@ -31,7 +36,18 @@ int_t sys_prctl(dword_t option, addr_t arg2, addr_t arg3, addr_t arg4, addr_t ar
             if (arg2 || arg3 || arg4 || arg5) return _EINVAL;
             return current->no_new_privs;
         case PRCTL_SET_KEEPCAPS_:
-            // stub
+            if (arg2 > 1) return _EINVAL;
+            current->keep_caps = arg2;
+            return 0;
+        case 7: // PR_GET_KEEPCAPS
+            return current->keep_caps;
+        case 23: // PR_CAPBSET_READ
+            if (arg2 > 40) return _EINVAL;
+            return (current->cap_bounding >> arg2) & 1;
+        case 24: // PR_CAPBSET_DROP (one-way, inherited by fork and exec)
+            if (arg2 > 40) return _EINVAL;
+            if (!ns_capable(8)) return _EPERM; // CAP_SETPCAP
+            current->cap_bounding &= ~(1ull << arg2);
             return 0;
         case PRCTL_SET_NAME_: {
             char name[16];

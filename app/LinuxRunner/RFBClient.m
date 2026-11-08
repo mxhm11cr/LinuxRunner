@@ -126,8 +126,10 @@ static double LRTransportClock(void){struct timespec t;clock_gettime(CLOCK_MONOT
     _pixels=[NSMutableData dataWithLength:bytes];_raw=[NSMutableData new];
     // SetPixelFormat: little-endian 32-bit truecolor B,G,R,pad.
     const uint8_t format[20]={0,0,0,0,32,24,0,1,0,255,0,255,0,255,16,8,0,0,0,0};
-    // Hextile (bounded 16x16 tiles), Raw fallback, DesktopSize.
-    const uint8_t encodings[16]={2,0,0,3,0,0,0,5,0,0,0,0,255,255,255,33};
+    // Hextile (bounded 16x16 tiles), Raw fallback, DesktopSize, Cursor and
+    // PointerPos (the app draws the pointer: x11vnc does not repaint a cursor
+    // drawn into the framebuffer when this viewer itself moves the pointer).
+    const uint8_t encodings[24]={2,0,0,5,0,0,0,5,0,0,0,0,255,255,255,33,255,255,255,17,255,255,255,24};
     return [self write:format count:sizeof format]&&[self write:encodings count:sizeof encodings];
 }
 - (BOOL)request:(BOOL)incremental {
@@ -139,7 +141,12 @@ static double LRTransportClock(void){struct timespec t;clock_gettime(CLOCK_MONOT
     if(type==2)return YES; // bell, no payload
     if(type==3){uint8_t header[7];if(![self read:header count:7])return NO;
         uint32_t n;memcpy(&n,header+3,4);n=ntohl(n);if(n>1024*1024)return NO;
-        uint8_t discard[4096];while(n){size_t part=MIN(n,sizeof discard);if(![self read:discard count:part])return NO;n-=part;}return YES;
+        NSMutableData *text=[NSMutableData dataWithLength:n];
+        if(n&&![self read:text.mutableBytes count:n])return NO;
+        void (^cut)(NSString *)=self.cutTextHandler;
+        NSString *string=[[NSString alloc] initWithData:text encoding:NSISOLatin1StringEncoding];
+        if(cut&&string)cut(string);
+        return YES;
     }
     if(type!=0){[self fail:@"Unsupported display message"];return NO;}
     void (^metrics)(NSDictionary *)=self.transportMetricsHandler;
@@ -155,6 +162,18 @@ static double LRTransportClock(void){struct timespec t;clock_gettime(CLOCK_MONOT
         size_t bytes;
         if(encoding==0xffffff21){if(x||y||!lr_rfb_dimensions(w,h,&bytes))return NO;
             _width=w;_height=h;_pixels=[NSMutableData dataWithLength:bytes];changed=YES;damage=(LRFrameDamage){0,0,w,h};continue;}
+        if(encoding==0xffffff11){size_t pb,mb;
+            if(!lr_rfb_cursor_sizes(w,h,&pb,&mb)||(w&&(x>=w||y>=h))){[self fail:@"Invalid cursor shape"];return NO;}
+            NSMutableData *shape=[NSMutableData dataWithLength:pb+mb],*bgra=nil;
+            if(pb+mb&&![self read:shape.mutableBytes count:pb+mb])return NO;
+            if(w&&h){bgra=[NSMutableData dataWithLength:pb];
+                if(!lr_rfb_cursor_bgra(shape.bytes,(const uint8_t *)shape.bytes+pb,w,h,bgra.mutableBytes)){[self fail:@"Invalid cursor shape"];return NO;}}
+            void (^cursor)(NSData *,uint16_t,uint16_t,uint16_t,uint16_t)=self.cursorHandler;
+            if(cursor)cursor(bgra,w,h,x,y);
+            continue;}
+        if(encoding==0xffffff18){void (^moved)(uint16_t,uint16_t)=self.pointerPositionHandler;
+            if(moved&&x<_width&&y<_height)moved(x,y);
+            continue;}
         if((encoding!=0&&encoding!=5)||!lr_rfb_rectangle(_width,_height,x,y,w,h,&bytes)){[self fail:@"Unsupported encoding or invalid rectangle"];return NO;}
         if(encoding==5){if(![self hextileX:x y:y width:w height:h]){[self fail:@"Invalid Hextile tile"];return NO;}}
         else if(!x&&w==_width){

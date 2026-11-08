@@ -5,14 +5,14 @@
 <h2 align="center">Your iPhone. A Real Linux PC.</h2>
 <p align="center">ARM64 Linux applications. Full desktop environments. A workspace on an external display.</p>
 <p align="center">
-  <img src="assets/branding/version-badge.svg" alt="Version 1.1.0 · Build 900">
+  <img src="assets/branding/version-badge.svg" alt="Version 1.1.1 · Build 905">
   <img src="assets/branding/platform-badge.svg" alt="iOS and iPadOS">
   <a href="LICENSE.md"><img src="assets/branding/license-badge.svg" alt="GPL-3.0-covered application"></a>
 </p>
 <p align="center">
   <a href="https://github.com/mxhm11cr/LinuxRunner/releases">Download</a> ·
   <a href="#getting-started">Get started</a> ·
-  <a href="docs/releases/v1.1.0.md">What's new in 1.1.0</a> ·
+  <a href="docs/releases/v1.1.1.md">What's new in 1.1.1</a> ·
   <a href="docs/TROUBLESHOOTING.md">Help</a>
 </p>
 
@@ -24,9 +24,33 @@ LinuxRunner brings ARM64 Linux userspace to iPhone and iPad through a custom ins
 
 **Hyprland · Experimental** — Metal GPU acceleration. Requires at least 8 GB RAM and Arch Linux ARM.
 
-[![KDE Plasma desktop with Dolphin](assets/screenshots/linuxrunner-dolphin.png)](assets/screenshots/linuxrunner-dolphin.png)
+## See It Running
 
-**KDE Plasma** — an experimental desktop option on Debian.
+<table>
+<tr>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.1/home-iphone.jpg"><img src="assets/screenshots/v1.1.1/home-iphone.jpg" alt="LinuxRunner Home screen on iPhone with desktop preview" width="260"></a><br><sub><b>Home</b></sub></td>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.1/distributions-iphone.jpg"><img src="assets/screenshots/v1.1.1/distributions-iphone.jpg" alt="Distributions tab with installed Linux environments on iPhone" width="260"></a><br><sub><b>Distributions</b></sub></td>
+</tr>
+<tr>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.1/kali-desktop-viewer-iphone.jpg"><img src="assets/screenshots/v1.1.1/kali-desktop-viewer-iphone.jpg" alt="Kali Linux desktop in the LinuxRunner viewer on iPhone" width="260"></a><br><sub><b>Desktop viewer</b> · Kali Linux</sub></td>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.1/terminal-iphone.jpg"><img src="assets/screenshots/v1.1.1/terminal-iphone.jpg" alt="LinuxRunner terminal on iPhone with a two-row key bar" width="260"></a><br><sub><b>Terminal</b> · Termux-like on iPhone</sub></td>
+</tr>
+</table>
+
+**A Termux-like terminal on iPhone.** Sharp text on true black, with a two-row key bar for ESC, TAB, CTRL, ALT, arrows, HOME, END, PGUP, PGDN and clipboard, right above the keyboard.
+
+### Linux Desktops
+
+<table>
+<tr>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.1/kali-xfce-iphone.jpg"><img src="assets/screenshots/v1.1.1/kali-xfce-iphone.jpg" alt="Kali Linux Xfce desktop in LinuxRunner on iPhone" width="100%"></a><br><sub><b>Kali Linux · Xfce</b></sub></td>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.1/fedora-kde-plasma.png"><img src="assets/screenshots/v1.1.1/fedora-kde-plasma.png" alt="Fedora KDE Plasma application launcher in LinuxRunner" width="100%"></a><br><sub><b>Fedora · KDE Plasma</b></sub></td>
+</tr>
+<tr>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.1/steamos-plasma.png"><img src="assets/screenshots/v1.1.1/steamos-plasma.png" alt="Experimental SteamOS ARM64 Plasma desktop with Konsole in LinuxRunner" width="100%"></a><br><sub><b>SteamOS ARM64 · Plasma · Experimental</b><br>Not official SteamOS support.</sub></td>
+<td align="center" width="50%"><a href="assets/screenshots/linuxrunner-dolphin.png"><img src="assets/screenshots/linuxrunner-dolphin.png" alt="KDE Plasma with Dolphin on Debian" width="100%"></a><br><sub><b>Debian · KDE Plasma</b></sub></td>
+</tr>
+</table>
 
 ## Your iPhone. Your Desktop.
 
@@ -44,17 +68,18 @@ Use **Desktop → Desktop Settings… → Display** for scaling and **Resolution
 
 AirPlay receiver behavior varies. Plain screen mirroring shows the same image and cannot provide an independent phone control surface. This is one Linux desktop output, not multiple extended guest monitors. Miracast-only receivers are unsupported. [Display and input guide](docs/NETWORKING_AND_DISPLAYS.md)
 
-## Inside 1.1.0
+## Inside 1.1.1
 
 | Capability | What it brings |
 | --- | --- |
-| **Linux desktops** | LinuxRunner Desktop, LXQt, Enlightenment and experimental Wayland/Plasma options. |
+| **Redesigned app** | New Home, Distributions and Settings, a Termux-like native terminal and an install screensaver for OLED screens. |
+| **Six distributions** | Debian, Arch Linux ARM, Fedora, Kali, Alpine and experimental SteamOS ARM64, each with its own packages and Linux accounts. |
+| **Linux desktops** | LinuxRunner Desktop, Xfce on Kali, LXQt, Enlightenment and KDE Plasma, plus experimental Wayland compositors. |
 | **Metal graphics** | A virtual Linux GPU connects compatible Mesa workloads to Apple's GPU. |
 | **Optional ARM64 JIT** | An additional execution path when the device permits it; the interpreter remains available. |
-| **Faster interpreter** | NEON, memory and atomic-operation improvements, plus instruction correctness fixes. |
+| **Interpreter and memory** | Instruction correctness fixes, a bounded translation cache on devices and a guest memory budget. |
 | **Linux applications** | Package managers, developer tools, office software, communication apps and more. Compatibility varies. |
 | **Files and networking** | Import/export, per-environment shared folders, sockets, interface and route reporting. |
-| **Three distributions** | Debian ARM64, Arch Linux ARM and Alpine ARM64, with separate environments and Linux accounts. |
 
 ## Supported Devices and Requirements
 
@@ -73,20 +98,27 @@ LinuxRunner supports ARM64 iPhone and iPad layouts, touch input, hardware keyboa
 
 ## Supported Linux Distributions
 
-| Distribution | Packages | Desktop experience |
-| --- | --- | --- |
-| **Debian GNU/Linux 13 ARM64** | `apt`, `dpkg` | Recommended. LinuxRunner Desktop, LXQt; experimental KDE Plasma and Wayfire. |
-| **Arch Linux ARM** | `pacman` | Recommended for newer desktop/application packages. LinuxRunner Desktop, LXQt, Enlightenment, Wayfire and experimental Hyprland. |
-| **Alpine Linux 3.24 ARM64** | `apk` | Small terminal environment; desktop and application coverage is more limited. |
+| Distribution | Packages | Desktop experience | Status |
+| --- | --- | --- | --- |
+| **Debian GNU/Linux 13 ARM64** | `apt`, `dpkg` | LinuxRunner Desktop, LXQt; experimental KDE Plasma and Wayfire | Recommended, widest application support |
+| **Arch Linux ARM** | `pacman` | LinuxRunner Desktop, LXQt, Enlightenment, KDE Plasma, Wayfire; experimental Hyprland | Recommended for newer packages |
+| **Fedora Linux 44 ARM64** | `dnf`, `rpm` | Lightweight GTK/X11 desktop, KDE Plasma | Official userspace image. Sound is not yet qualified |
+| **Kali Linux 2026.3 ARM64** | `apt`, `dpkg` | Xfce, optional standard tool sets | Official root filesystem; large tool sets are slow to install |
+| **Alpine Linux 3.24 ARM64** | `apk` | Limited | Small terminal environment |
+| **SteamOS ARM64 · Experimental** | `pacman` (inspection only) | Plasma X11 | Installed from Valve's recovery image. See below |
 
-Debian or Arch is recommended for desktop use. Alpine remains supported, with further compatibility and desktop integration work planned. Additional distribution support is planned. Multiple environments can coexist; one runtime is active per app launch.
+**Fedora KDE Plasma** runs on the maintainer's iPhone. The managed Plasma session can use the virtual GPU for compositing; applications choose their own rendering path, and Plasma menus remain slow when hovering.
+
+**Kali Linux** is offered for legitimate development, diagnostics and authorized security research. It runs without a Linux kernel or systemd, so monitor-mode Wi-Fi, USB wireless adapters, raw packet capture and kernel modules are not available.
+
+**SteamOS ARM64** is an experimental environment, not official SteamOS support. **Distributions → SteamOS ARM64 → Install** downloads Valve's SteamFrame recovery image (4.07 GB), verifies it and installs its ARM64 system; it needs about 19.4 GB free while installing and 8.9 GB afterwards. The Steam client, gamescope, Vulkan and Windows games are not supported. [SteamOS details](docs/STEAMOS.md)
 
 ## Installation
 
 1. Download the LinuxRunner IPA from [GitHub Releases](https://github.com/mxhm11cr/LinuxRunner/releases).
 2. Install it using a compatible IPA sideloading tool of your choice, such as Sideloadly or AltStore Classic.
 3. Open LinuxRunner on your iPhone or iPad.
-4. Follow **Set Up Linux…** to install Linux inside the app.
+4. Open **Distributions** and choose a distribution to install Linux inside the app.
 
 The IPA needs signing/provisioning appropriate to your installation method. Tool compatibility, account requirements and signing renewal vary. **JIT is not required to install or use LinuxRunner.** Back up important files before updating and preserve the existing app identity and storage configuration. [Signing and download verification](docs/INSTALLATION.md)
 
@@ -94,9 +126,9 @@ The IPA needs signing/provisioning appropriate to your installation method. Tool
 
 Installing the IPA installs the app. **Installing a Linux distribution is a separate step inside LinuxRunner.**
 
-1. Open **Distributions → Set Up Linux… → Continue**.
-2. On **Choose Linux**, select Debian or Arch for desktop use, or Alpine for a small terminal environment.
-3. Continue to **Install Linux**, review storage/download information and select the distribution's install button.
+1. Open **Distributions** and find **Add a Distribution**.
+2. Tap **Install** on the one you want. Debian or Arch suit desktop use; Alpine is a small terminal environment.
+3. Review the storage and download information, then select the distribution's install button.
 4. Keep the app open while setup prepares the root filesystem. Follow **Restart LinuxRunner** if requested; setup resumes after reopening.
 5. On **Your Account**, create or select a regular Linux user. Enable **Administrator (can use sudo)** if you want to install packages.
 6. Install **Desktop Components** when offered, or use **Later** for terminal-only use. A desktop is optional.
@@ -118,7 +150,7 @@ Open **Settings → Desktop Environment**. Select the relevant **Install…** bu
 | **Enlightenment** | Available on Arch. Disabled on Debian because startup currently stops at the splash screen. |
 | **Wayfire** | Experimental Wayland compositor on Debian/Arch; GPU integration is available on Arch. |
 | **Hyprland** | **Experimental, Arch only, at least 8 GB RAM. Metal recommended.** |
-| **KDE Plasma** | Experimental Debian X11 session with Dolphin and Konsole. Arch Plasma is not validated. |
+| **KDE Plasma** | Experimental on Debian, Arch and Fedora, with Dolphin and Konsole. |
 
 Hyprland is still undergoing optimization. Its first launch can occasionally report an error; select **Retry** if offered. This known startup issue is planned for improvement. Use LinuxRunner Desktop or LXQt if it persists. [Desktop controls and recovery](docs/DESKTOP_CONTROLS.md)
 
@@ -130,7 +162,7 @@ Compatible Linux graphics workloads can use this path:
 
 This lets supported Linux applications and compositors use the Apple GPU. It is separate from simply presenting the viewer with Metal, and does not accelerate every application or graphics API.
 
-**Select Metal explicitly:** open **Settings → Graphics → Linux GPU Device → GPU → Metal GPU · Experimental**. Fully close and reopen LinuxRunner, then check **Active renderer** on the same page. **Automatic** does not select this accelerated path in Build 900. **Software Rendering** remains available for compatibility and can be considerably slower for demanding graphics.
+**Check the renderer:** open **Settings → Graphics → Linux GPU Device** and look at **Active renderer**. **Automatic** starts the virtual GPU with Linux; if it cannot start, LinuxRunner uses software rendering and shows why. After changing the setting, fully close and reopen LinuxRunner. **Software Rendering** remains available for compatibility and can be considerably slower for demanding graphics.
 
 <p align="center"><a href="assets/screenshots/applications/freecad-metal-iphone.jpg"><img src="assets/screenshots/applications/freecad-metal-iphone.jpg" alt="FreeCAD running with Metal GPU selected in LinuxRunner on iPhone" width="280"></a></p>
 
@@ -184,23 +216,16 @@ These describe the network information LinuxRunner can obtain through iOS APIs a
 Use **Settings → File Sharing** to import/export files or access the active environment's shared folder at `/mnt/LinuxRunnerShared`. A `~/Shared` link is created when that name is available. [Files](docs/FILE_SHARING.md) · [Networking](docs/NETWORKING_AND_DISPLAYS.md)
 
 <details>
-<summary><b>More from LinuxRunner: interface, setup and Arch</b></summary>
+<summary><b>More from LinuxRunner: Arch and setup</b></summary>
 
 <table>
 <tr>
-<td align="center"><img src="assets/screenshots/linuxrunner-home.png" alt="LinuxRunner Home" width="210"><br><b>Home</b></td>
-<td align="center"><img src="assets/screenshots/linuxrunner-settings.png" alt="LinuxRunner Settings" width="210"><br><b>Settings</b></td>
-</tr>
-<tr>
 <td align="center"><img src="assets/screenshots/linuxrunner-install-progress.png" alt="Linux setup progress" width="210"><br><b>Installing Linux</b></td>
-<td align="center"><img src="assets/screenshots/linuxrunner-desktop-viewer.png" alt="LinuxRunner desktop viewer" width="210"><br><b>Desktop viewer</b></td>
-</tr>
-<tr>
-<td align="center" colspan="2"><img src="assets/screenshots/arch-telegram-iphone.jpg" alt="Telegram Desktop on Arch Linux ARM" width="210"><br><b>Telegram Desktop</b></td>
+<td align="center"><img src="assets/screenshots/arch-telegram-iphone.jpg" alt="Telegram Desktop on Arch Linux ARM" width="210"><br><b>Telegram Desktop on Arch</b></td>
 </tr>
 </table>
 
-The existing image collection remains available in [screenshots](assets/screenshots/README.md). Older interface captures illustrate the workflow; labels in the current guides describe Build 900.
+Older captures illustrate the workflow and may show an earlier interface. See all images in [screenshots](assets/screenshots/README.md).
 
 </details>
 
@@ -233,7 +258,7 @@ Use [Troubleshooting](docs/TROUBLESHOOTING.md) before reinstalling an environmen
 
 ## Build from Source
 
-Most users install the IPA. Developers should follow [Building](docs/BUILDING.md), including the additional pinned graphics dependencies for the Metal-enabled variant. The build remains **1.1.0 (900)** with bundle identifier `dev.linuxrunner.app`.
+Most users install the IPA. Developers should follow [Building](docs/BUILDING.md), including the additional pinned graphics dependencies for the Metal-enabled variant. The build is **1.1.1 (905)** with bundle identifier `dev.linuxrunner.app`.
 
 ## License and Acknowledgments
 

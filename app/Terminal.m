@@ -63,6 +63,13 @@ typedef struct linux_tty *tty_t;
 }
 @end
 
+static NSString *LRTerminalBootstrapBackground(NSString *hex) {
+    id setting = [NSUserDefaults.standardUserDefaults objectForKey:@"LinuxRunnerTerminal.trueBlack"];
+    if (setting && ![setting boolValue]) return hex;
+    UIColor *c = [[UIColor alloc] ish_initWithHexString:hex]; CGFloat r = 1, g = 1, b = 1;
+    if ([c getRed:&r green:&g blue:&b alpha:NULL] && (r + g + b) / 3 < 0.3) return @"#000000";
+    return hex;
+}
 @implementation Terminal
 @synthesize webView = _webView;
 
@@ -149,10 +156,11 @@ static NSMapTable<NSUUID *, Terminal *> *terminalsByUUID;
         @"fontFamily": prefs.fontFamily,
         @"fontSize": prefs.fontSize,
         @"foregroundColor": palette.foregroundColor,
-        @"backgroundColor": palette.backgroundColor,
+        @"backgroundColor": LRTerminalBootstrapBackground(palette.backgroundColor),
         @"cursorColor": palette.cursorColor ?: palette.foregroundColor,
         @"blinkCursor": @(prefs.blinkCursor),
         @"cursorShape": prefs.htermCursorShape,
+        @"sharpness": [NSUserDefaults.standardUserDefaults stringForKey:@"LinuxRunnerTerminal.sharpness"] ?: @"sharp",
     } mutableCopy];
     if (palette.colorPaletteOverrides)
         themeInfo[@"colorPaletteOverrides"] = palette.colorPaletteOverrides;

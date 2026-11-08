@@ -14,7 +14,7 @@
 #define BUFFER_LIMIT (128ULL*1024*1024)
 #define EXPORT_BUDGET (256ULL*1024*1024)
 struct create_request { uint32_t memfd,flags; uint64_t offset,size; };
-struct software_export { struct fd *source; uint64_t offset,size; };
+struct software_export { struct fd *source; uint64_t offset,size; void *owner; void (*release_owner)(void *); };
 static atomic_ullong exported_bytes;
 static atomic_ullong next_inode=1;
 static const struct fd_ops software_dmabuf_ops;
@@ -55,7 +55,7 @@ static int buffer_ioctl(struct fd *UNUSED(fd),int command,void *address) {
 static int buffer_poll(struct fd *UNUSED(fd)) { return POLL_READ|POLL_WRITE; }
 static int buffer_close(struct fd *fd) {
     struct software_export *b=fd->data;
-    if(b){fd_close(b->source);atomic_fetch_sub(&exported_bytes,b->size);free(b);}
+    if(b){fd_close(b->source);if(b->release_owner)b->release_owner(b->owner);atomic_fetch_sub(&exported_bytes,b->size);free(b);}
     return 0;
 }
 static const struct fd_ops software_dmabuf_ops={
@@ -85,8 +85,12 @@ static int export_buffer(struct create_request r) {
 }
 // Takes over the caller's reference to source (released on every failure).
 int software_dmabuf_export(struct fd *source,uint64_t offset,uint64_t size,unsigned flags) {
+    return software_dmabuf_export_owned(source,offset,size,flags,NULL,NULL);
+}
+int software_dmabuf_export_owned(struct fd *source,uint64_t offset,uint64_t size,unsigned flags,
+        void *owner,void (*release_owner)(void *)) {
     struct create_request r={.flags=flags,.offset=offset,.size=size};
-    if(!source->memfd){fd_close(source);return _EBADFD;}
+    if(!source->memfd){fd_close(source);if(release_owner)release_owner(owner);return _EBADFD;}
     lock(&source->memfd->lock);
     int error=0;struct stat st;
     // Linux udmabuf refuses write-sealed memfds (pages must stay writable).
@@ -100,13 +104,13 @@ int software_dmabuf_export(struct fd *source,uint64_t offset,uint64_t size,unsig
     else if(r.offset+r.size>(((uint64_t)st.st_size+PAGE_SIZE-1)/PAGE_SIZE)*PAGE_SIZE)error=_EINVAL;
     unlock(&source->memfd->lock);
     if(error){trace_refusal(&r,error==_EACCES?"access":!(source->memfd->seals&F_SEAL_SHRINK_)?"not-shrink-sealed":"range",
-        error==_EACCES||!(source->memfd->seals&F_SEAL_SHRINK_)?-1:(long long)st.st_size,source->memfd->seals);fd_close(source);return error;}
-    if(!reserve_export(r.size)){fd_close(source);return _ENOMEM;}
+        error==_EACCES||!(source->memfd->seals&F_SEAL_SHRINK_)?-1:(long long)st.st_size,source->memfd->seals);fd_close(source);if(release_owner)release_owner(owner);return error;}
+    if(!reserve_export(r.size)){fd_close(source);if(release_owner)release_owner(owner);return _ENOMEM;}
     struct software_export *b=malloc(sizeof(*b));
-    if(!b){atomic_fetch_sub(&exported_bytes,r.size);fd_close(source);return _ENOMEM;}
-    *b=(struct software_export){source,r.offset,r.size};
+    if(!b){atomic_fetch_sub(&exported_bytes,r.size);fd_close(source);if(release_owner)release_owner(owner);return _ENOMEM;}
+    *b=(struct software_export){source,r.offset,r.size,owner,release_owner};
     struct fd *out=adhoc_fd_create(&software_dmabuf_ops);
-    if(!out){free(b);atomic_fetch_sub(&exported_bytes,r.size);fd_close(source);return _ENOMEM;}
+    if(!out){free(b);atomic_fetch_sub(&exported_bytes,r.size);fd_close(source);if(release_owner)release_owner(owner);return _ENOMEM;}
     // An anonymous descriptor has no native fd of its own. Retaining it in a
     // VMA and SCM_RIGHTS keeps the source alive, including after all closes.
     out->data=b;out->real_fd=-1;out->flags=O_RDWR_;out->type=S_IFREG;

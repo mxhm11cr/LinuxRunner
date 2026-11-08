@@ -176,7 +176,14 @@ void send_signal(struct task *task, int sig, struct siginfo_ info) {
     if (sighand == NULL)
         return;
     lock(&sighand->lock);
-    if (signal_action(sighand, sig) != SIGNAL_IGNORE) {
+    // Linux never ignores a blocked signal, nor one the task awaits in
+    // sigwait/sigtimedwait (sig_ignored(): blocked/real_blocked); the
+    // disposition may change before it is unblocked, and sigwait consumes it
+    // whatever the disposition. MariaDB stops its sigwait thread with
+    // pthread_kill(SIGTERM) while SIGTERM is SIG_IGN: dropping it hung
+    // mariadb-install-db and every apt run that configures mariadb-server.
+    if (signal_action(sighand, sig) != SIGNAL_IGNORE ||
+        (sigset_has(task->blocked | task->waiting, sig) && signal_is_blockable(sig))) {
         deliver_signal_unlocked(task, sig, info);
         // Poke the target CPU so it exits the JIT loop at the next gadget
         // boundary instead of waiting for INT_TIMER (up to 1024 cycles).
@@ -206,6 +213,7 @@ bool try_self_signal(int sig) {
     return can_send;
 }
 
+static struct task *process_signal_target(struct task *task, int sig);
 int send_group_signal(dword_t pgid, int sig, struct siginfo_ info) {
     lock(&pids_lock);
     struct pid *pid = pid_get(pgid);
@@ -215,7 +223,7 @@ int send_group_signal(dword_t pgid, int sig, struct siginfo_ info) {
     }
     struct tgroup *tgroup;
     list_for_each_entry(&pid->pgroup, tgroup, pgroup) {
-        send_signal(tgroup->leader, sig, info);
+        send_signal(process_signal_target(tgroup->leader, sig), sig, info);
     }
     unlock(&pids_lock);
     return 0;
@@ -1330,6 +1338,32 @@ int_t sys_rt_sigtimedwait(addr_t set_addr, addr_t info_addr, addr_t timeout_addr
     return info.sig;
 }
 
+// A process-directed signal belongs to the whole thread group (Linux
+// complete_signal()): it goes to the addressed thread if that thread wants it,
+// else to any thread that does not block it or is waiting for it in
+// sigwait/sigtimedwait; if none does, it stays queued on the addressed thread.
+// Delivering it only to the leader stranded it whenever the leader blocked it
+// and another thread sigwaited for it -- the usual "block everywhere, one
+// signal thread" design (MariaDB's shutdown hung forever this way).
+// Caller holds pids_lock, which guards group->threads.
+static bool thread_wants_signal_locked(struct task *t, int sig) {
+    return !t->zombie && !t->exiting && !sigset_has(t->blocked & ~t->waiting, sig);
+}
+static struct task *process_signal_target(struct task *task, int sig) {
+    if (sig == 0 || !signal_is_blockable(sig) || task->sighand == NULL || task->group == NULL)
+        return task;
+    struct task *target = task;
+    lock(&task->sighand->lock);
+    if (!thread_wants_signal_locked(task, sig)) {
+        struct task *t;
+        list_for_each_entry(&task->group->threads, t, group_links) {
+            if (t != task && t->sighand == task->sighand && thread_wants_signal_locked(t, sig)) { target = t; break; }
+        }
+    }
+    unlock(&task->sighand->lock);
+    return target;
+}
+
 static int kill_task(struct task *task, dword_t sig, int code) {
     if (!superuser() &&
             current->uid != task->uid &&
@@ -1343,7 +1377,8 @@ static int kill_task(struct task *task, dword_t sig, int code) {
         .kill.pid = task_vnr(current->group->leader, task->pidns),
         .kill.uid = current->uid,
     };
-    send_signal(task, sig, info);
+    // tgkill/tkill address one thread; kill() addresses its thread group.
+    send_signal(code == SI_TKILL_ ? task : process_signal_target(task, sig), sig, info);
     return 0;
 }
 

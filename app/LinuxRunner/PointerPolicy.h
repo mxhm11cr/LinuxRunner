@@ -21,6 +21,7 @@ typedef struct {
     bool gc_mouse;            // a GCMouse is connected
     bool indirect_pointer;    // an indirect-pointer touch has been seen (iPad-style pointer)
     bool hover;               // UIKit hover events have been seen
+    bool uikit_pointer_platform; // iPad supplies targeted indirect-pointer clicks
 } LRPointerEnvironment;
 
 // Pointer mode: one touch is the mouse (press on touch-down, move, release on
@@ -37,14 +38,24 @@ static inline bool lr_pointer_use_gc_motion(LRPointerEnvironment e) {
     return e.gc_mouse && !e.assistive_touch && !e.indirect_pointer && !e.hover;
 }
 
-// GCMouse buttons: UIKit already delivers every button of an indirect pointer
-// (buttonMask), and AssistiveTouch delivers the left click as a touch. Other
-// buttons (right, middle with AssistiveTouch; all without UIKit pointer) come
-// from GCMouse.
+// Presence does not prove a working button stream. UIKit owns absolute-pointer
+// clicks (including iPad Magic Keyboard); GC owns only a relative-only pointer.
 static inline bool lr_pointer_use_gc_button(LRPointerEnvironment e, int button) {
-    if (e.indirect_pointer) return false;
+    if (e.uikit_pointer_platform || e.indirect_pointer || e.hover) return false;
     if (button == LR_POINTER_LEFT && e.assistive_touch) return false;
     return e.gc_mouse;
+}
+
+static inline bool lr_pointer_use_uikit_button(LRPointerEnvironment e, bool indirect, int button) {
+    (void)e; (void)indirect; (void)button;
+    return true;
+}
+
+// Releases belong to the source that accepted the press, even if pointer
+// detection or native presentation changes before that release arrives.
+static inline bool lr_pointer_forward_gc_button(LRPointerEnvironment e, int button,
+        bool pressed, bool owned, bool targeted) {
+    return pressed ? targeted && lr_pointer_use_gc_button(e, button) : owned;
 }
 
 // X11 button bit for a UIKit touch in pointer mode: secondary button mask maps

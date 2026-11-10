@@ -29,3 +29,17 @@ bool lr_rfb_viewport_point(double x,double y,double left,double top,double rw,do
  double gx=(x-left)*w/rw,gy=(y-top)*h/rh;
  *px=(uint16_t)fmax(0,fmin(w-1,gx));*py=(uint16_t)fmax(0,fmin(h-1,gy));return true;
 }
+bool lr_rfb_cursor_sizes(uint16_t w,uint16_t h,size_t *pixel_bytes,size_t *mask_bytes){
+ if(!pixel_bytes||!mask_bytes||w>LR_RFB_CURSOR_MAX||h>LR_RFB_CURSOR_MAX)return false;
+ *pixel_bytes=(size_t)w*h*4;*mask_bytes=(size_t)((w+7)/8)*h;return true;
+}
+bool lr_rfb_cursor_bgra(const uint8_t *pixels,const uint8_t *mask,uint16_t w,uint16_t h,uint8_t *out){
+ size_t pb,mb;if(!pixels||!mask||!out||!lr_rfb_cursor_sizes(w,h,&pb,&mb))return false;
+ size_t stride=(w+7)/8;
+ for(size_t y=0;y<h;y++)for(size_t x=0;x<w;x++){
+  const uint8_t *s=pixels+(y*w+x)*4;uint8_t *d=out+(y*w+x)*4;
+  bool on=(mask[y*stride+x/8]>>(7-x%8))&1;
+  d[0]=on?s[0]:0;d[1]=on?s[1]:0;d[2]=on?s[2]:0;d[3]=on?255:0;
+ }
+ return true;
+}

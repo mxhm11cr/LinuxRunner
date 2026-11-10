@@ -99,7 +99,10 @@ fd_t sys_openat(fd_t at_f, addr_t path_addr, dword_t flags, mode_t_ mode) {
     if (flags & O_CREAT_)
         apply_umask(&mode);
 
-    struct fd *at = at_fd(at_f);
+    // Linux ignores dirfd for an absolute pathname, even if it is invalid.
+    // RPM's safe directory walker starts with openat(-1, "/", O_NOFOLLOW).
+    // Relative paths must still reject an invalid descriptor with EBADF.
+    struct fd *at = path[0] == '/' ? AT_PWD : at_fd(at_f);
     if (at == NULL) {
         return _EBADF;
     }
@@ -1140,38 +1143,87 @@ dword_t sys_flock(fd_t f, dword_t operation) {
     return fd->mount->fs->flock(fd, operation);
 }
 
+// Linux UTIME_NOW / UTIME_OMIT differ from Darwin's (-1 / -2).
+#define LINUX_UTIME_NOW_ ((1l << 30) - 1l)
+#define LINUX_UTIME_OMIT_ ((1l << 30) - 2l)
+
+static int utime_convert_linux(struct timespec_ in, struct timespec *out) {
+    out->tv_sec = in.sec;
+    if (in.nsec == LINUX_UTIME_NOW_) {
+        out->tv_sec = 0; out->tv_nsec = UTIME_NOW;
+    } else if (in.nsec == LINUX_UTIME_OMIT_) {
+        out->tv_sec = 0; out->tv_nsec = UTIME_OMIT;
+    } else if (in.nsec < 0 || in.nsec > 999999999) {
+        return _EINVAL;
+    } else {
+        out->tv_nsec = in.nsec;
+    }
+    return 0;
+}
+
+// path_addr == 0 means "the file fd refers to" (glibc futimens), exactly as in
+// Linux do_utimes(): it never resolves "." relative to a non-directory fd.
 static dword_t sys_utime_common(fd_t at_f, addr_t path_addr, struct timespec atime, struct timespec mtime, dword_t flags) {
-    char path[MAX_PATH];
-    if (path_addr != 0)
-        if (user_read_string(path_addr, path, sizeof(path)))
+    if (flags & ~(AT_SYMLINK_NOFOLLOW_ | AT_EMPTY_PATH_))
+        return _EINVAL;
+    if (path_addr == 0) {
+        STRACE("utimensat(%d, NULL, {{%lld, %ld}, {%lld, %ld}}, %d)", at_f,
+                (long long)atime.tv_sec, (long)atime.tv_nsec,
+                (long long)mtime.tv_sec, (long)mtime.tv_nsec, flags);
+        if (at_f == AT_FDCWD_)
             return _EFAULT;
-    STRACE("utimensat(%d, %s, {{%lld, %lld}, {%lld, %lld}}, %d)", at_f, path,
-            (long long)atime.tv_sec, (long long)atime.tv_nsec,
-            (long long)mtime.tv_sec, (long long)mtime.tv_nsec, flags);
+        if (flags & ~AT_SYMLINK_NOFOLLOW_)
+            return _EINVAL;
+        struct fd *fd = f_get(at_f);
+        if (fd == NULL)
+            return _EBADF;
+        return generic_futime(fd, atime, mtime);
+    }
+    char path[MAX_PATH];
+    if (user_read_string(path_addr, path, sizeof(path)))
+        return _EFAULT;
+    STRACE("utimensat(%d, \"%s\", {{%lld, %ld}, {%lld, %ld}}, %d)", at_f, path,
+            (long long)atime.tv_sec, (long)atime.tv_nsec,
+            (long long)mtime.tv_sec, (long)mtime.tv_nsec, flags);
+    if (path[0] == '\0') {
+        if (!(flags & AT_EMPTY_PATH_))
+            return _ENOENT;
+        if (at_f == AT_FDCWD_)
+            return generic_utime(AT_PWD, ".", atime, mtime, true);
+        struct fd *fd = f_get(at_f);
+        if (fd == NULL)
+            return _EBADF;
+        return generic_futime(fd, atime, mtime);
+    }
     struct fd *at = at_fd(at_f);
     if (at == NULL)
         return _EBADF;
 
     bool follow_links = flags & AT_SYMLINK_NOFOLLOW_ ? false : true;
-    return generic_utime(at, path_addr != 0 ? path : ".", atime, mtime, follow_links);
+    return generic_utime(at, path, atime, mtime, follow_links);
 }
 
 dword_t sys_utimensat(fd_t at_f, addr_t path_addr, addr_t times_addr, dword_t flags) {
-    struct timespec atime;
-    struct timespec mtime;
-    if (times_addr == 0) {
-        atime = mtime = timespec_now(CLOCK_REALTIME);
-    } else {
+    struct timespec atime = {.tv_sec = 0, .tv_nsec = UTIME_NOW};
+    struct timespec mtime = atime;
+    if (times_addr != 0) {
         struct timespec_ times[2];
         if (user_get(times_addr, times))
             return _EFAULT;
-        atime = convert_timespec(times[0]);
-        mtime = convert_timespec(times[1]);
+        int err = utime_convert_linux(times[0], &atime);
+        if (err < 0) return err;
+        err = utime_convert_linux(times[1], &mtime);
+        if (err < 0) return err;
+        // Linux returns success without looking up anything.
+        if (atime.tv_nsec == UTIME_OMIT && mtime.tv_nsec == UTIME_OMIT)
+            return 0;
     }
     return sys_utime_common(at_f, path_addr, atime, mtime, flags);
 }
 
 dword_t sys_utimes(addr_t path_addr, addr_t times_addr) {
+    if (path_addr == 0)
+        return _EFAULT;
     struct timespec atime;
     struct timespec mtime;
     if (times_addr == 0) {
@@ -1187,6 +1239,8 @@ dword_t sys_utimes(addr_t path_addr, addr_t times_addr) {
 }
 
 dword_t sys_utime(addr_t path_addr, addr_t times_addr) {
+    if (path_addr == 0)
+        return _EFAULT;
     struct timespec atime;
     struct timespec mtime;
     if (times_addr == 0) {
@@ -1391,6 +1445,16 @@ dword_t sys_fsync(fd_t f) {
     if (fd->ops->fsync)
         err = fd->ops->fsync(fd);
     return err;
+}
+
+// syncfs(2): Linux flushes the filesystem containing fd. Darwin has no
+// per-filesystem flush, so this asks the host to write back everything (sync).
+dword_t sys_syncfs(fd_t f) {
+    STRACE("syncfs(%d)", f);
+    if (f_get(f) == NULL)
+        return _EBADF;
+    sync();
+    return 0;
 }
 
 // sync_file_range(2): SYNC_FILE_RANGE_WRITE only starts writeback, which is

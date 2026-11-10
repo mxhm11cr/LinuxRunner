@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "date": "2026-11-02",
+  "hardware": "iPad Air 13-inch (M4)",
+  "os": "iPadOS 27.2",
+  "workload": "Idle KDE Plasma X11 desktop, 1560x1112, ARM64 interpreter, virgl/ANGLE/Metal; before scripted interaction",
+  "provenance": "Fresh paired integration-source snapshots based on d141978 plus preserved local SteamOS support. The before variant uses the original automatic walk; after applies the current shared-activity storage runtime patch. Graphics and UI test sources were held fixed. Integration support and temporary counter sampling are outside this PR.",
+  "sampling": "Three cumulative getrusage(RUSAGE_SELF) user+system CPU and CLOCK_MONOTONIC snapshots, 30-60 seconds after metrics began; no input; thermal_state 0 is nominal.",
+  "runs": {
+    "before": {
+      "binary_uuid": "0C865F0C-9C12-37A5-88EB-5E99C3277036",
+      "samples": [
+        {
+          "monotonic_s": 398085.091509,
+          "cpu_s": 88.98842,
+          "frames": 165,
+          "thermal_state": 0
+        },
+        {
+          "monotonic_s": 398100.090784,
+          "cpu_s": 108.30805899999999,
+          "frames": 165,
+          "thermal_state": 0
+        },
+        {
+          "monotonic_s": 398115.090126,
+          "cpu_s": 126.618447,
+          "frames": 165,
+          "thermal_state": 0
+        }
+      ]
+    },
+    "after": {
+      "binary_uuid": "54B05770-AC90-33B9-A645-B8EBF03900C1",
+      "samples": [
+        {
+          "monotonic_s": 398592.280715,
+          "cpu_s": 60.925754,
+          "frames": 150,
+          "thermal_state": 0
+        },
+        {
+          "monotonic_s": 398607.284129,
+          "cpu_s": 67.506657,
+          "frames": 150,
+          "thermal_state": 0
+        },
+        {
+          "monotonic_s": 398622.281104,
+          "cpu_s": 73.14624500000001,
+          "frames": 151,
+          "thermal_state": 0
+        }
+      ]
+    }
+  },
+  "integration_changed_source_sha256": {
+    "before": {
+      "app/LinuxRunner/Diagnostics.swift": "bc9feaac998c62fa4653c5de9f6d52cb8c124b9689a416f1c5a168c984beb4d7",
+      "app/LinuxRunner/ManagerView.swift": "3d29455d5c7dbaf697b4ae5da6d7ecb90ec97f1ada92d2dec792ff9ea8e33c4e",
+      "app/LinuxRunner/GUIViewController.m": "4d103fe4e509f0ff3a56f69503c563ff7cc6c99579fe69b160760c675cf48cf1"
+    },
+    "after": {
+      "app/LinuxRunner/Diagnostics.swift": "7c165d331be3c51c9745b516a3328de065b1285caec65cda16cc26ae9d5cf538",
+      "app/LinuxRunner/ManagerView.swift": "745428d328444205dcfdec7654f076cac4692ce72d69cdae817aed423b1410df",
+      "app/LinuxRunner/GUIViewController.m": "54294cad1941e621b0892e1f126e6bcd1f7ec252e4a595d5ad1fbb10fecd4150"
+    }
+  },
+  "unchanged_control_source_sha256": {
+    "app/LinuxRunner/RuntimeBridge.m": "acf53f2098eeebb4a356a5f2d8dc991af966fadf324a5ccea7702718641deb19",
+    "app/UITests/LinuxRunnerUITests.m": "cc72ad4128bc0403029b65813d6ca7b1586d23d346f7f2d7b9552c3b31f4f476",
+    "graphics/virgl_host.c": "ef26e5384782e940038505ca82901f4fcd1eedc3d39491be83244f711188fd3e",
+    "fs/drm.c": "b76f3cab67cb9252b8930849f7415489242c5c87dd4bcafd42a9002db935a116",
+    "app/LinuxRunner/GUISupport.bundle/session.sh": "6f167647f732ec2590f6db3a75e8ab329e328e17fc210928b3e48c7d1e01c921"
+  },
+  "standalone_runtime_source_sha256": {
+    "app/LinuxRunner/Diagnostics.swift": "7c165d331be3c51c9745b516a3328de065b1285caec65cda16cc26ae9d5cf538",
+    "app/LinuxRunner/ManagerView.swift": "f4ef1c32cc67c815600d419a212ef1cb9324c6ca152edbaa83e835912f76041e",
+    "app/LinuxRunner/GUIViewController.m": "9790286f37b2c26fa5a52670d2c977714cd990dbacfe6c07a623fa58f8eddc44"
+  },
+  "runtime_patch_sha256": "59cb5ea57e64e96dd3d3cd6d01083ed6131ba000c26b023d3c0ee0ae5afcc1dd"
+}

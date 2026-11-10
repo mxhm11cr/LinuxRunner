@@ -1,8 +1,10 @@
-# Compatibility — LinuxRunner 1.1.0 (900)
+# Compatibility — LinuxRunner 1.1.1 (905)
 
 Compatibility depends on the distribution, package version, device memory, OS and execution/graphics path. Installing a package does not establish that every feature works.
 
 ## Devices and Distributions
+
+Version 1.1.1 adds Fedora Linux 44 ARM64 (lightweight X11 desktop and KDE Plasma), Kali Linux 2026.3 ARM64 (Xfce and optional tool sets) and experimental [SteamOS ARM64](STEAMOS.md).
 
 The retained IPA is ARM64, device families iPhone/iPad, minimum OS metadata 15.0. Physical iPhone and iPad use is confirmed by the maintainer; no universal model/OS qualification is implied. Older OS testing is limited, with an unresolved earlier iPhone 11/iOS 17 launch-black-screen report. [Requirements](../README.md#supported-devices-and-requirements)
 

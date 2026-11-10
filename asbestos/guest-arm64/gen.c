@@ -226,6 +226,7 @@ extern void gadget_branch_link_reg(void);
 extern void gadget_branch_reg_cached(void);
 extern void gadget_branch_link_reg_cached(void);
 extern void gadget_ret(void);
+extern void gadget_ret_cached(void);
 extern void gadget_cbz(void);
 extern void gadget_cbnz(void);
 extern void gadget_cbz_64(void);
@@ -2914,6 +2915,11 @@ static int gen_branch(struct gen_state *state, uint32_t insn) {
                 state->jump_ip[0] = state->size - 2;
                 break;
             case 2:  // RET
+#ifndef ISH_JIT
+                // A return the ret_cache misses tries the block cache, as BR.
+                if (arm64_indirect_branch_cache_enabled) gen(state, (unsigned long) gadget_ret_cached);
+                else
+#endif
                 gen(state, (unsigned long) gadget_ret);
                 gen(state, rn);  // usually X30
                 break;
@@ -5369,11 +5375,12 @@ static int gen_simd_fp(struct gen_state *state, uint32_t insn) {
 
     // SSHLL/USHLL/SSHLL2/USHLL2 (vector, immediate) - signed/unsigned shift left long
     // Encoding: 0 Q U 011110 immh immb 10100 1 Rn Rd
-    // Mask 0x8f80fc00 checks bit31=0,bits[28:23]=011110,opcode=10100,bit10=1
+    // Include bit 28: scalar FMSUB/FNMSUB can otherwise match this vector opcode.
+    // Mask 0x9f80fc00 checks bit31=0,bits[28:23]=011110,opcode=10100,bit10=1
     // Q at bit 30: 0=lower half (SSHLL/USHLL), 1=upper half (SSHLL2/USHLL2)
     // U at bit 29 distinguishes signed/unsigned
     // immh determines size: 0001=B->H, 001x=H->S, 01xx=S->D
-    if ((insn & 0x8f80fc00) == 0x0f00a400) {
+    if ((insn & 0x9f80fc00) == 0x0f00a400) {
         uint32_t Q = (insn >> 30) & 1;
         uint32_t U = (insn >> 29) & 1;
         uint32_t immh = (insn >> 19) & 0xf;

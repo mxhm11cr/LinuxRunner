@@ -16,6 +16,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/resource.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 static double LRGUIClock(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+t.tv_nsec*1e-9;}
 
 @interface TerminalViewController (LRGUIProcessStatus)
@@ -82,6 +85,7 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
 
 #import "TouchScrollPolicy.h"
 #import "PointerPolicy.h"
+#import "KeyboardPolicy.h"
 #import "DisplayPolicy.h"
 // Reuse the viewer's frame/input interface; this client never opens an RFB socket.
 #include "fs/kms_display.h"
@@ -167,6 +171,73 @@ extern void drm_refresh_native_display(void);
 }
 @end
 
+// Locally drawn pointer. The RFB Cursor pseudo-encoding gives the guest's
+// real cursor image and hotspot; x11vnc then leaves it out of the
+// framebuffer, so moving the pointer needs no framebuffer update at all.
+@interface LRCursorOverlay : NSObject
+@property(readonly) CALayer *layer;
+@property uint16_t width,height,hotX,hotY;
+@property(nullable) NSData *shape;
+- (void)setShape:(nullable NSData *)bgra width:(uint16_t)w height:(uint16_t)h hotX:(uint16_t)x hotY:(uint16_t)y;
+- (void)placeInFrame:(CGRect)frame pixelWidth:(uint16_t)pw pixelHeight:(uint16_t)ph x:(uint16_t)x y:(uint16_t)y hidden:(BOOL)hidden;
+@end
+@implementation LRCursorOverlay
+- (instancetype)init{
+    if((self=[super init])){_layer=[CALayer layer];_layer.zPosition=1000;_layer.magnificationFilter=kCAFilterNearest;_layer.hidden=YES;
+        _layer.actions=@{@"position":NSNull.null,@"bounds":NSNull.null,@"frame":NSNull.null,@"contents":NSNull.null,@"hidden":NSNull.null};}
+    return self;
+}
+- (void)setShape:(NSData *)bgra width:(uint16_t)w height:(uint16_t)h hotX:(uint16_t)x hotY:(uint16_t)y{
+    _shape=bgra;_width=bgra?w:0;_height=bgra?h:0;_hotX=x;_hotY=y;
+    if(!bgra||!w||!h||bgra.length!=(NSUInteger)w*h*4){_layer.contents=nil;_layer.hidden=YES;_width=_height=0;return;}
+    CGDataProviderRef provider=CGDataProviderCreateWithCFData((__bridge CFDataRef)bgra);CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
+    CGImageRef image=CGImageCreate(w,h,8,32,w*4,space,kCGBitmapByteOrder32Little|kCGImageAlphaPremultipliedFirst,provider,NULL,NO,kCGRenderingIntentDefault);
+    _layer.contents=(__bridge id)image;if(image)CGImageRelease(image);CGColorSpaceRelease(space);CGDataProviderRelease(provider);
+}
+- (void)placeInFrame:(CGRect)f pixelWidth:(uint16_t)pw pixelHeight:(uint16_t)ph x:(uint16_t)x y:(uint16_t)y hidden:(BOOL)hidden{
+    if(hidden||!_width||!_height||!pw||!ph||f.size.width<=1||!_layer.contents){_layer.hidden=YES;return;}
+    // Desktop scale, but never so small that the pointer is hard to see on a
+    // phone showing 960x540 in portrait. The hotspot stays on the pointer.
+    CGFloat s=f.size.width/pw,c=MAX(s,0.6);
+    [CATransaction begin];[CATransaction setDisableActions:YES];
+    _layer.frame=CGRectMake(f.origin.x+(x+0.5)*s-(_hotX+0.5)*c,f.origin.y+(y+0.5)*s-(_hotY+0.5)*c,_width*c,_height*c);_layer.hidden=NO;
+    [CATransaction commit];
+}
+@end
+// The external display (declared below) shows the same pointer.
+@protocol LRCursorDisplay
+- (void)setCursorShape:(nullable NSData *)bgra width:(uint16_t)w height:(uint16_t)h hotX:(uint16_t)x hotY:(uint16_t)y;
+- (void)placeCursorX:(uint16_t)x y:(uint16_t)y;
+@end
+static id<LRCursorDisplay> LRExternalCursorDisplay(void);
+// Portrait touchpad: a rounded pad in the black space beneath the desktop.
+// It owns its touches; LRFramebufferView's own recognizers ignore them.
+@interface LRPortraitTouchpadView : UIView
+@property UILabel *hint;
+@end
+@implementation LRPortraitTouchpadView
+- (instancetype)init{
+    if((self=[super initWithFrame:CGRectZero])){
+        self.backgroundColor=[UIColor colorWithWhite:.11 alpha:1];
+        self.layer.cornerRadius=20;self.layer.cornerCurve=kCACornerCurveContinuous;
+        self.layer.borderWidth=1;self.layer.borderColor=[UIColor colorWithWhite:1 alpha:.12].CGColor;
+        self.multipleTouchEnabled=YES;self.isAccessibilityElement=YES;
+        self.accessibilityLabel=@"Desktop touchpad";
+        self.accessibilityHint=@"Slide to move the pointer, tap to click, two fingers to scroll or tap for right click, hold then slide to drag.";
+        self.accessibilityTraits=UIAccessibilityTraitAllowsDirectInteraction;
+        _hint=[UILabel new];_hint.numberOfLines=0;_hint.textAlignment=NSTextAlignmentCenter;_hint.adjustsFontForContentSizeCategory=YES;
+        _hint.font=[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];_hint.textColor=[UIColor colorWithWhite:1 alpha:.55];
+        _hint.text=@"Touchpad\nSlide to move · Tap to click\nTwo fingers: scroll · Two-finger tap: right-click\nHold, then slide: drag";
+        _hint.isAccessibilityElement=NO;[self addSubview:_hint];
+    }return self;
+}
+- (void)layoutSubviews{[super layoutSubviews];_hint.frame=CGRectInset(self.bounds,16,12);}
+// Keep these touches away from the desktop surface's pointer-mode handlers.
+- (void)touchesBegan:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e{}
+- (void)touchesMoved:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e{}
+- (void)touchesEnded:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e{}
+- (void)touchesCancelled:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e{}
+@end
 @interface LRFramebufferView : UIView <UIKeyInput,UIGestureRecognizerDelegate,UIPointerInteractionDelegate>
 @property UIImageView *image;
 @property LRRFBClient *client;
@@ -174,6 +245,8 @@ extern void drm_refresh_native_display(void);
 @property uint16_t pointerX,pointerY;
 @property UIKeyModifierFlags stickyModifiers,hardwareModifiers,sentModifiers;
 @property BOOL secondaryTwoFinger,traceInput;
+@property(nonatomic) BOOL softwareKeyboardRequested;
+@property UIView *hardwareKeyboardInputView;
 @property NSMutableDictionary<NSNumber *,NSNumber *> *pressedKeys;
 @property unsigned traceCount;
 @property CGFloat zoom;
@@ -184,6 +257,25 @@ extern void drm_refresh_native_display(void);
 @property(nonatomic) BOOL relativeTouchpad;
 @property UILabel *touchpadHint;
 @property CGPoint touchpadDragPoint;
+@property LRPortraitTouchpadView *portraitPad;
+@property BOOL softwareKeyboardVisible,portraitPadActive;
+@property NSUInteger hintGeneration;
+@property BOOL pointerEverSent;
+@property LRCursorOverlay *cursor;
+// Linux keys above the iOS keyboard, and the one keyboard toggle (above the
+// portrait touchpad, top-right in landscape, bottom-right as a DeX touchpad).
+@property(nullable) UIView *keyAccessory;
+@property UIButton *keyboardButton;
+@property BOOL desktopControls;
+// Portrait: one dock of large controls directly above the touchpad
+// (Keyboard, DeX, Settings, More, Power); the navigation bar is hidden then.
+@property(nullable) UIView *dock;
+@property(nullable) UIButton *dockKeyboardButton;
+@property BOOL dockShown;
+@property BOOL dockCollapsed;          // landscape: pill folded into a small handle
+@property(nullable) UIButton *dockHandle;
+@property(nullable,copy) void (^dockVisibilityChanged)(BOOL shown);
+@property UIButton *touchpadHelp;
 @property NSData *patchPixels;
 @property(nonatomic,strong) UIPanGestureRecognizer *twoFingerScroll;
 @property(nonatomic,strong) UIPinchGestureRecognizer *viewportPinch;
@@ -197,6 +289,7 @@ extern void drm_refresh_native_display(void);
 @property UILongPressGestureRecognizer *secondaryGesture;
 @property(weak) UITouch *pointerTouch;
 @property uint8_t pointerTouchButton;
+@property uint8_t lastSentPointerButtons;
 @property BOOL sawIndirectPointer,sawHover,pointerModeActive;
 @property CFTimeInterval lastGCScroll;
 @property NSMutableDictionary<NSString *,NSNumber *> *inputCounts;
@@ -221,18 +314,29 @@ extern void drm_refresh_native_display(void);
 - (void)releaseInput;
 - (BOOL)hasExternalKeyboard;
 - (void)focusExternalKeyboard;
+- (void)focusKeyboard;
 - (void)relativeMoveX:(CGFloat)x y:(CGFloat)y;
+- (void)updateCursor;
+- (void)setCursorShape:(nullable NSData *)bgra width:(uint16_t)w height:(uint16_t)h hotX:(uint16_t)x hotY:(uint16_t)y;
+- (void)refreshExternalCursor;
 - (void)stroke:(uint32_t)symbol;
 - (void)toggleModifier:(UIKeyModifierFlags)flag;
 @end
+static const NSInteger LRDockFoldTag=7802;
+static const NSInteger LRDockPortraitOnlyTag=7803;   // DeX, Settings, More, Power: not in the small landscape pill
 @implementation LRFramebufferView
 - (instancetype)init {
     if((self=[super initWithFrame:CGRectZero])){
         _zoom=1;_inputObservers=[NSMutableArray new];self.clipsToBounds=YES;_pressedKeys=[NSMutableDictionary new];self.backgroundColor=UIColor.blackColor;_image=[UIImageView new];_image.contentMode=UIViewContentModeScaleAspectFit;_image.layer.magnificationFilter=kCAFilterNearest;
-        [self addSubview:_image];self.accessibilityIdentifier=@"Linux GUI surface";self.isAccessibilityElement=YES;self.accessibilityLabel=@"Linux GUI display";
+        [self addSubview:_image];_cursor=[LRCursorOverlay new];[self.layer addSublayer:_cursor.layer];self.accessibilityIdentifier=@"Linux GUI surface";self.isAccessibilityElement=YES;self.accessibilityLabel=@"Linux GUI display";
         _touchpadHint=[UILabel new];_touchpadHint.hidden=YES;_touchpadHint.numberOfLines=0;_touchpadHint.textAlignment=NSTextAlignmentCenter;_touchpadHint.textColor=[UIColor.whiteColor colorWithAlphaComponent:.85];_touchpadHint.font=[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-        _touchpadHint.text=@"External Desktop Touchpad\nSlide: move · Tap: click · Hold and slide: drag\nTwo fingers: scroll or tap to right-click\nUse Keyboard below to type.";
+        _touchpadHint.text=@"External Desktop Touchpad\nSlide: move · Tap: click · Hold and slide: drag\nTwo fingers: scroll or tap to right-click\nTap the keyboard button to type.";
         [self addSubview:_touchpadHint];
+        _touchpadHelp=[UIButton buttonWithType:UIButtonTypeSystem];_touchpadHelp.hidden=YES;
+        [_touchpadHelp setImage:[UIImage systemImageNamed:@"questionmark.circle"] forState:UIControlStateNormal];
+        _touchpadHelp.tintColor=[UIColor colorWithWhite:1 alpha:.45];_touchpadHelp.accessibilityLabel=@"Show touchpad help";
+        [_touchpadHelp addTarget:self action:@selector(showTouchpadHelp) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:_touchpadHelp];
         [self configurePresentation];
         _inputCounts=[NSMutableDictionary new];
         UITapGestureRecognizer *tap=[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tap:)];[self addGestureRecognizer:tap];_tapGesture=tap;
@@ -253,20 +357,127 @@ extern void drm_refresh_native_display(void);
         // Deliver touch-up immediately: in pointer mode it is the mouse-button release.
         for(UIGestureRecognizer *g in self.gestureRecognizers)g.delaysTouchesEnded=NO;
         [self refreshPointerMode];
+        [self buildPortraitPad];
+        for(UIGestureRecognizer *g in self.gestureRecognizers)g.delegate=self;
         UIPanGestureRecognizer *wheel=[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(wheel:)];wheel.allowedScrollTypesMask=UIScrollTypeMaskAll;wheel.allowedTouchTypes=@[];[self addGestureRecognizer:wheel];
     }return self;
 }
 - (void)dealloc{for(id observer in _inputObservers)[NSNotificationCenter.defaultCenter removeObserver:observer];}
+// ---- Portrait touchpad (iPhone portrait, no external display) ----------------
+- (void)buildPortraitPad{
+    _portraitPad=[LRPortraitTouchpadView new];_portraitPad.hidden=YES;[self addSubview:_portraitPad];
+    UIPanGestureRecognizer *move=[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(padMove:)];move.maximumNumberOfTouches=1;
+    UITapGestureRecognizer *tap=[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(padTap:)];
+    UILongPressGestureRecognizer *hold=[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(padHold:)];hold.minimumPressDuration=.35;hold.allowableMovement=10;
+    UITapGestureRecognizer *two=[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(padRightTap:)];two.numberOfTouchesRequired=2;
+    UIPanGestureRecognizer *scroll=[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(padScroll:)];scroll.minimumNumberOfTouches=2;scroll.maximumNumberOfTouches=2;
+    [two requireGestureRecognizerToFail:scroll];
+    for(UIGestureRecognizer *g in @[move,tap,hold,two,scroll]){g.delaysTouchesEnded=NO;[_portraitPad addGestureRecognizer:g];}
+    __weak typeof(self) weakSelf=self;
+    // Only the software keyboard counts: a hardware keyboard reports a tiny or off-screen frame.
+    [_inputObservers addObject:[NSNotificationCenter.defaultCenter addObserverForName:UIKeyboardWillChangeFrameNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){
+        typeof(self) self=weakSelf;if(!self||!self.window)return;
+        CGRect end=[n.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];
+        CGRect screen=self.window.screen.bounds;
+        BOOL visible=CGRectGetHeight(CGRectIntersection(end,screen))>80;
+        [self setSoftwareKeyboardVisible:visible animated:[n.userInfo[UIKeyboardAnimationDurationUserInfoKey] doubleValue]];
+    }]];
+    [_inputObservers addObject:[NSNotificationCenter.defaultCenter addObserverForName:UIKeyboardWillHideNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){
+        [weakSelf setSoftwareKeyboardVisible:NO animated:[n.userInfo[UIKeyboardAnimationDurationUserInfoKey] doubleValue]];
+    }]];
+}
+- (void)setSoftwareKeyboardVisible:(BOOL)visible animated:(double)duration{
+    if(_softwareKeyboardVisible==visible)return;
+    _softwareKeyboardVisible=visible;[self setNeedsLayout];
+    [UIView animateWithDuration:MAX(.15,duration) delay:0 options:UIViewAnimationOptionBeginFromCurrentState|UIViewAnimationOptionAllowUserInteraction animations:^{[self layoutIfNeeded];} completion:nil];
+}
+- (BOOL)portraitTouchpadEnabled{
+    id v=[NSUserDefaults.standardUserDefaults objectForKey:@"LinuxRunnerDesktop.portraitTouchpad"];
+    return v?[v boolValue]:YES;
+}
+// Instructional text (OLED care): show, then fade after LR_TOUCHPAD_HINT_SECONDS.
+- (void)showHint:(UIView *)label{
+    NSUInteger generation=++_hintGeneration;
+    [UIView animateWithDuration:.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState|UIViewAnimationOptionAllowUserInteraction animations:^{label.alpha=1;} completion:nil];
+    __weak typeof(self) weakSelf=self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(LR_TOUCHPAD_HINT_SECONDS*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+        typeof(self) self=weakSelf;if(!self||self.hintGeneration!=generation)return;
+        [UIView animateWithDuration:1.2 delay:0 options:UIViewAnimationOptionBeginFromCurrentState|UIViewAnimationOptionAllowUserInteraction animations:^{label.alpha=0;} completion:nil];
+    });
+}
+- (void)showTouchpadHelp{
+    if(_relativeTouchpad)[self showHint:_touchpadHint];
+    else if(_portraitPadActive)[self showHint:_portraitPad.hint];
+}
+- (void)syncPadPointer{
+    // Start from where the pointer is (a direct tap on the desktop may have moved it).
+    if((uint16_t)_mouseX!=_pointerX||(uint16_t)_mouseY!=_pointerY){_mouseX=_pointerX;_mouseY=_pointerY;}
+}
+// Portrait pad motion is relative to the desktop as displayed: the iPhone
+// shows it scaled down, so a finger moves the pointer by the same on-screen
+// distance (times the sensitivity) on every screen size.
+- (CGFloat)padDisplayScale{
+    CGFloat shown=_image.frame.size.width;
+    return (_pixelWidth&&shown>1)?(CGFloat)_pixelWidth/shown:1;
+}
+- (void)padMove:(UIPanGestureRecognizer *)g{
+    if(g.state==UIGestureRecognizerStateBegan)[self syncPadPointer];
+    CGPoint t=[g translationInView:_portraitPad];[g setTranslation:CGPointZero inView:_portraitPad];
+    CGFloat k=[self padDisplayScale];
+    [self relativeMoveX:t.x*k y:t.y*k];
+}
+- (void)padClick:(uint8_t)button{
+    [self syncPadPointer];[self focusKeyboard];
+    [self sendPointerFromEventTime:_lastTouchDown buttons:button];[self sendPointerFromEventTime:0 buttons:0];
+}
+- (void)padTap:(UITapGestureRecognizer *)g{_lastTouchDown=CACurrentMediaTime();[self padClick:1];}
+- (void)padRightTap:(UITapGestureRecognizer *)g{_lastTouchDown=CACurrentMediaTime();[self padClick:4];}
+- (void)padHold:(UILongPressGestureRecognizer *)g{
+    CGPoint p=[g locationInView:_portraitPad];
+    if(g.state==UIGestureRecognizerStateBegan){[self syncPadPointer];_touchpadDragPoint=p;_pointerTouchButton=1;[self relativeMoveX:0 y:0];}
+    else if(g.state==UIGestureRecognizerStateChanged){CGFloat k=[self padDisplayScale];[self relativeMoveX:(p.x-_touchpadDragPoint.x)*k y:(p.y-_touchpadDragPoint.y)*k];_touchpadDragPoint=p;}
+    else{_pointerTouchButton=0;[self relativeMoveX:0 y:0];}
+}
+- (void)padScroll:(UIPanGestureRecognizer *)g{
+    CGPoint t=[g translationInView:_portraitPad];
+    if(fabs(t.y)>=12/lr_input_gain([NSUserDefaults.standardUserDefaults doubleForKey:@"LinuxRunnerInput.scrollGain"],1)){
+        [self syncPadPointer];[self sendPointerFromEventTime:0 buttons:t.y<0?16:8];[self sendPointerFromEventTime:0 buttons:0];
+        [g setTranslation:CGPointZero inView:_portraitPad];
+    }
+}
+// Desktop-surface recognizers never see touches that start on the pad or on a control.
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)touch{
+    if(g.view!=self)return YES;
+    if(_portraitPadActive&&[touch.view isDescendantOfView:_portraitPad])return NO;
+    // The control pill and its handle own their touches (menus included).
+    if((_dock&&[touch.view isDescendantOfView:_dock])||(_dockHandle&&[touch.view isDescendantOfView:_dockHandle]))return NO;
+    for(UIView *v=touch.view;v&&v!=self;v=v.superview)if([v isKindOfClass:UIControl.class])return NO;
+    return YES;
+}
 - (void)setRelativeTouchpad:(BOOL)enabled {
     if(_relativeTouchpad==enabled)return;
     [self releaseInput];_pointerTouchButton=0;_relativeTouchpad=enabled;
     _mouseX=_pointerX;_mouseY=_pointerY;
     _presentationSuppressed=enabled;_touchpadHint.hidden=!enabled;
     _image.hidden=enabled||_metal!=nil;_metal.hidden=enabled;
-    if(enabled){[_metal clearFrame];_image.image=nil;[self bringSubviewToFront:_touchpadHint];}
+    _touchpadHelp.hidden=!enabled;
+    if(enabled){[_metal clearFrame];_image.image=nil;[self bringSubviewToFront:_touchpadHint];[self bringSubviewToFront:_touchpadHelp];[self showHint:_touchpadHint];}
     else if(_latestPixels)[self presentPixels:_latestPixels width:_pixelWidth height:_pixelHeight];
+    [self setNeedsLayout];
     self.accessibilityLabel=enabled?@"External desktop touchpad":@"Linux GUI display";
     [self refreshPointerMode];
+}
+- (void)updateCursor{
+    // DeX-style output: the phone is a touchpad, the pointer is on the display.
+    [_cursor placeInFrame:_image.frame pixelWidth:_pixelWidth pixelHeight:_pixelHeight x:_pointerX y:_pointerY hidden:_relativeTouchpad||_presentationSuppressed];
+    [LRExternalCursorDisplay() placeCursorX:_pointerX y:_pointerY];
+}
+- (void)setCursorShape:(NSData *)bgra width:(uint16_t)w height:(uint16_t)h hotX:(uint16_t)x hotY:(uint16_t)y{
+    [_cursor setShape:bgra width:w height:h hotX:x hotY:y];[self refreshExternalCursor];[self updateCursor];
+}
+- (void)refreshExternalCursor{
+    [LRExternalCursorDisplay() setCursorShape:_cursor.shape width:_cursor.width height:_cursor.height hotX:_cursor.hotX hotY:_cursor.hotY];
+    [LRExternalCursorDisplay() placeCursorX:_pointerX y:_pointerY];
 }
 - (void)relativeMoveX:(CGFloat)x y:(CGFloat)y {
     double px=_mouseX,py=_mouseY;
@@ -277,13 +488,13 @@ extern void drm_refresh_native_display(void);
     }
 }
 - (void)configurePresentation {
-    if (![NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerDesktop.metalPresentation"]) {
+    if (!LRRuntimeBridge.desktopMetalPresentationEnabled) {
         [_metal removeFromSuperview]; _metal = nil; _image.hidden = _relativeTouchpad;
         if (_latestPixels) [self presentPixels:_latestPixels width:_pixelWidth height:_pixelHeight];
         return;
     }
     if (_metal) return;
-        if ([NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerDesktop.metalPresentation"]) {
+        if (LRRuntimeBridge.desktopMetalPresentationEnabled) {
             __weak typeof(self) weak = self;
             _metal = [[LRMetalFramebufferView alloc] initWithFailure:^(NSString *reason) {
                 typeof(self) self = weak; if (!self) return;
@@ -297,12 +508,75 @@ extern void drm_refresh_native_display(void);
 }
 - (void)layoutSubviews{[super layoutSubviews];
     _touchpadHint.frame=CGRectInset(self.bounds,16,16);
-    CGFloat fit=(_pixelWidth&&_pixelHeight)?MIN(self.bounds.size.width/_pixelWidth,self.bounds.size.height/_pixelHeight):1;
+    CGFloat inset=MAX(8,self.safeAreaInsets.right+8);
+    _touchpadHelp.frame=CGRectMake(self.bounds.size.width-inset-36,MAX(8,self.safeAreaInsets.top+8),36,36);
+    // Portrait: same aspect-fit desktop, top-aligned; the pad fills the space beneath.
+    lr_rect desk,pad;
+    BOOL usePad=[self portraitTouchpadEnabled]&&lr_portrait_touchpad_layout(self.bounds.size.width,self.bounds.size.height,_pixelWidth,_pixelHeight,
+        true,_softwareKeyboardVisible,_relativeTouchpad,&desk,&pad);
+    if(usePad!=_portraitPadActive){
+        _portraitPadActive=usePad;
+        if(usePad){_portraitPad.hint.alpha=0;[self showHint:_portraitPad.hint];}
+    }
+    _portraitPad.hidden=!usePad;
+    // Portrait: one connected column from the top -- desktop (aspect fit, full
+    // width), the control pill right under it, and the touchpad under that,
+    // growing to fill what is left. Landscape: the desktop fills the screen
+    // and the pill floats at the top (collapsible). DeX: pill at the bottom.
+    CGRect area=self.bounds;
+    UIEdgeInsets safe=self.safeAreaInsets;
+    CGFloat W=self.bounds.size.width,H=self.bounds.size.height;
+    BOOL portrait=H>W;
+    const CGFloat pillH=50,gap=10;
+    BOOL pill=_dock&&_desktopControls;
+    if(portrait&&!_relativeTouchpad){
+        CGFloat top=MAX(safe.top,8)+4;
+        CGFloat dh=(_pixelWidth&&_pixelHeight)?W*_pixelHeight/_pixelWidth:W*9/16;
+        dh=MIN(dh,(H-top)*0.55);
+        area=CGRectMake(0,top,W,dh);
+        CGFloat y=top+dh+gap;
+        if(pill){CGFloat pw=MIN(W-24,360);_dock.frame=CGRectMake((W-pw)/2,y,pw,pillH);y+=pillH+gap;}
+        if(usePad){
+            CGFloat bottom=H-MAX(safe.bottom,8)-6;
+            _portraitPad.frame=CGRectMake(12,y,W-24,MAX(120,bottom-y));
+            [self bringSubviewToFront:_portraitPad];
+        }
+    } else if(pill&&_relativeTouchpad){
+        CGFloat pw=MIN(W-32,360);
+        _dock.frame=CGRectMake((W-pw)/2,H-MAX(safe.bottom,12)-pillH-6,pw,pillH);
+    } else if(pill){
+        // Landscape: a small pill with only Keyboard and Clipboard (and fold).
+        CGFloat pw=176,ph=42;
+        _dock.frame=CGRectMake((W-pw)/2,MAX(safe.top,6)+4,pw,ph);
+        _dockHandle.frame=CGRectMake((W-64)/2,MAX(safe.top,4),64,22);
+    }
+    BOOL landscapeFloating=pill&&!portrait&&!_relativeTouchpad;
+    BOOL showDock=pill&&!(landscapeFloating&&_dockCollapsed);
+    _dock.hidden=!showDock;
+    _dockHandle.hidden=!(landscapeFloating&&_dockCollapsed);
+    [_dock viewWithTag:LRDockFoldTag].hidden=!landscapeFloating;
+    for(UIView *v in [_dock viewWithTag:LRDockFoldTag].superview.subviews)if(v.tag==LRDockPortraitOnlyTag)v.hidden=landscapeFloating;
+    _dock.layer.cornerRadius=_dock.bounds.size.height/2;
+    if(showDock)[self bringSubviewToFront:_dock];
+    if(!_dockHandle.hidden)[self bringSubviewToFront:_dockHandle];
+    if(pill!=_dockShown){_dockShown=pill;if(_dockVisibilityChanged)_dockVisibilityChanged(pill);}
+    CGFloat fit=(_pixelWidth&&_pixelHeight)?MIN(area.size.width/_pixelWidth,area.size.height/_pixelHeight):1;
     CGSize size=CGSizeMake(_pixelWidth*fit*_zoom,_pixelHeight*fit*_zoom);
-    CGFloat limitX=MAX(0,(size.width-self.bounds.size.width)/2),limitY=MAX(0,(size.height-self.bounds.size.height)/2);
+    CGFloat limitX=MAX(0,(size.width-area.size.width)/2),limitY=MAX(0,(size.height-area.size.height)/2);
     _viewportOffset=CGPointMake(MAX(-limitX,MIN(limitX,_viewportOffset.x)),MAX(-limitY,MIN(limitY,_viewportOffset.y)));
-    _image.frame=CGRectMake((self.bounds.size.width-size.width)/2+_viewportOffset.x,(self.bounds.size.height-size.height)/2+_viewportOffset.y,size.width,size.height);
+    _image.frame=CGRectMake(area.origin.x+(area.size.width-size.width)/2+_viewportOffset.x,area.origin.y+(area.size.height-size.height)/2+_viewportOffset.y,size.width,size.height);
     _metal.frame = _image.frame;
+    [self updateCursor];
+    if(_keyboardButton){
+        CGFloat k=40;UIEdgeInsets safe=self.safeAreaInsets;
+        // Hidden before the first frame (nothing to type into) and while the iOS
+        // keyboard is open (its Linux-keys bar has its own hide key).
+        _keyboardButton.hidden=!_desktopControls||!_pixelWidth||!_pixelHeight||(_softwareKeyboardVisible&&!_relativeTouchpad)||_dockShown;   // the pill has its own keyboard key
+        if(usePad)_keyboardButton.frame=CGRectMake(pad.x+pad.w-k,pad.y-k-8,k,k);
+        else if(_relativeTouchpad)_keyboardButton.frame=CGRectMake(self.bounds.size.width-MAX(16,safe.right+16)-k,self.bounds.size.height-MAX(16,safe.bottom+8)-k,k,k);
+        else _keyboardButton.frame=CGRectMake(self.bounds.size.width-MAX(8,safe.right+8)-k-40,MAX(4,safe.top+4),k,k);
+        [self bringSubviewToFront:_keyboardButton];
+    }
 }
 - (void)presentPixels:(NSData *)pixels width:(uint16_t)width height:(uint16_t)height {
     [self presentPixels:pixels width:width height:height damage:(LRFrameDamage){0,0,width,height}];
@@ -311,6 +585,10 @@ extern void drm_refresh_native_display(void);
     if (!width || !height || pixels.length != (NSUInteger)width * height * 4) return;
     BOOL resized = _pixelWidth != width || _pixelHeight != height;
     _latestPixels = pixels; _pixelWidth = width; _pixelHeight = height;
+    // X servers start with the pointer in the screen centre. Until this view
+    // has sent a position, relative input (touchpads) starts from there too,
+    // so the first slide does not jump the cursor to the corner.
+    if(resized&&!_pointerEverSent){_pointerX=width/2;_pointerY=height/2;_mouseX=_pointerX;_mouseY=_pointerY;}
     if(resized)[self setNeedsLayout];
     if(_presentationSuppressed)return;
     if (_metal) { [_metal presentPixels:pixels width:width height:height damage:damage]; return; }
@@ -365,6 +643,38 @@ extern void drm_refresh_native_display(void);
     if([self hasExternalKeyboard]&&self.window.isKeyWindow&&!self.hidden&&!self.isFirstResponder)[self becomeFirstResponder];
 }
 - (BOOL)canBecomeFirstResponder{return YES;}
+- (UIView *)inputAccessoryView{return _softwareKeyboardRequested?_keyAccessory:nil;}
+- (UIView *)inputView{
+    // Keep the guest in the hardware-keyboard responder chain without opening
+    // the software keyboard over the desktop. The Keyboard button opts in.
+    if(_softwareKeyboardRequested)return nil;
+    if(!_hardwareKeyboardInputView)_hardwareKeyboardInputView=[[UIView alloc]initWithFrame:CGRectZero];
+    return _hardwareKeyboardInputView;
+}
+- (void)setSoftwareKeyboardRequested:(BOOL)requested{
+    _softwareKeyboardRequested=requested;
+    [_keyboardButton setImage:[UIImage systemImageNamed:requested?@"keyboard.chevron.compact.down":@"keyboard"] forState:UIControlStateNormal];
+    _keyboardButton.accessibilityLabel=requested?@"Hide Keyboard":@"Keyboard";
+    [_dockKeyboardButton setImage:[UIImage systemImageNamed:requested?@"keyboard.chevron.compact.down":@"keyboard" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:21 weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
+    if(self.isFirstResponder)[self reloadInputViews];
+}
+- (void)focusKeyboard{
+    if(!self.window.isKeyWindow||self.hidden||UIApplication.sharedApplication.applicationState!=UIApplicationStateActive)return;
+    // Never take focus from a presented settings page or native text field.
+    for(UIResponder *r=self.nextResponder;r;r=r.nextResponder)if([r isKindOfClass:UIViewController.class]){
+        UIViewController *vc=(UIViewController *)r;
+        if(vc.presentedViewController||vc.navigationController.presentedViewController||
+           (vc.navigationController&&vc.navigationController.topViewController!=vc))return;
+        break;
+    }
+    if(!self.isFirstResponder)[self becomeFirstResponder];
+}
+- (BOOL)resignFirstResponder{
+    BOOL hadFocus=self.isFirstResponder;
+    BOOL resigned=[super resignFirstResponder];
+    if(hadFocus&&resigned){[self releaseInput];_softwareKeyboardRequested=NO;}
+    return resigned;
+}
 - (BOOL)hasText{return YES;}
 - (UITextAutocorrectionType)autocorrectionType{return UITextAutocorrectionTypeNo;}
 - (UITextAutocapitalizationType)autocapitalizationType{return UITextAutocapitalizationTypeNone;}
@@ -373,6 +683,7 @@ extern void drm_refresh_native_display(void);
 - (UITextSmartInsertDeleteType)smartInsertDeleteType{return UITextSmartInsertDeleteTypeNo;}
 - (void)trace:(NSString *)event{if(_traceInput&&_traceCount++<2000)[LRRuntimeBridge logCategory:@"GUI_INPUT" event:event];}
 - (void)insertText:(NSString *)text{
+    [self countInput:@"keyboard.text"];
     NSMutableData *symbols=[[text dataUsingEncoding:NSUTF32LittleEndianStringEncoding] mutableCopy];uint32_t *codes=symbols.mutableBytes;
     [self syncModifiers];
     for(NSUInteger i=0;i<symbols.length/4;i++){uint32_t c=codes[i];
@@ -393,7 +704,7 @@ extern void drm_refresh_native_display(void);
     _sentModifiers=desired;
 }
 - (void)releaseInput{
-    [_client pointerX:_pointerX y:_pointerY buttons:0];_stickyModifiers=0;_hardwareModifiers=0;[self syncModifiers];
+    [self sendPointerFromEventTime:0 buttons:0];_stickyModifiers=0;_hardwareModifiers=0;[self syncModifiers];
     _mouseButtons=0;_pointerTouchButton=0;_pointerTouch=nil;
     for(NSNumber *symbol in _pressedKeys.allValues)[_client key:symbol.unsignedIntValue down:NO];
     [_pressedKeys removeAllObjects];
@@ -423,17 +734,33 @@ extern void drm_refresh_native_display(void);
     }
     if(key.keyCode>=UIKeyboardHIDUsageKeyboardF1&&key.keyCode<=UIKeyboardHIDUsageKeyboardF12)return 0xffbe + (uint32_t)(key.keyCode-UIKeyboardHIDUsageKeyboardF1);
     if(key.keyCode>=UIKeyboardHIDUsageKeyboardF13&&key.keyCode<=UIKeyboardHIDUsageKeyboardF24)return 0xffca + (uint32_t)(key.keyCode-UIKeyboardHIDUsageKeyboardF13);
-    // charactersIgnoringModifiers preserves printable layout information for
-    // Ctrl/Alt shortcuts. Cache the down keysym by HID so releasing Shift first
-    // cannot send a different key-up (A down followed by a up).
+    // Cache the down keysym by HID so releasing Shift first cannot send a
+    // different key-up. Text uses UIKit's actual shifted/layout-aware symbol;
+    // shortcut control codes are mapped back to printable keysyms.
     if(key.keyCode>=UIKeyboardHIDUsageKeyboardLeftControl&&key.keyCode<=UIKeyboardHIDUsageKeyboardRightGUI)return 0;
-    NSString *s=key.charactersIgnoringModifiers;NSData *d=[s dataUsingEncoding:NSUTF32LittleEndianStringEncoding];if(d.length!=4)return 0;
-    uint32_t c;memcpy(&c,d.bytes,4);return c<256?c:0x01000000|c;
+    unsigned modifiers=0;
+    if(key.modifierFlags&UIKeyModifierShift)modifiers|=LR_KEY_SHIFT;
+    if(key.modifierFlags&UIKeyModifierControl)modifiers|=LR_KEY_CONTROL;
+    if(key.modifierFlags&UIKeyModifierAlternate)modifiers|=LR_KEY_ALT;
+    if(key.modifierFlags&UIKeyModifierCommand)modifiers|=LR_KEY_COMMAND;
+    return LRHardwareKeySym(key.characters,key.charactersIgnoringModifiers,modifiers);
 }
 - (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event{
     NSMutableSet *unhandled=[presses mutableCopy];
-    for(UIPress *p in presses)if(p.key){UIKey *key=p.key;_hardwareModifiers=key.modifierFlags;[self syncModifiers];
+    for(UIPress *p in presses)if(p.key){UIKey *key=p.key;_hardwareModifiers=key.modifierFlags;
+        unsigned own=LRModifierForHID((unsigned)key.keyCode);
+        if(own==LR_KEY_SHIFT)_hardwareModifiers|=UIKeyModifierShift;
+        if(own==LR_KEY_CONTROL)_hardwareModifiers|=UIKeyModifierControl;
+        if(own==LR_KEY_ALT)_hardwareModifiers|=UIKeyModifierAlternate;
+        if(own==LR_KEY_COMMAND)_hardwareModifiers|=UIKeyModifierCommand;
+        [self syncModifiers];
+        [self countInput:@"keyboard.hardware.down"];
+        NSNumber *held=_pressedKeys[@(key.keyCode)];
         uint32_t symbol=[self symbolForKey:key];
+        // A repeat may change case/layout after a modifier is released.
+        // Release the old keysym before replacing it; otherwise either the
+        // original key stays down or repeats keep an obsolete character.
+        if(held&&held.unsignedIntValue!=symbol){[_client key:held.unsignedIntValue down:NO];[_pressedKeys removeObjectForKey:@(key.keyCode)];}
         if(symbol){_pressedKeys[@(key.keyCode)]=@(symbol);[_client key:symbol down:YES];}
         [self trace:[NSString stringWithFormat:@"hardware HID=%ld down=1 keysym=0x%08X modifiers=0x%lx",(long)key.keyCode,symbol,(unsigned long)_hardwareModifiers]];
         if(symbol||key.keyCode>=UIKeyboardHIDUsageKeyboardLeftControl)[unhandled removeObject:p];
@@ -443,6 +770,7 @@ extern void drm_refresh_native_display(void);
 - (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event{
     NSMutableSet *unhandled=[presses mutableCopy];
     for(UIPress *p in presses)if(p.key){UIKey *key=p.key;NSNumber *cached=_pressedKeys[@(key.keyCode)];
+        [self countInput:@"keyboard.hardware.up"];
         uint32_t symbol=cached?cached.unsignedIntValue:[self symbolForKey:key];
         if(symbol){[_client key:symbol down:NO];[_pressedKeys removeObjectForKey:@(key.keyCode)];}
         _hardwareModifiers=key.modifierFlags;[self syncModifiers];
@@ -479,7 +807,8 @@ extern void drm_refresh_native_display(void);
 - (LRPointerEnvironment)pointerEnvironment{
     NSString *mode=[NSUserDefaults.standardUserDefaults stringForKey:@"LinuxRunnerInput.mouseMode"];
     return (LRPointerEnvironment){.mode=[mode isEqual:@"touch"]?LR_MOUSE_MODE_TOUCH:[mode isEqual:@"pointer"]?LR_MOUSE_MODE_POINTER:LR_MOUSE_MODE_AUTO,
-        .assistive_touch=UIAccessibilityIsAssistiveTouchRunning(),.gc_mouse=GCMouse.mice.count>0,.indirect_pointer=_sawIndirectPointer,.hover=_sawHover};
+        .assistive_touch=UIAccessibilityIsAssistiveTouchRunning(),.gc_mouse=GCMouse.mice.count>0,.indirect_pointer=_sawIndirectPointer,.hover=_sawHover,
+        .uikit_pointer_platform=UIDevice.currentDevice.userInterfaceIdiom==UIUserInterfaceIdiomPad};
 }
 // Pointer mode: single-finger gestures off (no tap/long-press delays); a touch
 // is a mouse button press at its exact position. Two-finger scroll and zoom stay.
@@ -499,14 +828,27 @@ extern void drm_refresh_native_display(void);
 // Event-to-send latency: iOS event timestamp to the pointer message being queued.
 - (void)sendPointerFromEventTime:(NSTimeInterval)eventTime buttons:(uint8_t)buttons{
     if(!_client)return;
-    static uint8_t previous;if((buttons&~previous)&7)_pressSentAt=CACurrentMediaTime();previous=buttons;
-    [_client pointerX:_pointerX y:_pointerY buttons:buttons];[self countInput:@"x11.pointer-sent"];
+    uint8_t changed=(buttons^_lastSentPointerButtons)&7;
+    if((buttons&~_lastSentPointerButtons)&7){
+        _pressSentAt=CACurrentMediaTime();
+        // Selecting a Linux window also routes the hardware keyboard to its
+        // native display view. Keep touch-only use behind the Keyboard button.
+        if(GCKeyboard.coalescedKeyboard&&self.window&&!self.isFirstResponder){
+            BOOL focused=[self becomeFirstResponder];
+            [self countInput:focused?@"keyboard.focus.acquired":@"keyboard.focus.failed"];
+        }
+    }
+    for(unsigned bit=1;bit<=4;bit<<=1)if(changed&bit)[self countInput:[NSString stringWithFormat:@"x11.button%u.%@",bit,buttons&bit?@"down":@"up"]];
+    _lastSentPointerButtons=buttons;
+    _pointerEverSent=YES;
+    [_client pointerX:_pointerX y:_pointerY buttons:buttons];[self countInput:@"x11.pointer-sent"];[self updateCursor];
     if(eventTime>0){double ms=(CACurrentMediaTime()-eventTime)*1000;if(ms>=0&&ms<5000){_latencySum+=ms;_latencyCount++;_latencyMax=MAX(_latencyMax,ms);}}
 }
 - (NSDictionary *)inputDiagnostics{
     LRPointerEnvironment e=[self pointerEnvironment];NSMutableArray *mice=[NSMutableArray new];
     for(GCMouse *m in GCMouse.mice)[mice addObject:m.vendorName?:@"mouse"];
-    return @{@"pointer_mode":_pointerModeActive?@"on":@"off",@"mode_setting":@(e.mode),@"assistive_touch":@(e.assistive_touch),@"gc_mice":mice,
+    return @{@"software_keyboard_requested":@(_softwareKeyboardRequested),@"pointer_mode":_pointerModeActive?@"on":@"off",@"mode_setting":@(e.mode),@"assistive_touch":@(e.assistive_touch),@"gc_mice":mice,
+        @"hardware_keyboard":@(GCKeyboard.coalescedKeyboard!=nil),@"keyboard_first_responder":@(self.isFirstResponder),
         @"indirect_pointer_seen":@(_sawIndirectPointer),@"hover_seen":@(_sawHover),@"counts":_inputCounts.copy,@"last_source":_lastInputSource?:@"none",
         @"pointer":[NSString stringWithFormat:@"%u,%u buttons=%u",_pointerX,_pointerY,_mouseButtons|_pointerTouchButton],
         @"press_to_frame_ms":_displayCount?[NSString stringWithFormat:@"avg %.1f max %.1f n=%lu",_displaySum/_displayCount,_displayMax,(unsigned long)_displayCount]:@"none",
@@ -519,12 +861,15 @@ extern void drm_refresh_native_display(void);
 - (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction styleForRegion:(UIPointerRegion *)region{return [UIPointerStyle hiddenPointerStyle];}
 // ---- Pointer-mode touches (mouse through UIKit) ------------------------------
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event{
-    [self focusExternalKeyboard];
+    [self focusKeyboard];
     for(UITouch *t in touches)[self countInput:t.type==UITouchTypeIndirectPointer?@"uikit.touch.indirect-pointer":t.type==UITouchTypeDirect?@"uikit.touch.direct":t.type==UITouchTypePencil?@"uikit.touch.pencil":@"uikit.touch.indirect"];
     UITouch *t=touches.anyObject;_lastTouchDown=t.timestamp;
     if(t.type==UITouchTypeIndirectPointer&&!_sawIndirectPointer){_sawIndirectPointer=YES;[self refreshPointerMode];}
     if(_pointerModeActive&&(!_relativeTouchpad||t.type==UITouchTypeIndirectPointer)&&!_pointerTouch&&event.allTouches.count==1&&[self position:[t locationInView:self]]){
-        _pointerTouch=t;_pointerTouchButton=(uint8_t)lr_pointer_touch_button(t.type==UITouchTypeIndirectPointer&&(event.buttonMask&UIEventButtonMaskSecondary));
+        BOOL indirect=t.type==UITouchTypeIndirectPointer;
+        BOOL secondary=indirect&&(event.buttonMask&UIEventButtonMaskSecondary);
+        BOOL ownButton=lr_pointer_use_uikit_button([self pointerEnvironment],indirect,secondary?LR_POINTER_RIGHT:LR_POINTER_LEFT);
+        _pointerTouch=t;_pointerTouchButton=ownButton?(uint8_t)lr_pointer_touch_button(secondary):0;
         [self sendPointerFromEventTime:t.timestamp buttons:_mouseButtons];                      // move first
         [self sendPointerFromEventTime:t.timestamp buttons:_mouseButtons|_pointerTouchButton];  // then press
         return;
@@ -552,9 +897,26 @@ extern void drm_refresh_native_display(void);
     if(_pointerTouch&&[touches containsObject:_pointerTouch]){[self endPointerTouch:_pointerTouch];return;}
     [super touchesCancelled:touches withEvent:event];
 }
+- (BOOL)gcPressTargetsSurface {
+    if(!self.window.isKeyWindow||self.hidden||!_pixelWidth||!_pixelHeight)return NO;
+    // Global GC callbacks must not click through a native settings sheet.
+    for(UIResponder *r=self.nextResponder;r;r=r.nextResponder)if([r isKindOfClass:UIViewController.class]){
+        UIViewController *controller=(UIViewController *)r;
+        if(controller.presentedViewController||controller.isBeingDismissed)return NO;
+    }
+    CGRect image=_image.frame;
+    CGPoint point=CGPointMake(image.origin.x+(CGFloat)_pointerX/_pixelWidth*image.size.width,
+                             image.origin.y+(CGFloat)_pointerY/_pixelHeight*image.size.height);
+    if(!CGRectContainsPoint(self.bounds,point))return NO;
+    UIView *hit=[self.window hitTest:[self convertPoint:point toView:self.window] withEvent:nil];
+    return hit==self||[hit isDescendantOfView:self];
+}
 - (void)gcButton:(int)button bit:(uint8_t)bit pressed:(BOOL)pressed{
     [self countInput:[NSString stringWithFormat:@"gc.button%d.%@",button,pressed?@"down":@"up"]];
-    if(!lr_pointer_use_gc_button([self pointerEnvironment],button)){[self countInput:@"gc.button.ignored-uikit-delivers"];return;}
+    if(!lr_pointer_forward_gc_button([self pointerEnvironment],button,pressed,(_mouseButtons&bit)!=0,
+                                    pressed?[self gcPressTargetsSurface]:NO)){
+        [self countInput:@"gc.button.ignored-uikit-or-native-target"];return;
+    }
     [self mouseButton:bit pressed:pressed];
 }
 - (void)sendMouse{if(_pixelWidth&&_pixelHeight)[self sendPointerFromEventTime:GCMouse.current.mouseInput.lastEventTimestamp buttons:_mouseButtons|_pointerTouchButton];}
@@ -570,6 +932,7 @@ extern void drm_refresh_native_display(void);
     _pointerX=(uint16_t)_mouseX;_pointerY=(uint16_t)_mouseY;[self sendMouse];
 }
 - (void)mouseButton:(uint8_t)bit pressed:(BOOL)pressed{
+    if(pressed)[self focusKeyboard];
     _lastMouseButtonTime=CACurrentMediaTime();
     if(pressed)_mouseButtons|=bit;else _mouseButtons&=~bit;
     [self sendMouse];
@@ -587,11 +950,11 @@ extern void drm_refresh_native_display(void);
     _pointerX=x;_pointerY=y;_mouseX=x;_mouseY=y;return YES;
 }
 // Touch-gesture clicks: latency counted from the finger-down time, so recognizer waits show up.
-- (void)click:(uint8_t)button at:(CGPoint)p{[self focusExternalKeyboard];if(_relativeTouchpad||[self position:p]){[self sendPointerFromEventTime:_lastTouchDown buttons:button];[self sendPointerFromEventTime:0 buttons:0];}}
+- (void)click:(uint8_t)button at:(CGPoint)p{if(_relativeTouchpad||(CGRectContainsPoint(_image.frame,p)&&[self position:p])){[self focusKeyboard];[self sendPointerFromEventTime:_lastTouchDown buttons:button];[self sendPointerFromEventTime:0 buttons:0];}}
 - (void)tap:(UITapGestureRecognizer *)g{if([self mouseActive]&&!_relativeTouchpad)return;[self click:1 at:[g locationInView:self]];}
 - (void)drag:(UIPanGestureRecognizer *)g{
     if(_relativeTouchpad){CGPoint t=[g translationInView:self];[g setTranslation:CGPointZero inView:self];[self relativeMoveX:t.x y:t.y];return;}
-    if([self mouseActive])return;if([self position:[g locationInView:self]])[_client pointerX:_pointerX y:_pointerY buttons:(g.state==UIGestureRecognizerStateBegan||g.state==UIGestureRecognizerStateChanged)?1:0];
+    if([self mouseActive])return;if([self position:[g locationInView:self]]){[_client pointerX:_pointerX y:_pointerY buttons:(g.state==UIGestureRecognizerStateBegan||g.state==UIGestureRecognizerStateChanged)?1:0];[self updateCursor];}
 }
 - (void)secondary:(UILongPressGestureRecognizer *)g{
     if(_relativeTouchpad){CGPoint p=[g locationInView:self];
@@ -639,6 +1002,8 @@ extern void drm_refresh_native_display(void);
 // Display updates per second over the last status refresh (RFB updates delivered
 // to iOS; not the compositor frame rate, which the guest does not report here).
 @property uint64_t rateFrames;@property double rateTime,updateRate;
+// Viewer reconnections after the display transport restarted (session alive).
+@property NSInteger viewerReconnects;@property NSDate *viewerReconnectWindow;
 @property BOOL applicationWindowMapped;
 @property NSDate *startedAt;
 @property id exitObserver;
@@ -652,6 +1017,13 @@ extern void drm_refresh_native_display(void);
 @property BOOL desktopMode;
 @property NSTimer *queuedLaunchTimer; // retries a launch request held while the desktop starts
 @property BOOL desktopPainted;
+// Input round trip: the app moved the pointer over RFB and the X server
+// reported that same position (desktop-probe --pointer). 0 not yet, 1 verified,
+// -1 could not be verified (desktop shown as limited, never as fully ready).
+@property NSInteger inputVerified;
+@property NSInteger inputChecks;
+@property uint16_t inputProbeX,inputProbeY;
+@property CFTimeInterval inputProbeAt;
 @property BOOL traceFirstUpdate;
 @property NSMutableSet<NSString *> *traceSessionMarks;
 @property UIStackView *inputToolbar;
@@ -660,6 +1032,13 @@ extern void drm_refresh_native_display(void);
 @property NSString *lastLaunchRequest;
 @property (copy) NSString *sessionGuestUser;
 @property NSMutableArray<UIView *> *compactControls;
+@property(nonatomic) BOOL immersive;   // setter: -setImmersive:
+@property UIButton *dexButton;
+@property UIButton *dockDexButton;
+@property UIMenu *powerMenu;
+@property UIButton *dockFoldButton;
+@property(copy) NSString *linuxClipboard;   // last text Linux put on its CLIPBOARD (RFB ServerCutText)
+@property UIButton *moreButton;
 // Desktop startup coordinator (Open Desktop): check in Linux → repair → session.
 @property NSInteger startState;            // LRStart*
 @property BOOL profileReady;               // this controller checked the profile since the last failure
@@ -675,7 +1054,9 @@ extern void drm_refresh_native_display(void);
 @property LRAudioBridge *audio; // session sound; lives as long as the session, not the viewer
 @property uint16_t audioPort;
 @property BOOL viewerVisible;
+@property NSUUID *storageActivitySource;
 @property BOOL trackpadRequested;
+- (void)updateStorageActivity;
 @end
 enum { LRStartIdle, LRStartChecking, LRStartRepairing, LRStartSession, LRStartFailed };
 // ---- External display (second screen) ----------------------------------
@@ -690,7 +1071,9 @@ static BOOL LRExternalOutputEnabled(void) {
     id value=[NSUserDefaults.standardUserDefaults objectForKey:LRExternalDisplayEnabledKey];
     return !value || [value boolValue]; // Preserve the existing automatic output default.
 }
-@interface LRExternalDisplayController : UIViewController
+@interface LRExternalDisplayController : UIViewController <LRCursorDisplay>
+@property LRCursorOverlay *cursor;
+@property uint16_t cursorX,cursorY;
 @property(nullable) LRMetalFramebufferView *metal;
 @property UIImageView *image;
 @property UILabel *placeholder;
@@ -705,6 +1088,7 @@ static BOOL LRExternalOutputEnabled(void) {
 - (void)showPlaceholder;
 @end
 static __weak LRExternalDisplayController *LRCurrentExternalDisplay;
+static id<LRCursorDisplay> LRExternalCursorDisplay(void){return LRCurrentExternalDisplay;}
 @implementation LRExternalDisplayController
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -714,6 +1098,7 @@ static __weak LRExternalDisplayController *LRCurrentExternalDisplay;
     _metal=[[LRMetalFramebufferView alloc] initWithFailure:^(NSString *reason){typeof(self) self=weak;if(!self)return;[self.metal removeFromSuperview];self.metal=nil;
         [LRRuntimeBridge logCategory:@"EXTERNAL_DISPLAY" event:[@"Metal failed; Core Graphics fallback: " stringByAppendingString:reason]];}];
     if(_metal)[self.view addSubview:_metal];
+    _cursor=[LRCursorOverlay new];[self.view.layer addSublayer:_cursor.layer];
     _placeholder=[UILabel new];_placeholder.numberOfLines=0;_placeholder.textAlignment=NSTextAlignmentCenter;_placeholder.textColor=UIColor.lightGrayColor;
     _placeholder.font=[UIFont systemFontOfSize:28 weight:UIFontWeightMedium];
     _placeholder.text=@"LinuxRunner\n\nOpen the Linux desktop on your iPhone or iPad to show it on this display.";
@@ -728,6 +1113,12 @@ static __weak LRExternalDisplayController *LRCurrentExternalDisplay;
     if(!_pixelWidth||!_pixelHeight)return;
     double s=MIN(b.size.width/_pixelWidth,b.size.height/_pixelHeight);CGSize z=CGSizeMake(_pixelWidth*s,_pixelHeight*s);
     CGRect f=CGRectMake((b.size.width-z.width)/2,(b.size.height-z.height)/2,z.width,z.height);_image.frame=f;_metal.frame=f;
+    [self placeCursorX:_cursorX y:_cursorY];
+}
+- (void)setCursorShape:(NSData *)bgra width:(uint16_t)w height:(uint16_t)h hotX:(uint16_t)x hotY:(uint16_t)y{[_cursor setShape:bgra width:w height:h hotX:x hotY:y];[self placeCursorX:_cursorX y:_cursorY];}
+- (void)placeCursorX:(uint16_t)x y:(uint16_t)y{
+    _cursorX=x;_cursorY=y;
+    [_cursor placeInFrame:_image.frame pixelWidth:_pixelWidth pixelHeight:_pixelHeight x:x y:y hidden:!_placeholder.hidden||!LRExternalOutputEnabled()];
 }
 - (double)presentationDelayAt:(double)now {
     // Retain the 30 Hz cap, but do not delay the first update after idle.
@@ -766,7 +1157,7 @@ static __weak LRExternalDisplayController *LRCurrentExternalDisplay;
 - (void)showPlaceholder{
     _frameGeneration++;_frameScheduled=NO;_pendingPixels=nil;_pendingDamage=(LRFrameDamage){0};_lastPresentationTime=0;
     _placeholder.text=LRExternalOutputEnabled()?@"LinuxRunner\n\nOpen a Linux desktop to show it on this display.":@"LinuxRunner\n\nExternal Desktop Output is off. Enable it in Settings › Devices.";
-    _placeholder.hidden=NO;_image.hidden=YES;_image.image=nil;_pixelWidth=_pixelHeight=0;[_metal clearFrame];
+    _placeholder.hidden=NO;_image.hidden=YES;_image.image=nil;_pixelWidth=_pixelHeight=0;[_metal clearFrame];_cursor.layer.hidden=YES;
 }
 @end
 
@@ -858,19 +1249,34 @@ static NSString *DesktopDegradedNotice(NSString *state);
 - (instancetype)initDesktop{if((self=[super init])){_desktopMode=YES;_autoLaunchPending=YES;}return self;}
 + (NSURL *)prepareSupport:(NSError **)error { return PrepareSupport(error); }
 - (instancetype)initWithLaunchConfiguration:(NSDictionary *)configuration{if((self=[super init])){_launchConfiguration=[configuration copy];_autoLaunchPending=YES;}return self;}
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    if(!_storageActivitySource)_storageActivitySource=[NSUUID UUID];
+    [LRGraphicalActivity.shared setActive:YES forSource:_storageActivitySource];
+}
 - (void)viewDidAppear:(BOOL)animated{[super viewDidAppear:animated];
     _viewerVisible=YES;_surface.presentationSuppressed=_surface.relativeTouchpad;
+    [_surface focusKeyboard];
+    [self updateStorageActivity];
     if(_surface.latestPixels)[_surface presentPixels:_surface.latestPixels width:_surface.pixelWidth height:_surface.pixelHeight];
     if(_desktopMode)[LRRuntimeBridge desktopTrace:@"02 view" result:@"ok" detail:[NSString stringWithFormat:@"viewDidAppear controller=desktop auto-launch=%d window=%d size=%.0fx%.0f",_autoLaunchPending,self.view.window!=nil,self.view.bounds.size.width,self.view.bounds.size.height]];
     else [LRRuntimeBridge desktopTrace:@"02 view" result:@"info" detail:[NSString stringWithFormat:@"viewDidAppear controller=%@",_launchConfiguration?@"application":@"gui-test"]];
-    if(_autoLaunchPending){_autoLaunchPending=NO;_repairAttempted=NO;[self run:_desktopMode?@"desktop":@"custom"];}
-    if(_desktopMode&&self.view.bounds.size.width>self.view.bounds.size.height){id automatic=[NSUserDefaults.standardUserDefaults objectForKey:@"LinuxRunnerDesktop.autoFullscreen"];if(!automatic||[automatic boolValue])[self setImmersive:YES];}}
+    // Fit measures the framebuffer after the immersive toolbar/nav layout.
+    if(_desktopMode&&self.view.bounds.size.width>self.view.bounds.size.height){id automatic=[NSUserDefaults.standardUserDefaults objectForKey:@"LinuxRunnerDesktop.autoFullscreen"];if(!automatic||[automatic boolValue])[self setImmersive:YES animated:NO];}
+    [self.navigationController.view layoutIfNeeded];[self.view layoutIfNeeded];
+    if(_autoLaunchPending){_autoLaunchPending=NO;_repairAttempted=NO;[self run:_desktopMode?@"desktop":@"custom"];}}
 - (void)viewDidDisappear:(BOOL)animated{
     [super viewDidDisappear:animated];
     // Opening our settings/logs must not detach the retained display transport.
     if(self.presentedViewController&&!self.isBeingDismissed&&!self.navigationController.isBeingDismissed)return;
     _viewerVisible=NO;
     if(_desktopMode){_surface.presentationSuppressed=YES;[_surface.metal clearFrame];_surface.image.image=nil;[self externalDisplayChanged:nil];}
+    [self updateStorageActivity];
+}
+- (void)updateStorageActivity {
+    BOOL active=_viewerVisible||(_desktopMode&&_client&&[self externalOutputActive]);
+    if(!_storageActivitySource){if(!active)return;_storageActivitySource=[NSUUID UUID];}
+    [LRGraphicalActivity.shared setActive:active forSource:_storageActivitySource];
 }
 - (BOOL)externalOutputActive{return lr_external_output(LRExternalOutputEnabled(),LRCurrentExternalDisplay!=nil);}
 // Reuse the same RFB transport, never launch a second server for a monitor.
@@ -887,10 +1293,12 @@ static NSString *DesktopDegradedNotice(NSString *state);
     }
     if(!_client&&_sessionTerminal.sessionPid>0&&_startState!=LRStartFailed)[self connectDesktopViewer];
     if(active&&_surface.latestPixels)[LRCurrentExternalDisplay presentFrame:_surface.latestPixels width:_surface.pixelWidth height:_surface.pixelHeight damage:(LRFrameDamage){0,0,_surface.pixelWidth,_surface.pixelHeight}];
+    if(active)[_surface refreshExternalCursor];
     [self resumeRequestedTrackpad];
+    [self updateStorageActivity];
 }
 - (void)viewDidLoad{
-    [super viewDidLoad];if(_desktopMode){[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(externalDisplayChanged:) name:LRExternalDisplayChangedNotification object:nil];[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(externalDisplayChanged:) name:NSUserDefaultsDidChangeNotification object:nil];}[LRRuntimeBridge desktopTrace:@"02 view" result:@"start" detail:[NSString stringWithFormat:@"viewDidLoad controller=%@",_desktopMode?@"desktop":_launchConfiguration?@"application":@"gui-test"]];self.view.backgroundColor=UIColor.systemBackgroundColor;self.title=[LRRuntimeBridge activeEnvironmentIsDebian]?@"Debian Applications":[LRRuntimeBridge activeEnvironmentIsArch]?@"Arch Applications":@"Alpine Applications";_frameLock=[NSLock new];_compactControls=[NSMutableArray new];if(_desktopMode)self.title=@"LinuxRunner Desktop";
+    [super viewDidLoad];if(_desktopMode){[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(externalDisplayChanged:) name:LRExternalDisplayChangedNotification object:nil];[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(externalDisplayChanged:) name:NSUserDefaultsDidChangeNotification object:nil];}[LRRuntimeBridge desktopTrace:@"02 view" result:@"start" detail:[NSString stringWithFormat:@"viewDidLoad controller=%@",_desktopMode?@"desktop":_launchConfiguration?@"application":@"gui-test"]];self.view.backgroundColor=UIColor.systemBackgroundColor;self.title=[LRRuntimeBridge activeEnvironmentIsKali]?@"Kali Applications":[LRRuntimeBridge activeEnvironmentIsDebian]?@"Debian Applications":[LRRuntimeBridge activeEnvironmentIsArch]?@"Arch Applications":[LRRuntimeBridge activeEnvironmentIsFedora]?@"Fedora Applications":@"Alpine Applications";_frameLock=[NSLock new];_compactControls=[NSMutableArray new];if(_desktopMode)self.title=@"LinuxRunner Desktop";
     self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"Done" style:UIBarButtonItemStyleDone target:self action:@selector(done)];
 #if TARGET_OS_SIMULATOR
     // Simulator workflow driver (ManagerView): taps Done on the visible screen.
@@ -899,7 +1307,8 @@ static NSString *DesktopDegradedNotice(NSString *state);
 #endif
     UIBarButtonItem *logs=[[UIBarButtonItem alloc] initWithTitle:@"GUI Logs" style:UIBarButtonItemStylePlain target:self action:@selector(logs)];
     UIBarButtonItem *profiles=[[UIBarButtonItem alloc] initWithTitle:@"Profiles" style:UIBarButtonItemStylePlain target:self action:@selector(savedProfiles:)];
-    self.navigationItem.rightBarButtonItems=_desktopMode?@[[[UIBarButtonItem alloc] initWithTitle:@"Desktop" style:UIBarButtonItemStylePlain target:self action:@selector(desktopOptions:)]]:@[logs,profiles];
+    if(_desktopMode){self.navigationItem.leftBarButtonItem=nil;self.navigationItem.rightBarButtonItems=nil;self.navigationItem.titleView=nil;[self installDesktopToolbar];}
+    else self.navigationItem.rightBarButtonItems=@[logs,profiles];
     _stack=[UIStackView new];_stack.axis=UILayoutConstraintAxisVertical;_stack.spacing=10;_stack.translatesAutoresizingMaskIntoConstraints=NO;[self.view addSubview:_stack];
     [NSLayoutConstraint activateConstraints:@[[_stack.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:8],[_stack.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:12],[_stack.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-12],[_stack.bottomAnchor constraintEqualToAnchor:self.view.keyboardLayoutGuide.topAnchor constant:-8]]];
     UIStackView *actions=[UIStackView new];actions.spacing=12;actions.distribution=UIStackViewDistributionFillEqually;
@@ -917,7 +1326,7 @@ static NSString *DesktopDegradedNotice(NSString *state);
     [_stack addArrangedSubview:blenderActions];
     UIStackView *browsers=[UIStackView new];browsers.distribution=UIStackViewDistributionFillEqually;
     for(NSArray *item in @[@[@"Install Browser Support",@"installBrowser"],@[@"Run LinuxRunner Browser",@"runBrowser"],@[@"Run Firefox",@"runFirefox"]]){UIButton *b=[UIButton buttonWithType:UIButtonTypeSystem];[b setTitle:item[0] forState:UIControlStateNormal];b.titleLabel.font=[UIFont systemFontOfSize:12];b.titleLabel.numberOfLines=2;b.accessibilityIdentifier=item[0];[b addTarget:self action:NSSelectorFromString(item[1]) forControlEvents:UIControlEventTouchUpInside];[browsers addArrangedSubview:b];}
-    [_stack addArrangedSubview:browsers];_resolution=[[UISegmentedControl alloc] initWithItems:_desktopMode?@[@"640×480",@"800×600",@"1024×768",@"960×540",@"Fit"]:@[@"640×480",@"800×600",@"1024×768"]];_resolution.selectedSegmentIndex=_desktopMode?MAX(0,MIN(4,[NSUserDefaults.standardUserDefaults integerForKey:[@"LinuxRunnerDesktop.resolution." stringByAppendingString:LRRuntimeBridge.activeRootName]])):0;if(_desktopMode&&![NSUserDefaults.standardUserDefaults objectForKey:[@"LinuxRunnerDesktop.resolution." stringByAppendingString:LRRuntimeBridge.activeRootName]])_resolution.selectedSegmentIndex=3;_resolution.accessibilityIdentifier=@"Display resolution";[_stack addArrangedSubview:_resolution];_launchControls=@[actions,apps,mesaActions,blenderActions,browsers,clock,_resolution];_status=[UILabel new];_status.numberOfLines=0;_status.font=[UIFont systemFontOfSize:13];_status.accessibilityIdentifier=@"GUI status";_status.text=@"Install GUI Support in this environment, then open xclock or xterm. Install Qt Support for the Qt test. DISPLAY and authentication are set automatically per session. Debian GUI/browser acceptance requires physical testing.";[_stack addArrangedSubview:_status];
+    [_stack addArrangedSubview:browsers];_resolution=[[UISegmentedControl alloc] initWithItems:_desktopMode?@[@"640×480",@"800×600",@"1024×768",@"960×540",@"Fit"]:@[@"640×480",@"800×600",@"1024×768"]];_resolution.selectedSegmentIndex=_desktopMode?LRRuntimeBridge.desktopResolutionIndex:0;_resolution.accessibilityIdentifier=@"Display resolution";[_stack addArrangedSubview:_resolution];_launchControls=@[actions,apps,mesaActions,blenderActions,browsers,clock,_resolution];_status=[UILabel new];_status.numberOfLines=0;_status.font=[UIFont systemFontOfSize:13];_status.accessibilityIdentifier=@"GUI status";_status.text=@"Install GUI Support in this environment, then open xclock or xterm. Install Qt Support for the Qt test. DISPLAY and authentication are set automatically per session. Debian GUI/browser acceptance requires physical testing.";[_stack addArrangedSubview:_status];
     _surface=[LRFramebufferView new];[_stack addArrangedSubview:_surface];[_surface.heightAnchor constraintGreaterThanOrEqualToConstant:100].active=YES;
     _modifierButtons=[NSMutableArray new];
     UIStackView *toolbar=[UIStackView new];_inputToolbar=toolbar;toolbar.spacing=4;toolbar.distribution=UIStackViewDistributionFillEqually;
@@ -942,25 +1351,29 @@ static NSString *DesktopDegradedNotice(NSString *state);
     UIStackView *latencyPolicy=[UIStackView new];UILabel *latencyHint=[UILabel new];latencyHint.text=@"Low-latency input (experimental, next session)";latencyHint.font=[UIFont systemFontOfSize:11];latencyHint.numberOfLines=2;
     [latencyPolicy addArrangedSubview:latencyHint];[latencyPolicy addArrangedSubview:lowLatency];[_stack addArrangedSubview:latencyPolicy];[_compactControls addObject:latencyPolicy];
     UISwitch *sharedImages=[UISwitch new];sharedImages.accessibilityIdentifier=@"GUI shared images experimental";
-    sharedImages.on=[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUISharedImages"];
+    sharedImages.on=_desktopMode?LRRuntimeBridge.desktopSharedImagesEnabled:[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUISharedImages"];
     [sharedImages addTarget:self action:@selector(sharedImagesChanged:) forControlEvents:UIControlEventValueChanged];
     UIStackView *capturePolicy=[UIStackView new];UILabel *captureHint=[UILabel new];captureHint.text=@"X11 shared images (experimental, next session)";captureHint.font=[UIFont systemFontOfSize:11];captureHint.numberOfLines=2;
     [capturePolicy addArrangedSubview:captureHint];[capturePolicy addArrangedSubview:sharedImages];[_stack addArrangedSubview:capturePolicy];[_compactControls addObject:capturePolicy];
     if(_desktopMode){
         _immersiveButton=[UIButton buttonWithType:UIButtonTypeSystem];[_immersiveButton setImage:[UIImage systemImageNamed:@"arrow.down.right.and.arrow.up.left"] forState:UIControlStateNormal];_immersiveButton.accessibilityLabel=@"Show Desktop Controls";_immersiveButton.backgroundColor=[UIColor colorWithWhite:.1 alpha:.8];_immersiveButton.layer.cornerRadius=16;_immersiveButton.translatesAutoresizingMaskIntoConstraints=NO;_immersiveButton.hidden=YES;[_immersiveButton addTarget:self action:@selector(toggleImmersive) forControlEvents:UIControlEventTouchUpInside];[self.view addSubview:_immersiveButton];[NSLayoutConstraint activateConstraints:@[[_immersiveButton.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:4],[_immersiveButton.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-8],[_immersiveButton.widthAnchor constraintEqualToConstant:32],[_immersiveButton.heightAnchor constraintEqualToConstant:32]]];
+        _inputToolbar.hidden=YES;[self installKeyboardControls];
         for(UIView *v in _launchControls)v.hidden=YES;for(UIView*v in _compactControls)v.hidden=YES;_status.text=@"Open Desktop starts a real Linux window manager. The first start in an environment installs desktop support automatically (network required).";}
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(background) name:UIApplicationWillResignActiveNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(foreground) name:UIApplicationDidBecomeActiveNotification object:nil];
     __weak typeof(self) weak=self;
     _exitObserver=[NSNotificationCenter.defaultCenter addObserverForName:@"ProcessExitedNotification" object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){typeof(self) self=weak;if(self&&self.sessionTerminal.sessionPid>0&&[n.userInfo[@"pid"] intValue]==self.sessionTerminal.sessionPid){BOOL starting=self.startState==LRStartSession;[self stop];NSString *detail=[NSString stringWithContentsOfURL:[self.sessionURL URLByAppendingPathComponent:@"session.log"] encoding:NSUTF8StringEncoding error:nil];
-        NSString *last=@"GUI session exited";for(NSString *line in [detail componentsSeparatedByString:@"\n"])if([line hasPrefix:@"GUI_SESSION:"]&&![line containsString:@"cleaned up"])last=line;
+        NSString *last=@"GUI session exited",*exitLine=nil;for(NSString *line in [detail componentsSeparatedByString:@"\n"]){if([line hasPrefix:@"GUI_SESSION:"]&&![line containsString:@"cleaned up"])last=line;if([line hasPrefix:@"DESKTOP_EXIT:"])exitLine=line;}
+        // What ended, with its exit status (session.sh DESKTOP_EXIT), instead of a generic error.
+        NSString *errorCode=@"DESKTOP_STARTUP_ERROR";
+        if(exitLine){last=exitLine;errorCode=[exitLine containsString:@"component=display-server"]?@"DISPLAY_SERVER_EXITED":[exitLine containsString:@"component=transport"]?@"DISPLAY_TRANSPORT_FAILED":[exitLine containsString:@"reason=user-stop"]?@"SESSION_STOPPED":[exitLine containsString:@"application"]?@"DESKTOP_EXITED":errorCode;}
         if(self.desktopMode){[self traceSessionLog:detail];[LRRuntimeBridge desktopTrace:@"09 desktop" result:@"fail" detail:[NSString stringWithFormat:@"session process exited code=%@ while start-state=%ld painted=%d last=%@",n.userInfo[@"code"],(long)self.startState,self.desktopPainted,last]];}
         self.status.text=ApplicationPreflightFailure(self.sessionURL)?:[NSString stringWithFormat:@"%@. CLI remains available. GUI Logs includes application stdout/stderr.",last];
         if(self.desktopMode){
             // Missing components reported by session.sh: check again and repair (once per request).
             if([detail containsString:@"GUI_SESSION: support missing"]||[detail containsString:@"run Install Desktop Support"]||[detail containsString:@"DESKTOP_STARTUP: missing="]){self.profileReady=NO;[self beginDesktopCheck];}
             else if([detail containsString:@"GUI_SESSION: X server"]||[detail containsString:@"GUI_SESSION: focus manager"])[self desktopStartFailed:@"The display could not start" detail:[NSString stringWithFormat:@"%@\n\nError: DISPLAY_INITIALIZATION_ERROR. Tap Retry; Details shows the display log.",last]];
-            else if(starting)[self desktopStartFailed:@"The desktop could not start" detail:[NSString stringWithFormat:@"%@\n\nError: DESKTOP_STARTUP_ERROR. Tap Retry; Details shows the session log.",last]];
+            else if(starting)[self desktopStartFailed:@"The desktop could not start" detail:[NSString stringWithFormat:@"%@\n\nError: %@. Tap Retry; Details shows the session log.",last,errorCode]];
             else{
                 // Name the desktop component that ended and its last error line.
                 NSString *app=[NSString stringWithContentsOfURL:[self.sessionURL URLByAppendingPathComponent:@"application.log"] encoding:NSUTF8StringEncoding error:nil],*component=nil;
@@ -971,11 +1384,11 @@ static NSString *DesktopDegradedNotice(NSString *state);
                         NSString *componentLog=[NSString stringWithContentsOfURL:[self.sessionURL URLByAppendingPathComponent:logName] encoding:NSUTF8StringEncoding error:nil];NSString *errorLine=nil;
                         for(NSString *line in [componentLog componentsSeparatedByString:@"\n"])if([line containsString:@"ERROR"]||[line containsString:@"Bail out"]||[line containsString:@"rror:"])errorLine=line;
                         if(errorLine)cause=[NSString stringWithFormat:@"%@\n%@",component,[errorLine substringToIndex:MIN(errorLine.length,(NSUInteger)300)]];}}
-                [self desktopStartFailed:@"The desktop stopped" detail:[NSString stringWithFormat:@"%@\n\nError: DESKTOP_STARTUP_ERROR. Tap Retry to start it again, or Details for the logs.",cause]];
+                [self desktopStartFailed:@"The desktop stopped" detail:[NSString stringWithFormat:@"%@\n\nError: %@. Tap Retry to start it again, or Details for the logs.",cause,errorCode]];
             }
         }}}];
 }
-- (void)dealloc{[NSNotificationCenter.defaultCenter removeObserver:self];if(_exitObserver)[NSNotificationCenter.defaultCenter removeObserver:_exitObserver];[_client stop];[_metricsTimer invalidate];[_restartTimer invalidate];}
+- (void)dealloc{NSUUID *source=_storageActivitySource;if(source)dispatch_async(dispatch_get_main_queue(),^{[LRGraphicalActivity.shared setActive:NO forSource:source];});[NSNotificationCenter.defaultCenter removeObserver:self];if(_exitObserver)[NSNotificationCenter.defaultCenter removeObserver:_exitObserver];[_client stop];[_metricsTimer invalidate];[_restartTimer invalidate];}
 - (void)message:(NSString *)text{_status.text=text;[LRRuntimeBridge logCategory:@"GUI" event:text];if(_desktopMode)[LRRuntimeBridge desktopTrace:@"status" result:@"info" detail:text];}
 #if TARGET_OS_SIMULATOR
 - (void)simulatorClose{if(self.viewIfLoaded.window)[self done];}
@@ -1214,7 +1627,7 @@ static NSString *LRTail(NSURL *url,NSUInteger lines){
         [text appendFormat:@"\n== guest state\n%@\n",guest?:@"(not collected)"];
         for(NSString *name in @[@"profile-check.result",@"install-result"]){NSString *t=LRTail([support URLByAppendingPathComponent:name],10);if(t)[text appendFormat:@"\n== %@\n%@\n",name,t];}
         NSString *profile=LRTail([support URLByAppendingPathComponent:@"desktop-profile.sh.log"],40);if(profile)[text appendFormat:@"\n== desktop-profile.sh.log (last 40 lines)\n%@\n",profile];
-        if(session)for(NSString *name in @[@"desktop-state",@"session.log",@"application.log",@"xvfb.log",@"display.log",@"wm.log",@"panel.log",@"desktop.log",@"plasma.log"]){
+        if(session)for(NSString *name in @[@"desktop-state",@"session.log",@"application.log",@"xvfb.log",@"xorg.log",@"graphics.log",@"display.log",@"wm.log",@"panel.log",@"desktop.log",@"plasma.log"]){
             NSString *t=LRTail([session URLByAppendingPathComponent:name],name.length>12?25:40);if([name isEqual:@"plasma.log"])t=[LRRuntimeBridge redactDiagnosticText:t?:@"" application:YES];if(t.length)[text appendFormat:@"\n== %@ (tail)\n%@\n",name,t];}
         NSString *saved=LRRuntimeBridge.desktopTraceSavedText;NSArray *savedLines=[saved componentsSeparatedByString:@"\n"];
         [text appendFormat:@"\n== earlier attempts (saved timeline, last 150 records)\n%@\n",[[savedLines subarrayWithRange:NSMakeRange(savedLines.count>150?savedLines.count-150:0,MIN(savedLines.count,(NSUInteger)150))] componentsJoinedByString:@"\n"]];
@@ -1239,6 +1652,10 @@ static NSString *LRTail(NSURL *url,NSUInteger lines){
     if(_startState!=LRStartSession){[_profileTimer invalidate];_profileTimer=nil;return;}
     NSString *log=_sessionURL?[NSString stringWithContentsOfURL:[_sessionURL URLByAppendingPathComponent:@"session.log"] encoding:NSUTF8StringEncoding error:nil]:nil;
     if([log containsString:@"GUI_SESSION: keyboard="])_startTitle.text=@"Starting the desktop";
+    // Plasma's display helper is compiled inside Linux once per update; say so
+    // instead of leaving a silent minute-long wait.
+    if([log containsString:@"PLASMA_BUILD: building"]&&![log containsString:@"PLASMA_BUILD: compiled"]&&![log containsString:@"PLASMA_SESSION: starting"]){
+        _startTitle.text=@"Preparing Plasma";_startDetail.text=@"One-time setup after an update (about a minute). Later starts take seconds.";}
     [self traceSessionLog:log];
     [self updateStartupStatus];
     if(_startState!=LRStartSession)return;
@@ -1246,7 +1663,11 @@ static NSString *LRTail(NSURL *url,NSUInteger lines){
     if(DesktopDegradedNotice(state)){[self desktopStartFailed:@"Desktop components could not initialize" detail:DesktopDegradedNotice(state)];return;}
     if(_sessionTerminal.sessionPid<=0||[NSFileManager.defaultManager fileExistsAtPath:[_sessionURL URLByAppendingPathComponent:@"stop"].path]){[self desktopStartFailed:@"The desktop session stopped" detail:@"Details contains the component startup logs. Existing Linux files are preserved."];return;}
     if(-[_profileStarted timeIntervalSinceNow]>240){[_profileTimer invalidate];_profileTimer=nil;
-        [self desktopStartFailed:@"The display did not appear" detail:@"Linux started the desktop session, but no picture arrived within 4 minutes.\n\nError: DISPLAY_INITIALIZATION_ERROR. Tap Retry; Details shows the session log."];}
+        if(_desktopPainted){
+            [self desktopStartFailed:@"The desktop did not finish starting" detail:@"The Linux display connected, but the window manager, panel and desktop surface did not all become ready within 4 minutes.\n\nError: DESKTOP_COMPONENT_INITIALIZATION_ERROR. Details shows the session log."];
+        }else{
+            [self desktopStartFailed:@"The display did not appear" detail:@"Linux started the desktop session, but no picture arrived within 4 minutes.\n\nError: DISPLAY_INITIALIZATION_ERROR. Tap Retry; Details shows the session log."];
+        }}
 }
 - (void)desktopStartFailed:(NSString *)title detail:(NSString *)detail{
     [LRRuntimeBridge desktopTrace:@"failure" result:@"fail" detail:[NSString stringWithFormat:@"%@ | %@",title,[detail stringByReplacingOccurrencesOfString:@"\n" withString:@" "]]];
@@ -1323,31 +1744,31 @@ static NSString *LRTail(NSURL *url,NSUInteger lines){
     [self run:@"custom"];
 }
 - (void)runGPUGears {
-    if(![LRRuntimeBridge activeEnvironmentIsDebian]){_status.text=@"Metal Gears currently requires Debian ARM64";return;}
+    if(![LRRuntimeBridge activeEnvironmentIsDebian]||[LRRuntimeBridge activeEnvironmentIsKali]){_status.text=@"Metal Gears currently requires Debian ARM64";return;}
     NSString *base=@"/home/mobile/Downloads/.linuxrunner/gui";
     self.launchConfiguration=@{@"executable":@"/bin/sh",@"directory":base,@"arguments":@[[base stringByAppendingPathComponent:@"gpu-gears.sh"]],@"environment":@{}};
     [self run:@"custom"];
 }
 - (void)runGPUGears2 {
-    if(![LRRuntimeBridge activeEnvironmentIsDebian]){_status.text=@"GLES2 Gears currently requires Debian ARM64";return;}
+    if(![LRRuntimeBridge activeEnvironmentIsDebian]||[LRRuntimeBridge activeEnvironmentIsKali]){_status.text=@"GLES2 Gears currently requires Debian ARM64";return;}
     NSString *base=@"/home/mobile/Downloads/.linuxrunner/gui";
     self.launchConfiguration=@{@"executable":@"/bin/sh",@"directory":base,@"arguments":@[[base stringByAppendingPathComponent:@"gpu-gears2.sh"]],@"environment":@{}};
     [self run:@"custom"];
 }
 - (void)runGPUTextures {
-    if(![LRRuntimeBridge activeEnvironmentIsDebian]){_status.text=@"GLES2 texture checks require Debian ARM64";return;}
+    if(![LRRuntimeBridge activeEnvironmentIsDebian]||[LRRuntimeBridge activeEnvironmentIsKali]){_status.text=@"GLES2 texture checks require Debian ARM64";return;}
     NSString *base=@"/home/mobile/Downloads/.linuxrunner/gui";
     self.launchConfiguration=@{@"executable":@"/bin/sh",@"directory":base,@"arguments":@[[base stringByAppendingPathComponent:@"gpu-textures-check.sh"]],@"environment":@{}};
     [self run:@"custom"];
 }
 - (void)runGPUTargets {
-    if(![LRRuntimeBridge activeEnvironmentIsDebian]){_status.text=@"GLES2 target checks require Debian ARM64";return;}
+    if(![LRRuntimeBridge activeEnvironmentIsDebian]||[LRRuntimeBridge activeEnvironmentIsKali]){_status.text=@"GLES2 target checks require Debian ARM64";return;}
     NSString *base=@"/home/mobile/Downloads/.linuxrunner/gui";
     self.launchConfiguration=@{@"executable":@"/bin/sh",@"directory":base,@"arguments":@[[base stringByAppendingPathComponent:@"gpu-framebuffers-check.sh"]],@"environment":@{}};
     [self run:@"custom"];
 }
 - (void)runGLXMetalScript:(NSString *)script {
-    if(![LRRuntimeBridge activeEnvironmentIsDebian]){_status.text=@"These graphics checks require the Debian ARM64 profile";return;}
+    if(![LRRuntimeBridge activeEnvironmentIsDebian]||[LRRuntimeBridge activeEnvironmentIsKali]){_status.text=@"These graphics checks require the Debian ARM64 profile";return;}
     NSString *base=@"/home/mobile/Downloads/.linuxrunner/gui";
     self.launchConfiguration=@{@"executable":@"/bin/sh",@"directory":base,@"arguments":@[[base stringByAppendingPathComponent:script]],@"environment":@{@"LINUXRUNNER_GLX":@"software"}};
     [self run:@"custom"];
@@ -1359,7 +1780,7 @@ static NSString *LRTail(NSURL *url,NSUInteger lines){
 - (void)runBlenderHybrid { [self runGLXMetalScript:@"blender-hybrid.sh"]; }
 - (void)runMesaMetalCheck { [self runGLXMetalScript:@"gpu-mesa-metal-check.sh"]; }
 - (void)runGPUBridge {
-    if(![LRRuntimeBridge activeEnvironmentIsDebian]){[self message:@"The experimental GPU demo currently requires Debian ARM64 glibc. Alpine graphics and the existing Metal presenter remain available."];return;}
+    if(![LRRuntimeBridge activeEnvironmentIsDebian]||[LRRuntimeBridge activeEnvironmentIsKali]){[self message:@"The experimental GPU demo currently requires Debian ARM64 glibc. Alpine graphics and the existing Metal presenter remain available."];return;}
     NSString *base=@"/home/mobile/Downloads/.linuxrunner/gui";
     self.launchConfiguration=@{@"executable":@"/bin/sh",@"directory":base,@"arguments":@[[base stringByAppendingPathComponent:@"gpu-demo.sh"]],@"environment":@{}};
     [self run:@"custom"];
@@ -1417,7 +1838,10 @@ NSString *const LRGraphicsModeDefaultsKey=@"LinuxRunnerGraphics.mode";
 static __weak LRGUIViewController *LRLatestSessionController;
 static NSString *LRSessionGraphicsMode(void){
     NSString *mode=[NSUserDefaults.standardUserDefaults stringForKey:LRGraphicsModeDefaultsKey];
-    return [@[@"mesa",@"mesa-metal-resident",@"mesa-metal-verify"] containsObject:mode]?mode:@"mesa";
+    // GPU by default: the Metal bridge where the distribution passed its
+    // contract (gpu-env.sh falls back to Mesa elsewhere, with the reason), and
+    // it retires itself per process when Metal would be slower than Mesa.
+    return [@[@"mesa",@"mesa-metal-resident",@"mesa-metal-verify"] containsObject:mode]?mode:@"mesa-metal-resident";
 }
 // The session's routing decision (last GPU_ROUTING line the guest logged) and
 // the bridge's per-process statistics files (<session>/gpu-stats/<pid>.txt).
@@ -1464,7 +1888,9 @@ static NSString *LRSessionGraphicsMode(void){
     if([mode isEqual:@"custom"]&& !_launchConfiguration){[self message:@"Choose an application first."];return;}
     // Debian's installed Mesa renderer needs the server extension even when
     // the final framebuffer uses Metal. Keep an explicit diagnostic opt-out.
-    NSString *glxMode=[LRRuntimeBridge activeEnvironmentIsDebian]?@"software":@"off";
+    // Arch's Mesa GLX clients need the same server extension as Debian.
+    // This enables a protocol capability, not a hardware-acceleration claim.
+    NSString *glxMode=([LRRuntimeBridge activeEnvironmentIsDebian]||[LRRuntimeBridge activeEnvironmentIsArch]||[LRRuntimeBridge activeEnvironmentIsFedora])?@"software":@"off";
     if([mode isEqual:@"custom"]&&_launchConfiguration[@"environment"][@"LINUXRUNNER_GLX"])
         glxMode=_launchConfiguration[@"environment"][@"LINUXRUNNER_GLX"];
     if(![@[@"off",@"software"] containsObject:glxMode]){[self message:@"LINUXRUNNER_GLX must be off or software. Software GLX is Mesa rendering, not Metal acceleration."];return;}
@@ -1481,16 +1907,16 @@ static NSString *LRSessionGraphicsMode(void){
     _audioPort=0;
     if(LRAudioBridge.enabled){int afd=socket(AF_INET,SOCK_STREAM,0);struct sockaddr_in a2={.sin_family=AF_INET,.sin_port=0};a2.sin_addr.s_addr=htonl(INADDR_LOOPBACK);socklen_t l2=sizeof a2;
         if(afd>=0&&!bind(afd,(struct sockaddr *)&a2,sizeof a2)&&!getsockname(afd,(struct sockaddr *)&a2,&l2)&&ntohs(a2.sin_port)!=port)_audioPort=ntohs(a2.sin_port);if(afd>=0)close(afd);}
-    if(_desktopMode){NSString *key=[@"LinuxRunnerDesktop.resolution." stringByAppendingString:LRRuntimeBridge.activeRootName];id saved=[NSUserDefaults.standardUserDefaults objectForKey:key];_resolution.selectedSegmentIndex=saved?MAX(0,MIN(4,[saved integerValue])):3;}
+    if(_desktopMode)_resolution.selectedSegmentIndex=LRRuntimeBridge.desktopResolutionIndex;
     NSString *geometry=_desktopMode&&_resolution.selectedSegmentIndex==4?[self fitScreenGeometry]:@[@"640x480",@"800x600",@"1024x768",@"960x540"][_resolution.selectedSegmentIndex];
     {unsigned gw=0,gh=0;if(sscanf(geometry.UTF8String,"%ux%u",&gw,&gh)==2)[LRRuntimeBridge setDesktopDisplayWidth:gw height:gh];}   // KMS compositors use exactly this size
-    [LRRuntimeBridge logCategory:@"GUI_SESSION" event:[NSString stringWithFormat:@"root=%@ distribution=%@ geometry=%@ mode=%@ GLX=%@ (server capability; application renderer is independent)",LRRuntimeBridge.activeRootName,[LRRuntimeBridge activeEnvironmentIsDebian]?@"debian":@"alpine",geometry,mode,glxMode]];
+    [LRRuntimeBridge logCategory:@"GUI_SESSION" event:[NSString stringWithFormat:@"root=%@ distribution=%@ geometry=%@ mode=%@ GLX=%@ (server capability; application renderer is independent)",LRRuntimeBridge.activeRootName,LRRuntimeBridge.activeEnvironmentIsSteamOS?@"steamos":[LRRuntimeBridge activeEnvironmentIsDebian]?@"debian":[LRRuntimeBridge activeEnvironmentIsArch]?@"archarm":[LRRuntimeBridge activeEnvironmentIsFedora]?@"fedora":@"alpine",geometry,mode,glxMode]];
     _sessionGuestUser=[LRRuntimeBridge.defaultLinuxUser copy];
     NSString *desktopKey=[@"LinuxRunnerDesktop.environment." stringByAppendingString:LRRuntimeBridge.activeRootName];
     NSString *selectedDesktop=[NSUserDefaults.standardUserDefaults stringForKey:desktopKey];
-    if(!selectedDesktop && LRRuntimeBridge.activeEnvironmentIsDebian)selectedDesktop=[NSUserDefaults.standardUserDefaults stringForKey:@"LinuxRunnerDesktop.environment"];
+    if(!selectedDesktop && LRRuntimeBridge.activeEnvironmentIsDebian && !LRRuntimeBridge.activeEnvironmentIsKali)selectedDesktop=[NSUserDefaults.standardUserDefaults stringForKey:@"LinuxRunnerDesktop.environment"];
     BOOL directKMS=_desktopMode && ([selectedDesktop isEqual:@"hyprland"] || [selectedDesktop isEqual:@"wayfire"]) && [NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerDesktop.directKMS"];
-    NSDictionary *files=@{@"display-transport":directKMS?@"direct-kms":@"rfb",@"desktop-environment":([selectedDesktop isEqual:@"plasma"]||[selectedDesktop isEqual:@"lxqt"]||[selectedDesktop isEqual:@"enlightenment"]||[selectedDesktop isEqual:@"wayfire"]||[selectedDesktop isEqual:@"hyprland"])?selectedDesktop:@"linuxrunner",@"guest-user":_sessionGuestUser,@"geometry":geometry,@"glx-mode":glxMode,@"gpu-mode":LRSessionGraphicsMode(),@"input-mode":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUIEagerInput"]?@"eager":@"legacy",@"shm-mode":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUISharedImages"]?@"sysv":@"off",@"vnc-timing":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUILowLatencyInput"]?@"threads":@"default",@"password":password,@"cookie":cookie,@"port":[NSString stringWithFormat:@"%u",port],@"audio-port":_audioPort?[NSString stringWithFormat:@"%u",_audioPort]:@"",@"display":[NSString stringWithFormat:@"%u",display]};
+    NSDictionary *files=@{@"display-transport":directKMS?@"direct-kms":@"rfb",@"hyprland-effects":([NSUserDefaults.standardUserDefaults stringForKey:[@"LinuxRunnerDesktop.hyprland.effects." stringByAppendingString:LRRuntimeBridge.activeRootName]]?:@"visual"),@"desktop-environment":([selectedDesktop isEqual:@"plasma"]||[selectedDesktop isEqual:@"lxqt"]||[selectedDesktop isEqual:@"enlightenment"]||[selectedDesktop isEqual:@"wayfire"]||[selectedDesktop isEqual:@"hyprland"]||[selectedDesktop isEqual:@"xfce"])?selectedDesktop:@"linuxrunner",@"guest-user":_sessionGuestUser,@"geometry":geometry,@"glx-mode":glxMode,@"gpu-mode":LRSessionGraphicsMode(),@"input-mode":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUIEagerInput"]?@"eager":@"legacy",@"shm-mode":(_desktopMode?LRRuntimeBridge.desktopSharedImagesEnabled:[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUISharedImages"])?@"sysv":@"off",@"vnc-timing":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUILowLatencyInput"]?@"threads":@"default",@"password":password,@"cookie":cookie,@"port":[NSString stringWithFormat:@"%u",port],@"audio-port":_audioPort?[NSString stringWithFormat:@"%u",_audioPort]:@"",@"display":[NSString stringWithFormat:@"%u",display]};
     for(NSString *name in files){NSURL *url=[_sessionURL URLByAppendingPathComponent:name];if(![files[name] writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:&error]||![NSFileManager.defaultManager setAttributes:@{NSFilePosixPermissions:@0600} ofItemAtPath:url.path error:&error]){[self message:error.localizedDescription];return;}}
     NSString *xkb=[NSUserDefaults.standardUserDefaults stringForKey:@"LinuxRunnerGUIXKBMode"]?:@"xkb";
     [xkb writeToURL:[_sessionURL URLByAppendingPathComponent:@"xkb-mode"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -1534,21 +1960,44 @@ static NSString *DesktopDegradedNotice(NSString *state){
         return [NSString stringWithFormat:@"Desktop running without the %@ — it kept crashing. Apps still work; Details has the log.",[names componentsJoinedByString:@" and "]];}
     return nil;
 }
+- (void)setPreviewWanted:(BOOL)wanted{
+    if(!_desktopMode||!self.isViewLoaded)return;
+    BOOL running=_sessionTerminal.sessionPid>0&&_sessionURL&&_startState!=LRStartFailed&&![NSFileManager.defaultManager fileExistsAtPath:[_sessionURL URLByAppendingPathComponent:@"stop"].path];
+    if(wanted){if(!_client&&running)[self connectDesktopViewer];}
+    // Only the preview needed it: leave the desktop exactly as Done left it.
+    else if(_client&&!self.viewIfLoaded.window&&![self externalOutputActive])[self detachViewer];
+}
+- (UIImage *)previewImageIfChangedSince:(uint64_t *)generation{
+    [_frameLock lock];uint64_t frames=_frames;[_frameLock unlock];
+    NSData *pixels=_surface.latestPixels;uint16_t w=_surface.pixelWidth,h=_surface.pixelHeight;
+    if(!pixels||!w||!h||pixels.length!=(NSUInteger)w*h*4)return nil;
+    if(generation&&*generation==frames&&frames)return nil;
+    if(generation)*generation=frames;
+    // A copy: the live frame buffer is patched in place by later updates.
+    CGDataProviderRef provider=CGDataProviderCreateWithCFData((__bridge CFDataRef)[pixels copy]);
+    CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
+    CGImageRef image=CGImageCreate(w,h,8,32,w*4,space,kCGBitmapByteOrder32Little|kCGImageAlphaNoneSkipFirst,provider,NULL,NO,kCGRenderingIntentDefault);
+    CGColorSpaceRelease(space);CGDataProviderRelease(provider);
+    if(!image)return nil;
+    UIImage *result=[UIImage imageWithCGImage:image];CGImageRelease(image);
+    return result;
+}
 - (NSDictionary *)desktopSessionSummary {
     BOOL alive=_desktopMode&&_sessionTerminal.sessionPid>0;
     NSString *state=alive?@"Starting":@"Stopped";
     if(alive){NSString *readiness=[NSString stringWithContentsOfURL:[_sessionURL URLByAppendingPathComponent:@"desktop-state"] encoding:NSUTF8StringEncoding error:nil];
-        if([readiness containsString:@"ready=1"])state=_desktopPainted?(DesktopDegradedNotice(readiness)?@"Ready (degraded)":@"Ready"):@"Components ready; waiting for paint";}
+        if([readiness containsString:@"ready=1"])state=!_desktopPainted?@"Components ready; waiting for paint":_inputVerified==0?@"Painted; checking input":(DesktopDegradedNotice(readiness)||_inputVerified<0)?@"Ready (degraded)":@"Ready";}
     NSString *geometry=_sessionURL?[NSString stringWithContentsOfURL:[_sessionURL URLByAppendingPathComponent:@"geometry"] encoding:NSUTF8StringEncoding error:nil]:nil;
     return @{@"state":state,@"alive":@(alive),@"connected":@(_client!=nil),@"geometry":geometry?:@"",@"user":_sessionGuestUser?:@"unknown",@"selectedUser":LRRuntimeBridge.defaultLinuxUser,@"root":LRRuntimeBridge.activeRootName,@"audio":[self audioSummary]};
 }
-// "Fit" desktop size: the window's shape in points (iPad windows, Stage Manager,
-// split view and external displays included), scaled up to at least 540 pixels
-// on the short side for usable Linux UIs and capped at 1600x1200 to bound the
-// software-rendering and x11vnc cost. Multiples of 8; session.sh validates it.
+// "Fit" chooses a bounded LANDSCAPE logical mode once at session startup.
+// Portrait phones/monitors and narrow iPad windows letterbox that same desktop.
+// UIKit rotation/keyboard layout only changes the existing aspect-fit viewport.
 - (NSString *)fitScreenGeometry{
-    UIWindow *target=([self externalOutputActive]?LRCurrentExternalDisplay.view.window:nil)?:self.view.window;   // a connected monitor wins
-    CGSize s=target?target.bounds.size:self.view.bounds.size;
+    UIView *target=[self externalOutputActive]?LRCurrentExternalDisplay.view:_surface;
+    [target layoutIfNeeded];
+    CGSize s=target.bounds.size;
+    if(s.width<1||s.height<1)s=self.view.bounds.size;
     uint16_t W,H;lr_desktop_geometry(s.width,s.height,&W,&H);
     return [NSString stringWithFormat:@"%ux%u",W,H];
 }
@@ -1563,7 +2012,7 @@ static NSString *DesktopDegradedNotice(NSString *state){
              [UIKeyCommand commandWithTitle:@"Actual Size" image:nil action:@selector(shortcutActualSize) input:@"0" modifierFlags:m propertyList:nil],
              [UIKeyCommand commandWithTitle:@"Close Desktop View" image:nil action:@selector(done) input:@"w" modifierFlags:m propertyList:nil]];
 }
-- (void)shortcutOptions{[self desktopOptions:self.navigationItem.rightBarButtonItem];}
+- (void)shortcutOptions{[self desktopOptions:_moreButton];}
 - (void)shortcutFit{[self.surface fitViewport];}
 - (void)shortcutActualSize{[self.surface actualViewport];}
 // Full-screen desktop: hide the home indicator and let edge swipes reach the
@@ -1604,7 +2053,7 @@ static NSString *DesktopDegradedNotice(NSString *state){
 }
 - (void)attachViewerWithPort:(uint16_t)port password:(NSString *)password{
     if(_client)return;
-    _desktopPainted=NO;[_surface clearFrame];[_surface configurePresentation];_traceFirstUpdate=NO;
+    _desktopPainted=NO;_inputVerified=0;_inputChecks=0;_inputProbeAt=0;[_surface clearFrame];[_surface configurePresentation];_traceFirstUpdate=NO;
     if(_desktopMode){[LRRuntimeBridge desktopTrace:@"11 viewer" result:@"ok" detail:@"native viewer client created"];
         [LRRuntimeBridge desktopTrace:@"12 renderer" result:_surface?@"ok":@"fail" detail:[NSString stringWithFormat:@"surface=%d metal=%d hidden=%d in-window=%d size=%.0fx%.0f",_surface!=nil,_surface.metal!=nil,_surface.hidden,_surface.window!=nil,_surface.bounds.size.width,_surface.bounds.size.height]];}
     NSString *transport=[NSString stringWithContentsOfURL:[_sessionURL URLByAppendingPathComponent:@"display-transport"] encoding:NSUTF8StringEncoding error:nil];
@@ -1612,6 +2061,7 @@ static NSString *DesktopDegradedNotice(NSString *state){
     _client=[[(direct?LRKMSClient.class:LRRFBClient.class) alloc] initWithPort:port password:password];
     if (direct) ((LRKMSClient *)_client).sessionURL=_sessionURL;
     [LRRuntimeBridge logCategory:@"GUI_TRANSPORT" event:direct?@"native-kms (no RFB socket)":@"rfb"];_surface.client=_client;_startedAt=NSDate.date;_frames=0;_bytes=0;_applicationWindowMapped=NO;
+    [self updateStorageActivity];
     __weak typeof(self) weak=self;
     __weak LRRFBClient *thisClient=_client;
     _client.patchFrameHandler=^(NSData *patch,uint16_t w,uint16_t h,uint64_t frames,uint64_t bytes,LRFrameDamage damage){
@@ -1637,6 +2087,11 @@ static NSString *DesktopDegradedNotice(NSString *state){
         BOOL schedule=!self.presentationPending;self.presentationPending=YES;[self.frameLock unlock];
         if(schedule)dispatch_async(dispatch_get_main_queue(),^{typeof(self) self=weak;if(self&&self.client==thisClient)[self drainFrameForClient:thisClient];});
     };
+    _client.cursorHandler=^(NSData *bgra,uint16_t w,uint16_t h,uint16_t hx,uint16_t hy){dispatch_async(dispatch_get_main_queue(),^{typeof(self) self=weak;
+        if(self&&self.client==thisClient)[self.surface setCursorShape:bgra width:w height:h hotX:hx hotY:hy];});};
+    _client.pointerPositionHandler=^(uint16_t x,uint16_t y){dispatch_async(dispatch_get_main_queue(),^{typeof(self) self=weak;
+        if(self&&self.client==thisClient){self.surface.pointerX=x;self.surface.pointerY=y;self.surface.mouseX=x;self.surface.mouseY=y;[self.surface updateCursor];}});};
+    _client.cutTextHandler=^(NSString *text){dispatch_async(dispatch_get_main_queue(),^{typeof(self) self=weak;if(self&&self.client==thisClient)self.linuxClipboard=text;});};
     _client.statusHandler=^(NSString *status){dispatch_async(dispatch_get_main_queue(),^{typeof(self) self=weak;if(self.client&&self.client==thisClient){
         if(self.desktopMode)[LRRuntimeBridge desktopTrace:@"10 display-socket" result:[status hasPrefix:@"Connected"]?@"ok":[status hasPrefix:@"Display error:"]?@"fail":@"info" detail:status];
         [self message:status];if([status hasPrefix:@"Linux display ended"]||[status hasPrefix:@"Display error:"]){
@@ -1645,6 +2100,14 @@ static NSString *DesktopDegradedNotice(NSString *state){
         // The viewer gives up after ~30 s; a first start on the phone can take
         // longer. While the session runs, keep connecting (the startup
         // watchdog reports a display that never appears).
+        // After start, the session restarts its display transport (x11vnc) while
+        // the desktop keeps running: reconnect, at most 5 times a minute.
+        if(self.desktopMode&&self.startState!=LRStartSession&&self.sessionTerminal.sessionPid>0&&[status hasPrefix:@"Linux display ended"]){
+            if(!self.viewerReconnectWindow||-[self.viewerReconnectWindow timeIntervalSinceNow]>60){self.viewerReconnectWindow=NSDate.date;self.viewerReconnects=0;}
+            if(self.viewerReconnects<5){self.viewerReconnects++;[self desktopStartLog:[NSString stringWithFormat:@"viewer reconnect %ld/5 (transport restarted; desktop running)",(long)self.viewerReconnects]];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{typeof(self) self=weak;
+                    if(self&&!self.client&&self.sessionTerminal.sessionPid>0)[self connectDesktopViewer];});}
+        }
         if(self.desktopMode&&self.startState==LRStartSession&&self.sessionTerminal.sessionPid>0&&[status hasPrefix:@"Display error:"]){
             [self desktopStartLog:@"viewer retry"];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(2*NSEC_PER_SEC)),dispatch_get_main_queue(),^{typeof(self) self=weak;
@@ -1673,11 +2136,12 @@ static NSString *DesktopDegradedNotice(NSString *state){
     NSString *progress=mapped?@"Linux application window mapped":@"Waiting for Linux application window — keep this screen open";
     if(_desktopMode){NSString *desktopState=[NSString stringWithContentsOfURL:[_sessionURL URLByAppendingPathComponent:@"desktop-state"] encoding:NSUTF8StringEncoding error:nil];progress=[desktopState containsString:@"ready=1"]&&_desktopPainted?(DesktopDegradedNotice(desktopState)?:@"Desktop ready"):@"Starting desktop components — keep this screen open";
         if([desktopState containsString:@"ready=1"]&&_desktopPainted&&_startState==LRStartSession){_startState=LRStartIdle;[self hideStartPanel];[self desktopStartLog:@"stage=painted components=verified"];}
+        if([desktopState containsString:@"ready=1"]&&_desktopPainted)[self verifyDesktopInput];
         if(DesktopDegradedNotice(desktopState))progress=DesktopDegradedNotice(desktopState);
         if([desktopState containsString:@"ready=1"]&&_queuedDesktopApplication){NSDictionary *app=_queuedDesktopApplication;_queuedDesktopApplication=nil;[self launchDesktopApplication:app];}}
+    _surface.accessibilityValue=[NSString stringWithFormat:@"%@; framebuffer %ux%u",progress,_surface.pixelWidth,_surface.pixelHeight];
     double now=LRGUIClock();
-    if(_rateTime>0&&now-_rateTime>=0.9){_updateRate=(double)(_frames-_rateFrames)/(now-_rateTime);_rateFrames=_frames;_rateTime=now;}
-    else if(_rateTime<=0||_frames<_rateFrames){_rateFrames=_frames;_rateTime=now;}
+    lr_display_update_rate(now,_frames,&_rateTime,&_rateFrames,&_updateRate);
     _status.text=[NSString stringWithFormat:@"%@ · %.0fs · %.1f display updates/s",progress,elapsed,_updateRate];
 }
 - (void)metrics{
@@ -1685,14 +2149,26 @@ static NSString *DesktopDegradedNotice(NSString *state){
     [self updateStartupStatus];
     [_frameLock lock];uint64_t frames=_frames,bytes=_bytes,patchBytes=_patchBytes,submittedPatchBytes=_presentationPatchBytes;[_frameLock unlock];
     [LRRuntimeBridge logCategory:@"GUI_TRANSPORT" event:[NSString stringWithFormat:@"decoder_patch_bytes=%llu presenter_patch_bytes=%llu frames=%llu",(unsigned long long)patchBytes,(unsigned long long)submittedPatchBytes,(unsigned long long)frames]];
-    [LRRuntimeBridge logCategory:@"GUI" event:[NSString stringWithFormat:@"frames=%llu transport-bytes=%llu elapsed=%.2fs resolution=%ux%u software-rendering",(unsigned long long)frames,(unsigned long long)bytes,-[_startedAt timeIntervalSinceNow],_pendingWidth,_pendingHeight]];
+    [LRRuntimeBridge logCategory:@"GUI" event:[NSString stringWithFormat:@"frames=%llu transport-bytes=%llu elapsed=%.2fs resolution=%ux%u presenter=%@",(unsigned long long)frames,(unsigned long long)bytes,-[_startedAt timeIntervalSinceNow],_pendingWidth,_pendingHeight,_surface.metal?@"Metal":@"Core Graphics"]];
+    if(_desktopMode&&[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerDesktop.performanceDiagnostics"]){
+        struct rusage usage={0};getrusage(RUSAGE_SELF,&usage);
+        double cpu=(double)usage.ru_utime.tv_sec+usage.ru_utime.tv_usec*1e-6+usage.ru_stime.tv_sec+usage.ru_stime.tv_usec*1e-6;
+        NSDictionary *sample=@{@"monotonic_s":@(LRGUIClock()),@"cpu_s":@(cpu),@"footprint_bytes":@([LRRuntimeBridge appFootprintBytes]),@"thermal_state":@(NSProcessInfo.processInfo.thermalState),@"frames":@(frames),@"framebuffer_pixels":@[@(_surface.pixelWidth),@(_surface.pixelHeight)],@"viewer_points":@[@(_surface.bounds.size.width),@(_surface.bounds.size.height)],@"screen_native_pixels":@[@(_surface.window.screen.nativeBounds.size.width),@(_surface.window.screen.nativeBounds.size.height)],@"screen_scale":@(_surface.window.screen.scale),@"screen_native_scale":@(_surface.window.screen.nativeScale),@"input":[_surface inputDiagnostics],@"presenter":[_surface presentationStatistics]};
+        NSData *data=[NSJSONSerialization dataWithJSONObject:sample options:0 error:nil];
+        if(data){[LRRuntimeBridge logCategory:@"DESKTOP_PERFORMANCE" event:[[NSString alloc]initWithData:data encoding:NSUTF8StringEncoding]];
+            NSURL *url=[_sessionURL URLByAppendingPathComponent:@"performance.jsonl"];
+            int fd=open(url.fileSystemRepresentation,O_WRONLY|O_CREAT|O_APPEND|O_NOFOLLOW,0600);
+            if(fd>=0){struct stat st;if(!fstat(fd,&st)&&S_ISREG(st.st_mode)&&st.st_size<1024*1024){write(fd,data.bytes,data.length);write(fd,"\n",1);}close(fd);}
+        }
+    }
 }
 - (void)stop{
     [_audio stop];_audio=nil;
     for(UIView *control in _launchControls)control.hidden=_desktopMode;
     if(_client)[self metrics];
     if(_sessionURL)[[NSData data] writeToURL:[_sessionURL URLByAppendingPathComponent:@"stop"] atomically:YES];
-    [_surface releaseInput];[self resetModifierButtons];[_client stop];_client.frameHandler=nil;_client.damageFrameHandler=nil;_client.patchFrameHandler=nil;_client.statusHandler=nil;_client=nil;_surface.client=nil;
+    [_surface releaseInput];[self resetModifierButtons];[_client stop];_client.frameHandler=nil;_client.damageFrameHandler=nil;_client.patchFrameHandler=nil;_client.statusHandler=nil;_client.cutTextHandler=nil;_client.cursorHandler=nil;_client.pointerPositionHandler=nil;[_surface setCursorShape:nil width:0 height:0 hotX:0 hotY:0];_client=nil;_surface.client=nil;
+    [self updateStorageActivity];
     [_metricsTimer invalidate];_metricsTimer=nil;
     [_surface resignFirstResponder];
     [_frameLock lock];_pendingFrame=nil;_pendingDamage=(LRFrameDamage){0};_pendingWidth=_pendingHeight=0;_presentationPending=NO;[_frameLock unlock];
@@ -1700,24 +2176,167 @@ static NSString *DesktopDegradedNotice(NSString *state){
     // its own children. Never signal guest init, shell sessions or whole runtime.
     [LRRuntimeBridge logCategory:@"GUI" event:@"display disconnected; session cleanup requested"];
 }
-- (void)resetModifierButtons{for(UIButton *button in _modifierButtons){button.selected=NO;[button setTitleColor:UIColor.systemBlueColor forState:UIControlStateNormal];}}
+static const NSInteger LRAccessoryKeyTag=7701;
+- (void)resetModifierButtons{for(UIButton *button in _modifierButtons){button.selected=NO;[self styleModifierButton:button];}}
+- (void)styleModifierButton:(UIButton *)button{
+    if(button.tag==LRAccessoryKeyTag){button.backgroundColor=button.selected?UIColor.systemBlueColor:UIColor.tertiarySystemFillColor;[button setTitleColor:button.selected?UIColor.whiteColor:UIColor.labelColor forState:UIControlStateNormal];}
+    else [button setTitleColor:button.selected?UIColor.systemRedColor:UIColor.systemBlueColor forState:UIControlStateNormal];
+}
+static UIButton *LRSquareButton(NSString *symbol,NSString *label,UIColor *tint){
+    UIButton *b=[UIButton buttonWithType:UIButtonTypeSystem];
+    UIImageSymbolConfiguration *c=[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold];
+    [b setImage:[UIImage systemImageNamed:symbol withConfiguration:c] forState:UIControlStateNormal];
+    b.tintColor=tint;b.backgroundColor=[tint colorWithAlphaComponent:.16];b.layer.cornerRadius=9;b.layer.cornerCurve=kCACornerCurveContinuous;
+    b.accessibilityLabel=label;b.translatesAutoresizingMaskIntoConstraints=NO;
+    [NSLayoutConstraint activateConstraints:@[[b.widthAnchor constraintEqualToConstant:34],[b.heightAnchor constraintEqualToConstant:34]]];
+    return b;
+}
+// DeX, Settings and Power as icon tiles; everything else under "more".
+- (void)installDesktopToolbar{
+    __weak typeof(self) weak=self;
+    _dexButton=LRSquareButton(@"display",@"DeX Mode",UIColor.systemIndigoColor);_dexButton.accessibilityIdentifier=@"Desktop DeX";
+    [_dexButton addAction:[UIAction actionWithHandler:^(UIAction *a){[weak performDesktopAction:@"touchpad"];[weak refreshDesktopToolbar];}] forControlEvents:UIControlEventTouchUpInside];
+    UIButton *settings=LRSquareButton(@"gearshape.fill",@"Desktop Settings",UIColor.systemGrayColor);settings.accessibilityIdentifier=@"Desktop Settings";
+    [settings addAction:[UIAction actionWithHandler:^(UIAction *a){typeof(self) self=weak;if(!self)return;[self.view endEditing:YES];[self.surface releaseInput];[self resetModifierButtons];
+        UIViewController *page=[LinuxRunnerShell makeDesktopSettingsWithController:self];page.modalPresentationStyle=UIModalPresentationPageSheet;[self presentViewController:page animated:YES completion:nil];}] forControlEvents:UIControlEventTouchUpInside];
+    UIButton *power=LRSquareButton(@"power",@"Exit",UIColor.systemRedColor);power.accessibilityIdentifier=@"Desktop Power";
+    UIAction *stop=[UIAction actionWithTitle:@"Stop Desktop…" image:[UIImage systemImageNamed:@"power"] identifier:nil handler:^(UIAction *a){[weak confirmStopDesktop];}];
+    stop.attributes=UIMenuElementAttributesDestructive;
+    power.menu=[UIMenu menuWithTitle:@"Apps keep running when you return to Home." children:@[
+        [UIAction actionWithTitle:@"Return to Home" image:[UIImage systemImageNamed:@"house"] identifier:nil handler:^(UIAction *a){[weak done];}],stop]];
+    power.showsMenuAsPrimaryAction=YES;
+    _moreButton=LRSquareButton(@"ellipsis",@"More Desktop Actions",UIColor.systemBlueColor);_moreButton.accessibilityIdentifier=@"Desktop More";
+    [_moreButton addTarget:self action:@selector(desktopOptions:) forControlEvents:UIControlEventTouchUpInside];
+    UIStackView *row=[[UIStackView alloc] initWithArrangedSubviews:@[_moreButton,_dexButton,settings,power]];row.spacing=8;
+    self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithCustomView:row];
+    _powerMenu=power.menu;   // the dock is built once the surface exists (installKeyboardControls)
+    [self refreshDesktopToolbar];
+}
+/// Large labelled controls above the portrait touchpad.
+- (UIButton *)dockButton:(NSString *)symbol title:(NSString *)title tint:(UIColor *)tint stack:(UIStackView *)stack{
+    UIButton *b=[UIButton buttonWithType:UIButtonTypeSystem];
+    [b setImage:[UIImage systemImageNamed:symbol withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:19 weight:UIImageSymbolWeightMedium]] forState:UIControlStateNormal];
+    b.tintColor=tint;b.accessibilityLabel=title;b.translatesAutoresizingMaskIntoConstraints=NO;
+    b.layer.cornerRadius=20;b.layer.cornerCurve=kCACornerCurveContinuous;
+    [NSLayoutConstraint activateConstraints:@[[b.widthAnchor constraintEqualToConstant:44],[b.heightAnchor constraintEqualToConstant:40]]];
+    [stack addArrangedSubview:b];
+    return b;
+}- (UIMenu *)clipboardMenu{
+    __weak typeof(self) weak=self;
+    UIAction *paste=[UIAction actionWithTitle:@"Paste into Linux" image:[UIImage systemImageNamed:@"doc.on.clipboard"] identifier:nil handler:^(UIAction *a){[weak performDesktopAction:@"clipboard"];}];
+    UIAction *copy=[UIAction actionWithTitle:@"Copy Linux Clipboard to iPhone" image:[UIImage systemImageNamed:@"square.and.arrow.down.on.square"] identifier:nil handler:^(UIAction *a){typeof(self) self=weak;if(!self)return;
+        if(self.linuxClipboard.length){UIPasteboard.generalPasteboard.string=self.linuxClipboard;[self message:@"Copied the Linux clipboard to iPhone."];}
+        else [self message:@"Nothing copied in Linux yet. Copy text there first (for example Ctrl+C)."];}];
+    return [UIMenu menuWithTitle:@"" children:@[paste,copy]];
+}
+/// One pill of plain icons in the reference style: Keyboard, Clipboard, DeX,
+/// Settings, More | Power. Portrait: between the desktop and the touchpad.
+/// Landscape: floating at the top, foldable into a handle. DeX: at the bottom.
+- (void)installDock:(UIMenu *)powerMenu{
+    UIVisualEffectView *dock=[[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialDark]];
+    dock.layer.cornerRadius=25;dock.layer.cornerCurve=kCACornerCurveContinuous;dock.clipsToBounds=YES;
+    dock.layer.borderWidth=0.5;dock.layer.borderColor=[UIColor colorWithWhite:1 alpha:.14].CGColor;
+    UIStackView *stack=[UIStackView new];stack.axis=UILayoutConstraintAxisHorizontal;stack.distribution=UIStackViewDistributionEqualSpacing;stack.alignment=UIStackViewAlignmentCenter;stack.translatesAutoresizingMaskIntoConstraints=NO;
+    [dock.contentView addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[[stack.leadingAnchor constraintEqualToAnchor:dock.contentView.leadingAnchor constant:12],[stack.trailingAnchor constraintEqualToAnchor:dock.contentView.trailingAnchor constant:-12],[stack.centerYAnchor constraintEqualToAnchor:dock.contentView.centerYAnchor]]];
+    __weak typeof(self) weak=self;
+    UIColor *white=[UIColor colorWithWhite:1 alpha:.92];
+    UIButton *keyboard=[self dockButton:@"keyboard" title:@"Keyboard" tint:white stack:stack];keyboard.accessibilityIdentifier=@"GUI Keyboard";
+    [keyboard addTarget:self action:@selector(tool:) forControlEvents:UIControlEventTouchUpInside];
+    UIButton *clipboard=[self dockButton:@"doc.on.clipboard" title:@"Clipboard" tint:white stack:stack];clipboard.accessibilityIdentifier=@"Dock Clipboard";
+    clipboard.menu=[self clipboardMenu];clipboard.showsMenuAsPrimaryAction=YES;
+    UIButton *dex=[self dockButton:@"display" title:@"DeX Mode" tint:white stack:stack];dex.accessibilityIdentifier=@"Dock DeX";dex.tag=LRDockPortraitOnlyTag;
+    [dex addAction:[UIAction actionWithHandler:^(UIAction *a){[weak performDesktopAction:@"touchpad"];[weak refreshDesktopToolbar];}] forControlEvents:UIControlEventTouchUpInside];
+    UIButton *settings=[self dockButton:@"gearshape" title:@"Settings" tint:white stack:stack];settings.accessibilityIdentifier=@"Dock Settings";settings.tag=LRDockPortraitOnlyTag;
+    [settings addAction:[UIAction actionWithHandler:^(UIAction *a){typeof(self) self=weak;if(!self)return;[self.view endEditing:YES];[self.surface releaseInput];[self resetModifierButtons];
+        UIViewController *page=[LinuxRunnerShell makeDesktopSettingsWithController:self];page.modalPresentationStyle=UIModalPresentationPageSheet;[self presentViewController:page animated:YES completion:nil];}] forControlEvents:UIControlEventTouchUpInside];
+    UIButton *more=[self dockButton:@"ellipsis.circle" title:@"More" tint:white stack:stack];more.accessibilityIdentifier=@"Dock More";more.tag=LRDockPortraitOnlyTag;
+    [more addAction:[UIAction actionWithHandler:^(UIAction *a){[weak desktopOptions:a.sender];}] forControlEvents:UIControlEventTouchUpInside];
+    UIView *divider=[UIView new];divider.tag=LRDockPortraitOnlyTag;divider.backgroundColor=[UIColor colorWithWhite:1 alpha:.22];divider.translatesAutoresizingMaskIntoConstraints=NO;
+    [NSLayoutConstraint activateConstraints:@[[divider.widthAnchor constraintEqualToConstant:1],[divider.heightAnchor constraintEqualToConstant:24]]];[stack addArrangedSubview:divider];
+    UIButton *power=[self dockButton:@"power" title:@"Exit" tint:[UIColor colorWithRed:1 green:.42 blue:.40 alpha:1] stack:stack];power.accessibilityIdentifier=@"Dock Power";power.tag=LRDockPortraitOnlyTag;
+    power.menu=powerMenu;power.showsMenuAsPrimaryAction=YES;
+    // Landscape: fold the pill away; a small handle brings it back.
+    UIButton *fold=[self dockButton:@"chevron.up" title:@"Hide Controls" tint:[UIColor colorWithWhite:1 alpha:.6] stack:stack];fold.accessibilityIdentifier=@"Dock Fold";fold.tag=LRDockFoldTag;
+    [fold addAction:[UIAction actionWithHandler:^(UIAction *a){typeof(self) self=weak;self.surface.dockCollapsed=YES;[self.surface setNeedsLayout];}] forControlEvents:UIControlEventTouchUpInside];
+    UIButton *handle=[UIButton buttonWithType:UIButtonTypeSystem];handle.accessibilityLabel=@"Show Desktop Controls";handle.accessibilityIdentifier=@"Dock Handle";
+    [handle setImage:[UIImage systemImageNamed:@"chevron.compact.down" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightBold]] forState:UIControlStateNormal];
+    handle.tintColor=UIColor.whiteColor;handle.backgroundColor=[UIColor colorWithWhite:.08 alpha:.72];handle.layer.cornerRadius=11;handle.hidden=YES;
+    [handle addAction:[UIAction actionWithHandler:^(UIAction *a){typeof(self) self=weak;self.surface.dockCollapsed=NO;[self.surface setNeedsLayout];}] forControlEvents:UIControlEventTouchUpInside];
+    _dockDexButton=dex;_dockFoldButton=fold;
+    _surface.dock=dock;_surface.dockHandle=handle;_surface.dockKeyboardButton=keyboard;[_surface addSubview:dock];[_surface addSubview:handle];dock.hidden=YES;
+    // The pill carries every desktop control: no navigation bar in the desktop.
+    _surface.dockVisibilityChanged=^(BOOL shown){typeof(self) self=weak;if(!self)return;
+        [self.navigationController setNavigationBarHidden:shown||self.immersive animated:YES];self.status.hidden=shown||self.immersive;};
+}- (void)refreshDesktopToolbar{
+    BOOL on=_surface.relativeTouchpad||_trackpadRequested;
+    _dexButton.backgroundColor=on?UIColor.systemIndigoColor:[UIColor.systemIndigoColor colorWithAlphaComponent:.16];_dexButton.tintColor=on?UIColor.whiteColor:UIColor.systemIndigoColor;
+    _dexButton.accessibilityValue=on?@"On":@"Off";
+    _dockDexButton.backgroundColor=on?[UIColor colorWithWhite:1 alpha:.22]:UIColor.clearColor;
+}
+- (void)confirmStopDesktop{
+    UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"Stop Desktop?" message:@"Save documents first. This closes the apps in this desktop. Linux files, the terminal and other sessions are kept." preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Stop Desktop" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){[self stopDesktopSession];[self dismissViewControllerAnimated:YES completion:nil];}]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+- (void)installKeyboardControls{
+    _surface.desktopControls=YES;
+    UIButton *k=[UIButton buttonWithType:UIButtonTypeSystem];k.accessibilityIdentifier=@"GUI Keyboard";k.accessibilityLabel=@"Keyboard";
+    [k setImage:[UIImage systemImageNamed:@"keyboard" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:17 weight:UIImageSymbolWeightMedium]] forState:UIControlStateNormal];
+    k.tintColor=UIColor.whiteColor;k.backgroundColor=[UIColor colorWithWhite:.18 alpha:.85];k.layer.cornerRadius=11;k.layer.cornerCurve=kCACornerCurveContinuous;
+    [k addTarget:self action:@selector(tool:) forControlEvents:UIControlEventTouchUpInside];
+    _surface.keyboardButton=k;[_surface addSubview:k];
+    // Desktop: one compact, horizontally scrolling row of Linux keys above the
+    // iOS keyboard (the two-row classic layout belongs to the terminal).
+    UIInputView *bar=[[UIInputView alloc] initWithFrame:CGRectMake(0,0,320,48) inputViewStyle:UIInputViewStyleKeyboard];
+    bar.allowsSelfSizing=NO;bar.autoresizingMask=UIViewAutoresizingFlexibleWidth;
+    UIScrollView *scroll=[UIScrollView new];scroll.showsHorizontalScrollIndicator=NO;scroll.translatesAutoresizingMaskIntoConstraints=NO;[bar addSubview:scroll];
+    UIStackView *keys=[UIStackView new];keys.spacing=6;keys.translatesAutoresizingMaskIntoConstraints=NO;[scroll addSubview:keys];
+    UIButton *(^chip)(void)=^UIButton *{UIButton *b=[UIButton buttonWithType:UIButtonTypeSystem];b.tag=LRAccessoryKeyTag;
+        b.backgroundColor=UIColor.tertiarySystemFillColor;b.layer.cornerRadius=8;b.layer.cornerCurve=kCACornerCurveContinuous;b.tintColor=UIColor.labelColor;
+        b.contentEdgeInsets=UIEdgeInsetsMake(0,11,0,11);[b.heightAnchor constraintEqualToConstant:36].active=YES;[b.widthAnchor constraintGreaterThanOrEqualToConstant:42].active=YES;return b;};
+    UIButton *clip=chip();[clip setImage:[UIImage systemImageNamed:@"doc.on.clipboard" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
+    clip.accessibilityLabel=@"Clipboard";clip.accessibilityIdentifier=@"GUI Clipboard";clip.menu=[self clipboardMenu];clip.showsMenuAsPrimaryAction=YES;[keys addArrangedSubview:clip];
+    for(NSString *title in @[@"Esc",@"Tab",@"Ctrl",@"Alt",@"Super",@"Shift",@"←",@"↑",@"↓",@"→",@"Home",@"End",@"PgUp",@"PgDn"]){
+        UIButton *b=chip();[b setTitle:title forState:UIControlStateNormal];
+        b.titleLabel.font=[UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];[b setTitleColor:UIColor.labelColor forState:UIControlStateNormal];
+        b.accessibilityIdentifier=[@"GUI " stringByAppendingString:title];
+        if([@[@"Shift",@"Ctrl",@"Alt",@"Super"] containsObject:title])[_modifierButtons addObject:b];
+        [b addTarget:self action:@selector(tool:) forControlEvents:UIControlEventTouchUpInside];[keys addArrangedSubview:b];
+    }
+    UIButton *hide=[UIButton buttonWithType:UIButtonTypeSystem];hide.accessibilityIdentifier=@"GUI Hide";hide.accessibilityLabel=@"Hide Keyboard";
+    [hide setImage:[UIImage systemImageNamed:@"keyboard.chevron.compact.down"] forState:UIControlStateNormal];hide.translatesAutoresizingMaskIntoConstraints=NO;
+    [hide addTarget:self action:@selector(tool:) forControlEvents:UIControlEventTouchUpInside];[bar addSubview:hide];
+    [NSLayoutConstraint activateConstraints:@[
+        [hide.trailingAnchor constraintEqualToAnchor:bar.trailingAnchor constant:-8],[hide.centerYAnchor constraintEqualToAnchor:bar.centerYAnchor],[hide.widthAnchor constraintEqualToConstant:40],
+        [scroll.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor],[scroll.trailingAnchor constraintEqualToAnchor:hide.leadingAnchor constant:-4],[scroll.topAnchor constraintEqualToAnchor:bar.topAnchor],[scroll.bottomAnchor constraintEqualToAnchor:bar.bottomAnchor],
+        [keys.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor constant:8],[keys.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor constant:-8],
+        [keys.centerYAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.centerYAnchor],[keys.heightAnchor constraintEqualToConstant:36]]];
+    _surface.keyAccessory=bar;
+    if(_powerMenu)[self installDock:_powerMenu];
+}
 - (void)background{if(_desktopMode)[LRRuntimeBridge desktopTrace:@"lifecycle" result:@"info" detail:[NSString stringWithFormat:@"app inactive start-state=%ld",(long)_startState]];[_surface releaseInput];[self resetModifierButtons];[_surface resignFirstResponder];[LRRuntimeBridge logCategory:@"GUI" event:@"scene inactive; input released; guest session retained"];
     // Avoid retaining a screen containing guest data in iOS's app switcher.
     _surface.hidden=YES;
 }
-- (void)foreground{if(_desktopMode)[LRRuntimeBridge desktopTrace:@"lifecycle" result:@"info" detail:[NSString stringWithFormat:@"app active start-state=%ld client=%d session-pid=%d",(long)_startState,_client!=nil,_sessionTerminal.sessionPid]];_surface.hidden=NO;if(_client)[self drainFrameForClient:_client];if(_surface.metal)[_surface.metal setNeedsDisplay];if(_desktopMode&&!_client&&_sessionTerminal.sessionPid>0&&![NSFileManager.defaultManager fileExistsAtPath:[_sessionURL URLByAppendingPathComponent:@"stop"].path])[self connectDesktopViewer];}
+- (void)foreground{if(_desktopMode)[LRRuntimeBridge desktopTrace:@"lifecycle" result:@"info" detail:[NSString stringWithFormat:@"app active start-state=%ld client=%d session-pid=%d",(long)_startState,_client!=nil,_sessionTerminal.sessionPid]];_surface.hidden=NO;if(_viewerVisible)[_surface focusKeyboard];if(_client)[self drainFrameForClient:_client];if(_surface.metal)[_surface.metal setNeedsDisplay];if(_desktopMode&&!_client&&_sessionTerminal.sessionPid>0&&![NSFileManager.defaultManager fileExistsAtPath:[_sessionURL URLByAppendingPathComponent:@"stop"].path])[self connectDesktopViewer];}
 - (void)tool:(UIButton *)button{
     NSString *title=[button.accessibilityIdentifier substringFromIndex:4];
-        if([title isEqual:@"Keyboard"]){if(_surface.isFirstResponder)[_surface resignFirstResponder];else [_surface becomeFirstResponder];return;}
+        if([title isEqual:@"Keyboard"]){_surface.softwareKeyboardRequested=!_surface.softwareKeyboardRequested;[_surface focusKeyboard];return;}
+    if([title isEqual:@"Hide"]){_surface.softwareKeyboardRequested=NO;return;}
     if([title isEqual:@"Close"]&&_desktopMode){[self done];return;}
     if([title isEqual:@"Close"]){[self stop];[self message:@"Display closed. CLI remains functional."];return;}
     NSDictionary *modifiers=@{@"Shift":@(UIKeyModifierShift),@"Ctrl":@(UIKeyModifierControl),@"Alt":@(UIKeyModifierAlternate),@"Super":@(UIKeyModifierCommand)};
-    if(modifiers[title]){[_surface toggleModifier:[modifiers[title] unsignedIntegerValue]];button.selected=!button.selected;[button setTitleColor:button.selected?UIColor.systemRedColor:UIColor.systemBlueColor forState:UIControlStateNormal];return;}
-    NSDictionary *symbols=@{@"Esc":@0xff1b,@"Tab":@0xff09,@"←":@0xff51,@"↑":@0xff52,@"↓":@0xff54,@"→":@0xff53};if(symbols[title])[_surface stroke:[symbols[title] unsignedIntValue]];
+    if(modifiers[title]){[_surface toggleModifier:[modifiers[title] unsignedIntegerValue]];button.selected=!button.selected;[self styleModifierButton:button];
+        for(UIButton *other in _modifierButtons)if(other!=button&&[other.accessibilityIdentifier isEqual:button.accessibilityIdentifier]){other.selected=button.selected;[self styleModifierButton:other];}
+        return;}
+    NSDictionary *symbols=@{@"Esc":@0xff1b,@"Tab":@0xff09,@"←":@0xff51,@"↑":@0xff52,@"↓":@0xff54,@"→":@0xff53,@"Home":@0xff50,@"End":@0xff57,@"PgUp":@0xff55,@"PgDn":@0xff56,@"/":@0x2f,@"-":@0x2d};if(symbols[title])[_surface stroke:[symbols[title] unsignedIntValue]];
 }
 - (void)detachViewer{
     [_surface releaseInput];[self resetModifierButtons];[_surface resignFirstResponder];
-    _client.frameHandler=nil;_client.damageFrameHandler=nil;_client.patchFrameHandler=nil;_client.statusHandler=nil;[_client stop];_client=nil;_surface.client=nil;
+    _client.frameHandler=nil;_client.damageFrameHandler=nil;_client.patchFrameHandler=nil;_client.statusHandler=nil;_client.cutTextHandler=nil;_client.cursorHandler=nil;_client.pointerPositionHandler=nil;[_surface setCursorShape:nil width:0 height:0 hotX:0 hotY:0];[_client stop];_client=nil;_surface.client=nil;
+    [self updateStorageActivity];
     [_metricsTimer invalidate];_metricsTimer=nil;[_frameLock lock];_pendingFrame=nil;_pendingDamage=(LRFrameDamage){0};_pendingWidth=_pendingHeight=0;_presentationPending=NO;[_frameLock unlock];
     [LRRuntimeBridge logCategory:@"DESKTOP" event:@"viewer detached; owned guest desktop retained within iOS lifecycle limits"];
 }
@@ -1756,8 +2375,41 @@ static NSString *DesktopDegradedNotice(NSString *state){
     _lastLaunchRequest=config[@"requestID"];
     [LRRuntimeBridge logCategory:@"DESKTOP_LAUNCH" event:[NSString stringWithFormat:@"executable=%@ request=%@",executable,target.lastPathComponent]];
 }
-- (void)setImmersive:(BOOL)hide{_inputToolbar.hidden=hide;_status.hidden=hide;_immersiveButton.hidden=!hide;[self.navigationController setNavigationBarHidden:hide animated:YES];[self setNeedsStatusBarAppearanceUpdate];}
-- (void)toggleImmersive{[self setImmersive:!_inputToolbar.hidden];}
+/// Ready means interactive: move the X pointer through RFB, then ask the X
+/// server where its pointer is. KMS compositors draw their own pointer and are
+/// probed by their own first-frame check instead.
+- (void)verifyDesktopInput{
+    if(_inputVerified!=0||!_client||!_sessionURL||!_surface.pixelWidth)return;
+    NSString *environment=[NSString stringWithContentsOfURL:[_sessionURL URLByAppendingPathComponent:@"desktop-environment"] encoding:NSUTF8StringEncoding error:nil]?:@"";
+    if([environment hasPrefix:@"hyprland"]||[environment hasPrefix:@"wayfire"]){_inputVerified=1;return;}
+    NSURL *result=[_sessionURL URLByAppendingPathComponent:@"input-check"];
+    CFTimeInterval now=CACurrentMediaTime();
+    if(_inputProbeAt>0){
+        NSString *text=[NSString stringWithContentsOfURL:result encoding:NSUTF8StringEncoding error:nil];
+        NSString *expected=[NSString stringWithFormat:@"pointer=%u,%u",_inputProbeX,_inputProbeY];
+        if([text containsString:expected]){_inputVerified=1;[self desktopStartLog:[NSString stringWithFormat:@"stage=input-verified pointer=%u,%u after=%.0fms",_inputProbeX,_inputProbeY,(now-_inputProbeAt)*1000]];
+            [LRRuntimeBridge desktopTrace:@"16 input" result:@"ok" detail:[NSString stringWithFormat:@"X server reports the pointer the viewer sent (%@)",expected]];return;}
+        if(now-_inputProbeAt<3)return;   // the request may still be running
+        if(++_inputChecks>=3){_inputVerified=-1;[self desktopStartLog:[NSString stringWithFormat:@"stage=input-unverified expected=%@ reported=%@",expected,[text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]?:@"none"]];
+            [LRRuntimeBridge desktopTrace:@"16 input" result:@"fail" detail:@"pointer round trip not confirmed"];return;}
+    }
+    // A one-pixel move the user will not notice, to a position we can recognise.
+    uint16_t x=_surface.pointerX,y=_surface.pointerY;
+    x=(uint16_t)MIN(_surface.pixelWidth-1,MAX(1,x+(x+1<_surface.pixelWidth?1:-1)));
+    _surface.pointerX=x;_surface.pointerY=y;_surface.mouseX=x;_surface.mouseY=y;[_client pointerX:x y:y buttons:0];[_surface updateCursor];
+    _inputProbeX=x;_inputProbeY=y;_inputProbeAt=now;
+    [NSFileManager.defaultManager removeItemAtURL:result error:nil];
+    NSString *session=[NSString stringWithFormat:@"/home/mobile/Downloads/%@/%@",LRGUIFolder,_sessionURL.lastPathComponent];
+    NSString *command=[NSString stringWithFormat:@"#!/bin/sh\nsleep 0.3\n/home/mobile/Downloads/%@/desktop-probe --pointer > %@/input-check.new && mv %@/input-check.new %@/input-check\n",LRGUIFolder,session,session,session];
+    NSString *name=[NSString stringWithFormat:@"input-%@.sh",NSUUID.UUID.UUIDString.lowercaseString];
+    NSString *guestPath=[NSString stringWithFormat:@"%@/requests/%@",session,name];
+    NSString *user=_sessionGuestUser?:@"root";NSError *error=nil;
+    if(![LRRuntimeBridge writeDesktopRequest:[command dataUsingEncoding:NSUTF8StringEncoding] guestPath:[guestPath stringByAppendingString:@".pending"] user:user error:&error]||![LRRuntimeBridge publishDesktopRequest:guestPath user:user error:&error]){
+        _inputVerified=-1;[self desktopStartLog:[@"stage=input-unverified request-failed " stringByAppendingString:error.localizedDescription?:@""]];}
+}
+- (void)setImmersive:(BOOL)hide{_immersive=hide;_inputToolbar.hidden=hide||_desktopMode;[_surface setNeedsLayout];_status.hidden=hide||_surface.dockShown;_immersiveButton.hidden=!hide||_surface.dock!=nil;   /* the pill has every control */[self.navigationController setNavigationBarHidden:hide||_surface.dockShown animated:YES];[self setNeedsStatusBarAppearanceUpdate];}
+- (void)toggleImmersive{[self setImmersive:!_immersive];}
+- (void)setImmersive:(BOOL)hide animated:(BOOL)animated{[self setImmersive:hide];}
 - (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
     [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
     if(_desktopMode){id automatic=[NSUserDefaults.standardUserDefaults objectForKey:@"LinuxRunnerDesktop.autoFullscreen"];
@@ -1772,17 +2424,20 @@ static NSString *DesktopDegradedNotice(NSString *state){
     state[@"trackpadReady"]=@([self trackpadReady]);
     state[@"externalAvailable"]=@([self externalDisplayAvailable]);
     state[@"presenter"]=_surface.metal?@"Metal framebuffer presenter":@"Core Graphics framebuffer presenter";
-    state[@"immersive"]=@(_inputToolbar.hidden);
+    state[@"immersive"]=@(_immersive);
     state[@"framebuffer"]=_surface.pixelWidth?[NSString stringWithFormat:@"%u × %u",_surface.pixelWidth,_surface.pixelHeight]:@"No frames received";
     state[@"fitGeometry"]=[self fitScreenGeometry];
     UIScreen *screen=LRCurrentExternalDisplay.view.window.screen?:self.view.window.screen;
     state[@"screenMaximumRefresh"]=screen?@(screen.maximumFramesPerSecond):@0;
     NSMutableSet *modes=[NSMutableSet new];for(UIScreenMode *mode in screen.availableModes)[modes addObject:[NSString stringWithFormat:@"%.0f × %.0f",mode.size.width,mode.size.height]];
     state[@"screenModes"]=[[modes allObjects] sortedArrayUsingSelector:@selector(compare:)];
-    state[@"displayServer"]=[state[@"alive"] boolValue]?@"X11 / Xvfb":@"No running display";
+    NSString *displayBackend=LRDiagnosticTailString(LRReadDiagnosticTail([_sessionURL URLByAppendingPathComponent:@"display-backend"],64));
+    BOOL acceleratedDisplay=[[displayBackend stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] isEqual:@"xorg-virgl"];
+    state[@"displayServer"]=[state[@"alive"] boolValue]?(acceleratedDisplay?@"X11 / Xorg (virgl)":@"X11 / Xvfb"):@"No running display";
     NSString *readiness=LRDiagnosticTailString(LRReadDiagnosticTail([_sessionURL URLByAppendingPathComponent:@"desktop-state"],8192));
     NSString *environment=@"Not reported";
     for(NSString *line in [readiness componentsSeparatedByString:@"\n"])if([line hasPrefix:@"environment="])environment=[line substringFromIndex:12];
+    if([readiness containsString:@"display_server=wayland"] && [state[@"alive"] boolValue])state[@"displayServer"]=@"Wayland / KWin";
     state[@"desktopEnvironment"]=environment;
     state[@"statusDetail"]=_status.text?:@"";
     return state;
@@ -1790,7 +2445,7 @@ static NSString *DesktopDegradedNotice(NSString *state){
 - (void)performDesktopAction:(NSString *)action {
     if(!NSThread.isMainThread){__weak typeof(self) weak=self;dispatch_async(dispatch_get_main_queue(),^{[weak performDesktopAction:action];});return;}
     if([action isEqual:@"start"]){
-        _resolution.selectedSegmentIndex=MAX(0,MIN(4,[NSUserDefaults.standardUserDefaults objectForKey:[@"LinuxRunnerDesktop.resolution." stringByAppendingString:LRRuntimeBridge.activeRootName]]?[NSUserDefaults.standardUserDefaults integerForKey:[@"LinuxRunnerDesktop.resolution." stringByAppendingString:LRRuntimeBridge.activeRootName]]:3));
+        _resolution.selectedSegmentIndex=LRRuntimeBridge.desktopResolutionIndex;
         if(!_client)[self run:@"desktop"];
     } else if([action isEqual:@"stop"]){_trackpadRequested=NO;[_restartTimer invalidate];_restartTimer=nil;[self stop];[self message:@"Stopping desktop. Saved files remain in Linux."];}
     else if([action isEqual:@"restart"]){
@@ -1850,9 +2505,12 @@ static NSString *DesktopDegradedNotice(NSString *state){
     [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     return menu;
 }
-- (void)desktopOptions:(UIBarButtonItem *)sender {
+- (void)desktopOptions:(id)sender {
     [self.view endEditing:YES];[_surface releaseInput];[self resetModifierButtons];
-    UIAlertController *menu=[self desktopOptionsMenu];menu.popoverPresentationController.barButtonItem=sender;[self presentViewController:menu animated:YES completion:nil];
+    UIAlertController *menu=[self desktopOptionsMenu];
+    if([sender isKindOfClass:UIBarButtonItem.class])menu.popoverPresentationController.barButtonItem=(UIBarButtonItem *)sender;
+    else{UIView *anchor=[sender isKindOfClass:UIView.class]&&!((UIView *)sender).hidden?(UIView *)sender:(_moreButton?:self.view);menu.popoverPresentationController.sourceView=anchor;menu.popoverPresentationController.sourceRect=anchor.bounds;}
+    [self presentViewController:menu animated:YES completion:nil];
 }
 - (void)wirelessDisplayHelp {
     UIAlertController *help=[UIAlertController alertControllerWithTitle:@"Wireless Linux Desktop" message:@"Connect this device and an AirPlay-compatible TV, Apple TV or Mac to the same Wi-Fi. Open iOS Control Center → Screen Mirroring and choose the receiver. Enter any passcode in iOS.\n\nWhen iOS supplies a separate display, enable External Desktop Output in Settings → Devices and use this menu’s touchpad option. Otherwise, use full-screen mirroring: the receiver shows this device’s view. Miracast-only receivers are not supported." preferredStyle:UIAlertControllerStyleAlert];

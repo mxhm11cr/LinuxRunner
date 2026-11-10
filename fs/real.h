@@ -25,7 +25,8 @@ int realfs_fsetattr(struct fd *fd, struct attr attr);
 int realfs_mkdir(struct mount *mount, const char *path, mode_t_ mode);
 
 int realfs_truncate(struct mount *mount, const char *path, off_t_ size);
-int realfs_utime(struct mount *mount, const char *path, struct timespec atime, struct timespec mtime);
+int realfs_utime(struct mount *mount, const char *path, struct timespec atime, struct timespec mtime, bool follow_links);
+int realfs_futime(struct fd *fd, struct timespec atime, struct timespec mtime);
 
 int realfs_statfs(struct mount *mount, struct statfsbuf *stat);
 int realfs_flock(struct fd *fd, int operation);

@@ -622,6 +622,10 @@ static ssize_t tty_ioctl_size(int cmd) {
             return sizeof(dword_t);
         case TCFLSH_: case TIOCSCTTY_:
             return 0;
+        case TIOCMGET_: case TIOCMBIS_: case TIOCMBIC_: case TIOCMSET_:
+            return sizeof(dword_t);
+        case TCSBRK_: case TCSBRKP_: case TCXONC_: case TIOCEXCL_: case TIOCNXCL_:
+            return 0;
     }
     return -1;
 }
@@ -734,6 +738,7 @@ static int tty_mode_ioctl(struct tty *in_tty, int cmd, void *arg) {
             // we have no output buffer currently
         case TCSETS_:
             tty->termios = *(struct termios_ *) arg;
+            if (tty->driver->ops->set_termios) tty->driver->ops->set_termios(tty);
             tty_update_baud_rates(tty);
             break;
         case TCSETSF2_:
@@ -747,6 +752,7 @@ static int tty_mode_ioctl(struct tty *in_tty, int cmd, void *arg) {
             tty->termios = termios->termios;
             tty->ispeed = termios->ispeed;
             tty->ospeed = termios->ospeed;
+            if (tty->driver->ops->set_termios) tty->driver->ops->set_termios(tty);
             tty_update_baud_rates(tty);
             break;
         }

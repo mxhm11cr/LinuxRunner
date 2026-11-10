@@ -13,6 +13,7 @@
 #include "fs/fd.h"
 #include "fs/poll.h"
 #include "fs/real.h"
+#include "fs/errqueue.h"
 
 #include "fs/sockrestart.h"
 extern const struct fd_ops socket_fdops;
@@ -160,6 +161,12 @@ static int poll_real_refresh(struct poll *poll, struct fd *fd) {
         }
     }
     if (fd->ops == &epoll_fdops) types &= POLL_READ | POLL_EDGETRIGGERED;
+    // IP_RECVERR: ICMP errors arrive on a companion host socket. Linux reports
+    // POLLERR whatever was requested, so any registration also watches it;
+    // the wake is level-checked through the socket's own poll op.
+    int companion = ip_errqueue_host_fd(fd);
+    if (companion >= 0)
+        real_poll_update(&poll->real, companion, types ? POLL_READ : 0, first);
     return real_poll_update(&poll->real, fd->real_fd, types, first);
 }
 
@@ -296,8 +303,11 @@ void poll_cleanup_fd(struct fd *fd) {
     struct poll_fd *poll_fd, *tmp;
     list_for_each_entry_safe(&fd->poll_fds, poll_fd, tmp, polls) {
         lock(&poll_fd->poll->lock);
-        if (poll_fd_is_real(poll_fd))
+        if (poll_fd_is_real(poll_fd)) {
+            int companion = ip_errqueue_host_fd(fd);
+            if (companion >= 0) real_poll_update(&poll_fd->poll->real, companion, 0, poll_fd);
             real_poll_update(&poll_fd->poll->real, fd->real_fd, 0, poll_fd);
+        }
         list_remove(&poll_fd->polls);
         list_remove(&poll_fd->fds);
         struct poll *owner = poll_fd->poll;

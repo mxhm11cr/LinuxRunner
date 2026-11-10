@@ -13,12 +13,19 @@ LinuxRunner derives from iSH (Theodore Dubois and contributors) through ios-linu
 | xterm.js and addons | `app/terminal/xterm-vendor/LICENSES.md`, VENDORED.txt | MIT; package versions recorded with the bundle |
 | Ghostty Web | `app/terminal/ghostty-web-VENDORED.txt`, terminal-notices.txt | MIT; vendor record describes local WKWebView patches |
 | Fira Code and JetBrains Mono Nerd Fonts | Font VENDORED.txt files and terminal-notices.txt | SIL OFL-1.1 and relevant Nerd Fonts notices |
+| Zstandard (decompression only) | `deps/zstd` (upstream 1.5.7 release, SHA-256 eb33e51f…; LICENSE retained) | BSD-3-Clause (dual BSD/GPL-2.0 upstream; used under BSD) |
 | LZMA API headers | `deps/lzma-api/COPYING`, provenance.json | Header-specific public-domain notice; system liblzma linked separately |
 | SQLite and Apple system libraries | Platform libraries | Their respective upstream/platform terms |
 | Mesa demo sources | `tests/linuxrunner/gpu/mesa-demos`, checksums and per-file notices | MIT-style notices retained in source and mesa-demos-notice.txt |
 | LinuxRunner guest graphics and helper binaries | `graphics/`, GUI bundle sources and build scripts | Part of the GPL-covered derivative; gpu-bridge-notice.txt and gpu-glx-notice.txt |
 
 The app bundles `gpu-glx-notice.txt`, `gpu-bridge-notice.txt`, `mesa-demos-notice.txt`, `shader-compiler-notices.txt`, `terminal-notices.txt` and xterm's `LICENSES.md`. Retain these notices in the source and packaged application.
+
+The capture cleanup launcher is LinuxRunner code under the combined application's
+GPL terms. Its preferred source, ABI header and freestanding ARM64 build recipe
+are retained in `GUISupport.bundle/capture-shm-guard.c`, `kernel/capture_shm.h` and
+`scripts/build-capture-shm-guard.sh`, with its binary hash in the guest source map.
+It links no guest libc or third-party runtime.
 
 The custom LinuxRunner wallpaper and active icon have retained generation scripts and original SVG geometry. Inherited alternate iSH icons retain their original files. KDE wallpaper and application artwork visible in screenshots belong to their respective projects.
 
@@ -45,5 +52,31 @@ The rootfs patch bundle contains `wasm-polyfill.js` and `fetch-polyfill.js`. The
 Debian and Arch Linux ARM packages and additional Alpine packages are downloaded from distribution mirrors by the user's device. They keep their own licenses and notices (for Debian, see `/usr/share/doc/<package>/copyright`). KDE, Mesa, browsers and other installed programs are separate projects.
 
 ## Source availability
+
+The host GPU build applies `virglrenderer-angle-zero-border.patch` to a copied
+virglrenderer tree. `angle-zero-border.py` compiles replacement ANGLE objects
+from copied source files; upstream checkouts stay unchanged. Retain those
+modifications and the pinned dependency sources with corresponding-source
+distributions.
+
+The optional local SteamFrame image experiment preserves SteamOS and its
+packages under their respective terms; the image is not included in the IPA.
+Device preparation adds Arch Linux ARM x11vnc 0.9.17 and libvncserver 0.9.15
+(GPL-2.0-family terms, with per-file notices). Their upstream sources are
+https://github.com/LibVNC/x11vnc/tree/0.9.17 and
+https://github.com/LibVNC/libvncserver/tree/LibVNCServer-0.9.15.
+The exact package hashes and helper build steps are retained in
+`tools/steamos/prepare-device-image.py`. LinuxRunner's added guest helper
+sources remain in `app/LinuxRunner/GUISupport.bundle`. Preserve component
+notices and corresponding source when sharing any prepared guest image.
+
+The optional SteamOS graphics overlay contains a separate Mesa build at
+`590bf21d918c86908d96d1f4590ecd25b9657171`, from
+https://gitlab.freedesktop.org/mesa/mesa.git. It retains Mesa's license inventory
+under `/opt/linuxrunner/steamos-gpu/share/licenses/mesa`, and its build identity
+in `BUILD.json`. The graphics probe's source and repository licensing files
+are included under `share/linuxrunner`. Packaging is defined by
+`tools/steamos/package-gpu-overlay.py`; the source/build options and isolated
+prefix are described in `docs/STEAMOS_EXPERIMENT.md`.
 
 The application source, build scripts and dependency revisions are retained in the repository. [SOURCE_ORIGIN.txt](SOURCE_ORIGIN.txt) records the release lineage and exact dependency commits. Submodule contents are not included in GitHub's automatic source archives; initialize the pinned submodules when building from a clone. Source-distribution requirements for bundled binaries apply separately from the licenses of packages downloaded later by users. The release source asset must include the matching application snapshot, pinned build dependencies, graphics source/patches, matching Alpine recipes and checksum-verified inputs, and matching Ghostty Web/Ghostty source. The unchanged bundled Alpine root archive can use the already retained matching source inputs. Preserve the complete notices asset alongside the IPA.

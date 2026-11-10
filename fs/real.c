@@ -9,6 +9,7 @@
 #include <termios.h>
 #include <sys/mman.h>
 #include <sys/xattr.h>
+#include "kernel/filecaps.h"
 #include <sys/file.h>
 #include <sys/statvfs.h>
 #include <poll.h>
@@ -87,6 +88,9 @@ static dev_t_ realfs_devnum_for_path(const char *path) {
 }
 
 struct fd *realfs_open(struct mount *mount, const char *path, int flags, int mode) {
+    // generic_openat performs truncation only after guest permission checks
+    // and privilege metadata invalidation. Host open must not truncate first.
+    flags &= ~O_TRUNC_;
     int real_flags = open_flags_real_from_fake(flags);
     // Allocate before O_CREAT/O_TRUNC can change the backing filesystem.
     struct fd *fd = fd_create(&realfs_fdops);
@@ -211,6 +215,8 @@ ssize_t realfs_read(struct fd *fd, void *buf, size_t bufsize) {
 }
 
 ssize_t realfs_write(struct fd *fd, const void *buf, size_t bufsize) {
+    if (S_ISREG(fd->type) && (fd_getflags(fd) & O_ACCMODE_) == O_RDONLY_) return _EBADF;
+    if (bufsize) { int err = file_caps_strip(fd); if (err) return err; }
     off_t off = 0;
     if (fd->memfd) {
         lock(&fd->memfd->lock);
@@ -246,6 +252,9 @@ ssize_t realfs_pread(struct fd *fd, void *buf, size_t bufsize, off_t off) {
 }
 
 ssize_t realfs_pwrite(struct fd *fd, const void *buf, size_t bufsize, off_t off) {
+    if (S_ISREG(fd->type) && (fd_getflags(fd) & O_ACCMODE_) == O_RDONLY_) return _EBADF;
+    if (off < 0) return _EINVAL;
+    if (bufsize) { int err = file_caps_strip(fd); if (err) return err; }
     if (fd->memfd) {
         lock(&fd->memfd->lock);
         if ((fd_getflags(fd) & O_ACCMODE_) == O_RDONLY_) { unlock(&fd->memfd->lock); return _EBADF; }
@@ -407,6 +416,9 @@ int realfs_poll(struct fd *fd) {
 }
 
 int realfs_mmap(struct fd *fd, struct mem *mem, page_t start, pages_t pages, off_t offset, int prot, int flags) {
+    if ((flags & MMAP_SHARED) && (prot & P_WRITE)) {
+        int err = file_caps_strip(fd); if (err) return err;
+    }
     int mmap_flags = 0;
     if (flags & MMAP_PRIVATE) mmap_flags |= MAP_PRIVATE;
     if (flags & MMAP_SHARED) mmap_flags |= MAP_SHARED;
@@ -614,6 +626,11 @@ int realfs_truncate(struct mount *mount, const char *path, off_t_ size) {
     if (fd < 0)
         return errno_map();
     int err = 0;
+    if (mount->fs->remove_file_caps) {
+        err = file_caps_host_remove(fd);
+        if (err == _ENODATA || err == _EOPNOTSUPP) err = 0;
+        if (err) { close(fd); return err; }
+    }
     if (ftruncate(fd, size) < 0)
         err = errno_map();
     close(fd);
@@ -660,6 +677,7 @@ static int memfd_truncate_locked(struct fd *fd, off_t size) {
 }
 
 int realfs_fsetattr(struct fd *fd, struct attr attr) {
+    if (attr.type == attr_size) { int err = file_caps_strip(fd); if (err) return err; }
     int real_fd = fd->real_fd;
     int err;
     switch (attr.type) {
@@ -693,10 +711,22 @@ int realfs_fsetattr(struct fd *fd, struct attr attr) {
     return err;
 }
 
-int realfs_utime(struct mount *mount, const char *path, struct timespec atime, struct timespec mtime) {
+int realfs_utime(struct mount *mount, const char *path, struct timespec atime, struct timespec mtime, bool follow_links) {
     struct timespec times[2] = {atime, mtime};
-    int err = utimensat(mount->root_fd, fix_path(path), times, 0);
+    int err = utimensat(mount->root_fd, fix_path(path), times, follow_links ? 0 : AT_SYMLINK_NOFOLLOW);
     if (err < 0)
+        return errno_map();
+    return 0;
+}
+
+// futimens() on the host descriptor. Never re-resolves a path: the file may
+// have been renamed or unlinked since it was opened (RPM writes "name;XXXX"
+// temporaries), and on iOS F_GETPATH need not match the guest mount source.
+int realfs_futime(struct fd *fd, struct timespec atime, struct timespec mtime) {
+    if (fd->real_fd < 0)
+        return _EBADF;
+    struct timespec times[2] = {atime, mtime};
+    if (futimens(fd->real_fd, times) < 0)
         return errno_map();
     return 0;
 }
@@ -856,6 +886,7 @@ const struct fs_ops realfs = {
     .setattr = realfs_setattr,
     .fsetattr = realfs_fsetattr,
     .utime = realfs_utime,
+    .futime = realfs_futime,
     .getpath = realfs_getpath,
     .flock = realfs_flock,
 

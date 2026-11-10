@@ -648,7 +648,7 @@ static int iosfs_fstat(struct fd *fd, struct statbuf *fake_stat) {
     return err;
 }
 
-static int iosfs_utime(struct mount *mount, const char *path, struct timespec atime, struct timespec mtime) {
+static int iosfs_utime(struct mount *mount, const char *path, struct timespec atime, struct timespec mtime, bool follow_links) {
     NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
     NSURL *in_url = url_for_path_in_mount(mount, path);
 
@@ -656,7 +656,7 @@ static int iosfs_utime(struct mount *mount, const char *path, struct timespec at
     __block int err;
 
     [coordinator coordinateWritingItemAtURL:in_url options:NSFileCoordinatorWritingContentIndependentMetadataOnly error:&error byAccessor:^(NSURL *url) {
-        err = realfs.utime(mount, path_for_url_in_mount(mount, url, path), atime, mtime);
+        err = realfs.utime(mount, path_for_url_in_mount(mount, url, path), atime, mtime, follow_links);
     }];
 
     return combine_error(error, err);

@@ -1,6 +1,6 @@
 # Building LinuxRunner
 
-Most users install the IPA. These instructions build the **LinuxRunner** scheme in `iSH.xcodeproj`, preserving version **1.1.0**, build **900** and bundle identifier `dev.linuxrunner.app`.
+Most users install the IPA. These instructions build the **LinuxRunner** scheme in `iSH.xcodeproj`, preserving version **1.1.1**, build **905** and bundle identifier `dev.linuxrunner.app`.
 
 ## Tool Requirements
 
@@ -13,7 +13,7 @@ git submodule update --init --recursive --checkout -- deps/libapps deps/libarchi
 scripts/bootstrap-macos.sh
 ```
 
-Once published, select the approved `v1.1.0` revision when reproducing this release. Until then the public repository may still contain the previous version; do not replace a newer local checkout with it. The inherited `deps/linux` gitlink is optional and not used to boot a kernel in the app.
+Once published, select the approved `v1.1.1` revision when reproducing this release. Until then the public repository may still contain the previous version; do not replace a newer local checkout with it. The inherited `deps/linux` gitlink is optional and not used to boot a kernel in the app.
 
 ## Interpreter / Software Variant
 
@@ -24,7 +24,7 @@ scripts/build-ipa.sh --unsigned
 python3 scripts/verify-ipa.py build/releases
 ```
 
-This builds a functional interpreter/software variant. It does not reproduce the Metal/JIT-capable Build 900 release binary.
+This builds a functional interpreter/software variant. It does not reproduce the Metal/JIT-capable Build 905 release binary.
 
 ## Metal / Optional-JIT Variant
 
@@ -66,7 +66,17 @@ LINUXRUNNER_JIT=YES LINUXRUNNER_VIRGL=YES scripts/build-ipa.sh --unsigned
 LINUXRUNNER_JIT=YES python3 scripts/verify-ipa.py build/releases
 ```
 
-`GPU_DEPS` must already be exported. The script checks the recorded virglrenderer/ANGLE revisions but records rather than enforces libepoxy's current HEAD; explicitly check out the table's libepoxy revision. It applies the retained iOS process-image patch to a copy. Output includes `build/gpu/iphoneos/REVISIONS` and static libraries/headers.
+`GPU_DEPS` must already be exported. The script checks the recorded virglrenderer/ANGLE revisions but records rather than enforces libepoxy's current HEAD; explicitly check out the table's libepoxy revision. It applies the retained process-image patch to a copy on both iOS and macOS, where ANGLE is linked statically. The build disables ANGLE's WebGPU backend as well as its other non-Metal backends. Output includes `build/gpu/iphoneos/REVISIONS` and static libraries/headers.
+
+For native Apple Silicon GPU qualification, run `scripts/build-gpu-deps.sh macosx`.
+The archive helper supports both ANGLE's iOS framework and macOS dylib link
+rules. `tests/linuxrunner/gpu/run-virgl-sampler-probe.sh` then builds the
+current host renderer and checks sampler submission prerequisites. The build
+adds a private, validated transparent-zero border operation using Metal's
+clamp-to-zero; it does not advertise the full GLES border-color extension.
+The probe checks supported samplers and explicit rejection of nonzero borders.
+These checks alone do not qualify a SteamOS desktop; see
+the GPU compatibility contract.
 
 This preparation re-audited the retained archive; it did not perform a clean rebuild of all graphics dependencies. Clean-checkout qualification of the additional dependency/source bundle remains a release review item. The app's linker must keep dynamically resolved EGL exports: the verified IPA retains 44 EGL exports, including `eglGetProcAddress` and `eglGetCurrentDisplay`.
 
@@ -76,11 +86,16 @@ Default output is `build/releases/LinuxRunner.ipa` with the retained archive, sy
 
 Unsigned mode adds an ad-hoc signature without Apple provisioning. A compatible installation method must provide device authorization. For your own signing, configure an Apple team in Xcode and use `TEAM_ID=YOUR_TEAM_ID scripts/build-ipa.sh`, adding the variant variables above if desired. Never commit certificates, keys or provisioning profiles. Optional App Group access uses `group.dev.linuxrunner.app`; a private-container fallback exists.
 
-Alpine 3.24.2 is checksum-pinned. `ROOTFS_CACHE` can provide the cached archive; validation still applies. `verify-ipa.py` checks package identity, rootfs hash, 90 GUI resources, source fingerprint, device Mach-O dependencies, IPA/archive identity and matching symbols. Set `LINUXRUNNER_VERIFY_SOURCE_TREE` and `LINUXRUNNER_EXPECTED_SOURCE_COMMIT` when checking a retained artifact against its source.
+Alpine 3.24.2 is checksum-pinned. `ROOTFS_CACHE` can provide the cached archive; validation still applies. `verify-ipa.py` checks package identity, rootfs hash, the generated GUI resource manifest, source fingerprint, device Mach-O dependencies, IPA/archive identity and matching symbols. Set `LINUXRUNNER_VERIFY_SOURCE_TREE` and `LINUXRUNNER_EXPECTED_SOURCE_COMMIT` when checking a retained artifact against its source.
 
 ## Guest Helpers and Runtime Tests
 
 Guest helpers in `GUISupport.bundle` are not all rebuilt by an ordinary app build. Their sources/recipes are mapped in [bundled-guest-source-map.json](../licenses/bundled-guest-source-map.json). Preserve matching source and notices for the bundled rootfs, terminal renderer and graphics dependencies.
+
+The freestanding capture cleanup launcher is reproducible with
+`CAPTURE_LD=/path/to/ld.lld scripts/build-capture-shm-guard.sh`. Regenerate the
+GUI resource manifest afterward. See capture cleanup for
+its ARM64 host contract and physical-device qualification.
 
 ```sh
 meson setup build/host -Dengine=asbestos -Dguest_arch=arm64 -Djit=false -Djit_emit=false -Dcli_aot=
@@ -89,3 +104,7 @@ python3 scripts/generate-gui-support-manifest.py --check
 ```
 
 Use disposable fixtures for mutating tests. [Architecture](ARCHITECTURE.md) · [Third-party notices](../THIRD_PARTY_NOTICES.md)
+
+For the optional local SteamFrame image exporter and prepared ARM64 installer,
+see [SteamOS userspace experiment](STEAMOS.md). The archive is supplied
+separately from the IPA and must match the bundled manifest.

@@ -577,6 +577,28 @@ int_t sys_timer_delete(dword_t timer_id) {
 
 static struct fd_ops timerfd_ops;
 
+#define TFD_TIMER_CANCEL_ON_SET_ (1 << 1)
+#define CLOCK_REALTIME_ALARM_ 8
+// TFD_TIMER_CANCEL_ON_SET: Linux fails a read with ECANCELED after a
+// discontinuous change of CLOCK_REALTIME. The guest cannot set the clock, so
+// the only such change is the host's wall clock being stepped; it shows as a
+// jump in the offset between CLOCK_REALTIME and CLOCK_MONOTONIC. Gradual NTP
+// slewing stays well below the threshold between re-arms. A blocked read is
+// not woken by the jump itself; it reports it with the next expiration.
+#define TIMERFD_CLOCK_JUMP_NS 100000000LL
+static int64_t timerfd_wall_offset(void) {
+    struct timespec real, mono;
+    clock_gettime(CLOCK_REALTIME, &real);
+    clock_gettime(CLOCK_MONOTONIC, &mono);
+    return (int64_t) (real.tv_sec - mono.tv_sec) * 1000000000LL + (real.tv_nsec - mono.tv_nsec);
+}
+// Must hold fd->lock.
+static bool timerfd_clock_was_set(struct fd *fd) {
+    if (!fd->timerfd.cancel_on_set) return false;
+    int64_t delta = timerfd_wall_offset() - fd->timerfd.wall_offset_ns;
+    return delta > TIMERFD_CLOCK_JUMP_NS || delta < -TIMERFD_CLOCK_JUMP_NS;
+}
+
 static void timerfd_callback(struct fd *fd) {
     lock(&fd->lock);
     fd->timerfd.expirations++;
@@ -595,12 +617,13 @@ fd_t sys_timerfd_create(int_t clockid, int_t flags) {
         return _ENOMEM;
 
     fd->timerfd.timer = timer_new(real_clockid, (timer_callback_t) timerfd_callback, fd);
+    fd->timerfd.clockid = clockid;
     return f_install(fd, flags);
 }
 
 int_t sys_timerfd_settime(fd_t f, int_t flags, addr_t new_value_addr, addr_t old_value_addr) {
     STRACE("timerfd_settime(%d, %d, %#x, %#x)", f, flags, new_value_addr, old_value_addr);
-    if (flags & ~(TIMER_ABSTIME_))
+    if (flags & ~(TIMER_ABSTIME_ | TFD_TIMER_CANCEL_ON_SET_))
         return _EINVAL;
     struct fd *fd = f_get(f);
     if (fd == NULL)
@@ -617,6 +640,11 @@ int_t sys_timerfd_settime(fd_t f, int_t flags, addr_t new_value_addr, addr_t old
 
     lock(&fd->lock);
     fd->timerfd.expirations = 0; // arming or disarming discards unread expirations, as on Linux
+    // As on Linux, the flag applies only to absolute realtime timers and is
+    // otherwise ignored.
+    fd->timerfd.cancel_on_set = (flags & TFD_TIMER_CANCEL_ON_SET_) && (flags & TIMER_ABSTIME_) &&
+        (fd->timerfd.clockid == CLOCK_REALTIME_ || fd->timerfd.clockid == CLOCK_REALTIME_ALARM_);
+    fd->timerfd.wall_offset_ns = timerfd_wall_offset();
     int err = timer_set(fd->timerfd.timer, spec, &old_spec);
     unlock(&fd->lock);
     if (err < 0)
@@ -664,7 +692,7 @@ static ssize_t timerfd_read(struct fd *fd, void *buf, size_t bufsize) {
     if (bufsize < sizeof(uint64_t))
         return _EINVAL;
     lock(&fd->lock);
-    while (fd->timerfd.expirations == 0) {
+    while (fd->timerfd.expirations == 0 && !timerfd_clock_was_set(fd)) {
         if (fd->flags & O_NONBLOCK_) {
             unlock(&fd->lock);
             return _EAGAIN;
@@ -676,6 +704,13 @@ static ssize_t timerfd_read(struct fd *fd, void *buf, size_t bufsize) {
         }
     }
 
+    if (timerfd_clock_was_set(fd)) {
+        // Reported once per clock change, as on Linux.
+        fd->timerfd.wall_offset_ns = timerfd_wall_offset();
+        fd->timerfd.expirations = 0;
+        unlock(&fd->lock);
+        return _ECANCELED;
+    }
     *(uint64_t *) buf = fd->timerfd.expirations;
     fd->timerfd.expirations = 0;
     unlock(&fd->lock);
@@ -684,7 +719,7 @@ static ssize_t timerfd_read(struct fd *fd, void *buf, size_t bufsize) {
 static int timerfd_poll(struct fd *fd) {
     int res = 0;
     lock(&fd->lock);
-    if (fd->timerfd.expirations != 0)
+    if (fd->timerfd.expirations != 0 || timerfd_clock_was_set(fd))
         res |= POLL_READ;
     unlock(&fd->lock);
     return res;

@@ -11,4 +11,8 @@ bool software_dmabuf_source(const struct fd *fd,struct fd **source,uint64_t *off
 // Export a page-aligned range of a shrink-sealed, writable memfd as a new
 // descriptor; consumes the caller's reference to source. flags&1: close-on-exec.
 int software_dmabuf_export(struct fd *source,uint64_t offset,uint64_t size,unsigned flags);
+// GEM exports must also retain their device resource until the last exported
+// description closes. Consumes source and owner on success and every failure.
+int software_dmabuf_export_owned(struct fd *source,uint64_t offset,uint64_t size,unsigned flags,
+        void *owner,void (*release_owner)(void *));
 #endif

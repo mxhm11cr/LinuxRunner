@@ -24,5 +24,18 @@ int main(void){
         uint16_t x=rand(),y=rand(),w=rand(),h=rand();
         if(lr_rfb_rectangle(640,480,x,y,w,h,&bytes))assert((size_t)x+w<=640&&(size_t)y+h<=480&&bytes<=1228800);
     }
+    // Cursor pseudo-encoding: 9x2 cursor, mask stride 2 bytes, MSB first.
+    {size_t pb=0,mb=0;assert(lr_rfb_cursor_sizes(9,2,&pb,&mb)&&pb==72&&mb==4);
+     assert(!lr_rfb_cursor_sizes(257,1,&pb,&mb));assert(lr_rfb_cursor_sizes(0,0,&pb,&mb)&&pb==0&&mb==0);
+     uint8_t px[72];for(int i=0;i<72;i++)px[i]=(uint8_t)(i+1);
+     const uint8_t m[4]={0x80,0x80,0x01,0x00}; // row0: x=0 and x=8 on; row1: x=7 on
+     uint8_t out[72];memset(out,0x55,sizeof out);assert(lr_rfb_cursor_bgra(px,m,9,2,out));
+     assert(out[0]==1&&out[1]==2&&out[2]==3&&out[3]==255);          // (0,0) opaque, colour kept
+     assert(out[4]==0&&out[7]==0);                                   // (1,0) transparent
+     assert(out[8*4]==33&&out[8*4+3]==255);                          // (8,0) from second mask byte
+     assert(out[(9+7)*4+3]==255&&out[(9+7)*4]==65);                  // (7,1)
+     assert(out[(9+8)*4+3]==0);                                      // (8,1) off
+     assert(!lr_rfb_cursor_bgra(px,m,300,2,out));}
+    puts("RFB cursor pseudo-encoding mask/premultiplied decode passed");
     puts("RFB bounded rectangle, guard bytes, malformed dimensions and randomized bounds passed");
 }

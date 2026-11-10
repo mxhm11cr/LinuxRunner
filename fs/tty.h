@@ -87,6 +87,23 @@ struct termios2_ {
 #define TIOCSPTLCK_ 0x40045431
 #define TIOCGPKT_ 0x80045438
 
+// Serial-port ioctls, answered by drivers that model a serial line
+// (BLE serial bridge); others still report ENOTTY as before.
+#define TCSBRK_ 0x5409
+#define TCXONC_ 0x540a
+#define TIOCEXCL_ 0x540c
+#define TIOCNXCL_ 0x540d
+#define TIOCMGET_ 0x5415
+#define TIOCMBIS_ 0x5416
+#define TIOCMBIC_ 0x5417
+#define TIOCMSET_ 0x5418
+#define TCSBRKP_ 0x5425
+#define TIOCM_DTR_ 0x002
+#define TIOCM_RTS_ 0x004
+#define TIOCM_CTS_ 0x020
+#define TIOCM_CAR_ 0x040
+#define TIOCM_DSR_ 0x100
+
 #define TCIFLUSH_ 0
 #define TCOFLUSH_ 1
 #define TCIOFLUSH_ 2
@@ -109,6 +126,9 @@ struct tty_driver_ops {
     int (*write)(struct tty *tty, const void *buf, size_t len, bool blocking);
     int (*ioctl)(struct tty *tty, int cmd, void *arg);
     void (*cleanup)(struct tty *tty);
+    // Optional, called with tty->lock held after termios or speeds changed
+    // (serial bridges forward the line settings). Must not block.
+    void (*set_termios)(struct tty *tty);
 };
 
 // indexed by major number

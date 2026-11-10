@@ -21,3 +21,12 @@ bool lr_rfb_fill(uint8_t *frame,uint16_t fw,uint16_t fh,uint16_t x,uint16_t y,ui
 
 // Invert the actual rendered viewport after fit, zoom, pan or rotation.
 bool lr_rfb_viewport_point(double x,double y,double left,double top,double rendered_width,double rendered_height,uint16_t width,uint16_t height,uint16_t *px,uint16_t *py);
+
+// RFB Cursor pseudo-encoding (-239) with the session's 32-bit B,G,R,pad pixel
+// format: w*h*4 pixel bytes, then a 1-bit mask of ((w+7)/8)*h bytes (MSB is
+// the leftmost pixel). The server stops drawing the cursor into the
+// framebuffer for this client, which draws it locally at its own pointer.
+#define LR_RFB_CURSOR_MAX 256
+bool lr_rfb_cursor_sizes(uint16_t w,uint16_t h,size_t *pixel_bytes,size_t *mask_bytes);
+// Premultiplied B,G,R,A (kCGImageAlphaPremultipliedFirst, little endian).
+bool lr_rfb_cursor_bgra(const uint8_t *pixels,const uint8_t *mask,uint16_t w,uint16_t h,uint8_t *out);

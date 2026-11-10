@@ -21,12 +21,12 @@ if command -v readelf >/dev/null; then
 fi
 # Independent launcher calls can adopt the validated active account session.
 # Session-owned requests already inherit its exact DISPLAY/auth/bus/runtime.
-if [ -z "${DISPLAY:-}" ]; then . "$base/desktop-env.sh"; fi
-[ -n "${DISPLAY:-}" ] || { echo 'GUI_LAUNCH: no active display for this account; open Desktop first'; exit 125; }
+if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then . "$base/desktop-env.sh"; fi
+[ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ] || { echo 'GUI_LAUNCH: no active display for this account; open Desktop first'; exit 125; }
 # Hyprland or Wayfire running: open inside it (its Wayland socket), not under it.
 [ -n "${WAYLAND_DISPLAY:-}" ] || { command -v linuxrunner_wayland >/dev/null 2>&1 || . "$base/desktop-env.sh"; linuxrunner_wayland || true; }
 export QT_FORCE_STDERR_LOGGING=${QT_FORCE_STDERR_LOGGING:-1}
-echo "GUI_LAUNCH: executable=$command directory=$PWD DISPLAY=$DISPLAY"
+echo "GUI_LAUNCH: executable=$command directory=$PWD DISPLAY=${DISPLAY:-none} WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-none}"
 # Graphics routing: the launcher's own choice, else the session default from
 # Settings (session.sh exports it). Unusable GPU modes fall back to Mesa.
 . "$base/gpu-env.sh"

@@ -1,0 +1,33 @@
+# package	name	category	gui. Shown only when the repositories offer it.
+firefox-esr	Firefox	Internet	1
+chromium	Chromium	Internet	1
+thunderbird	Thunderbird	Internet	1
+gimp	GIMP	Graphics	1
+inkscape	Inkscape	Graphics	1
+krita	Krita	Graphics	1
+blender	Blender	Graphics	1
+libreoffice	LibreOffice	Office	1
+abiword	AbiWord	Office	1
+evince	Evince	Office	1
+vlc	VLC	Media	1
+mpv	mpv	Media	1
+audacity	Audacity	Media	1
+geany	Geany	Development	1
+mousepad	Mousepad	Accessories	1
+thunar	Thunar	Accessories	1
+xfce4-terminal	Xfce Terminal	Accessories	1
+galculator	Galculator	Accessories	1
+htop	htop	System	0
+fastfetch	fastfetch	System	0
+git	Git	Development	0
+python3	Python 3	Development	0
+nodejs	Node.js	Development	0
+gcc	GCC compiler	Development	0
+vim	Vim	Development	0
+tmux	tmux	System	0
+nmap	Nmap	Network	0
+wireshark	Wireshark	Network	1
+platformio	PlatformIO Core	Embedded	0
+esptool	esptool	Embedded	0
+arduino-cli	Arduino CLI	Embedded	0
+picocom	picocom	Embedded	0

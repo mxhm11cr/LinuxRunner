@@ -1,5 +1,15 @@
 [
   {
+    "binary": "app/LinuxRunner/GUISupport.bundle/capture-shm-guard.arm64",
+    "sha256": "5b5705fb531e0e493b28ac3e5b3c5e99bc4f60a075fa45f7468459fe63806db1",
+    "source_files": [
+      "app/LinuxRunner/GUISupport.bundle/capture-shm-guard.c",
+      "kernel/capture_shm.h"
+    ],
+    "build_recipe": "scripts/build-capture-shm-guard.sh",
+    "compile_command": "CAPTURE_CC=clang CAPTURE_LD=/path/to/ld.lld scripts/build-capture-shm-guard.sh (freestanding static aarch64-linux-gnu ELF; no guest libc)"
+  },
+  {
     "binary": "app/LinuxRunner/GUISupport.bundle/liblinuxrunner-mesa-metal.so",
     "sha256": "1f3aa526e0030018301414cb6f7d061d2db7bd0845fdc2d7bc48cb1fae73fb5f",
     "source_files": [

@@ -15,6 +15,7 @@
 #include "kernel/futex.h"
 #include "kernel/random.h"
 #include "kernel/errno.h"
+#include "kernel/filecaps.h"
 #include "fs/fd.h"
 #include "fs/path.h"
 #include "kernel/elf.h"
@@ -73,7 +74,7 @@ struct exec_args {
     const char *args;
 };
 
-struct exec_ids { uid_t_ euid; uid_t_ egid; };
+struct exec_ids { uid_t_ euid; uid_t_ egid; bool secure; };
 
 static inline addr_t align_stack(addr_t sp);
 static inline ssize_t user_strlen(addr_t p);
@@ -413,7 +414,7 @@ static int elf_exec(struct fd *fd, const char *file, struct exec_args argv, stru
         {AX_EUID, userns_view_uid(current->userns, ids.euid)},
         {AX_GID, userns_view_gid(current->userns, current->gid)},
         {AX_EGID, userns_view_gid(current->userns, ids.egid)},
-        {AX_SECURE, current->uid != ids.euid || current->gid != ids.egid},
+        {AX_SECURE, ids.secure || current->uid != ids.euid || current->gid != ids.egid},
         {AX_RANDOM, random_addr},
         {AX_HWCAP2, 0}, // suck that too
         {AX_EXECFN, file_addr},
@@ -543,7 +544,17 @@ static int format_exec(struct fd *fd, const char *file, struct exec_args argv, s
     return _ENOEXEC;
 }
 
+// Linux (binfmt_script) lets the interpreter itself be a script, up to
+// BINPRM_MAX_RECURSION (4) levels; deeper chains fail with ELOOP. Kali's
+// msfconsole is one: #!/usr/share/metasploit-framework/ruby, a /bin/sh wrapper.
+#define SHEBANG_MAX_DEPTH 4
+static int shebang_exec_depth(struct fd *fd, const char *file, struct exec_args argv, struct exec_args envp, bool inaccessible, int depth);
 static int shebang_exec(struct fd *fd, const char *file, struct exec_args argv, struct exec_args envp, bool inaccessible) {
+    return shebang_exec_depth(fd, file, argv, envp, inaccessible, 0);
+}
+static int shebang_exec_depth(struct fd *fd, const char *file, struct exec_args argv, struct exec_args envp, bool inaccessible, int depth) {
+    if (depth > SHEBANG_MAX_DEPTH)
+        return _ELOOP;
     // read the first 128 bytes to get the shebang line out of
     char header[128];
     int size = fd->ops->pread(fd, header, sizeof(header) - 1, 0);
@@ -566,17 +577,17 @@ static int shebang_exec(struct fd *fd, const char *file, struct exec_args argv, 
     if (inaccessible)
         return _ENOENT;
     p += 2;
-    while (*p == ' ')
+    while (*p == ' ' || *p == '\t')
         p++;
     if (*p == '\0')
         return _ENOEXEC;
 
     char *interpreter = p;
-    while (*p != ' ' && *p != '\0')
+    while (*p != ' ' && *p != '\t' && *p != '\0')
         p++;
     if (*p != '\0') {
         *p++ = '\0';
-        while (*p == ' ')
+        while (*p == ' ' || *p == '\t')
             p++;
     }
 
@@ -584,7 +595,7 @@ static int shebang_exec(struct fd *fd, const char *file, struct exec_args argv, 
     // Strip trailing spaces from the optional interpreter argument without
     // walking back into the interpreter string when no argument is present.
     char *end = argument + strlen(argument);
-    while (end > argument && end[-1] == ' ')
+    while (end > argument && (end[-1] == ' ' || end[-1] == '\t'))
         *--end = '\0';
     if (*argument == '\0')
         argument = NULL;
@@ -600,7 +611,11 @@ static int shebang_exec(struct fd *fd, const char *file, struct exec_args argv, 
     if (args_rest_size + extra_args_size >= ARGV_MAX)
         return _E2BIG;
 
-    char new_argv_buf[ARGV_MAX];
+    // Heap, not stack: a 128 KiB buffer per nested interpreter level overflowed
+    // the host thread's stack (5 levels > 512 KiB) and crashed the runtime.
+    char *new_argv_buf = malloc(ARGV_MAX);
+    if (new_argv_buf == NULL)
+        return _ENOMEM;
     struct exec_args new_argv = {.args = new_argv_buf};
     size_t n = 0;
     strcpy(new_argv_buf, interpreter);
@@ -618,8 +633,10 @@ static int shebang_exec(struct fd *fd, const char *file, struct exec_args argv, 
     new_argv.count += argv_rest.count;
 
     struct fd *interpreter_fd = generic_open_execat(AT_PWD, interpreter, 0);
-    if (IS_ERR(interpreter_fd))
+    if (IS_ERR(interpreter_fd)) {
+        free(new_argv_buf);
         return PTR_ERR(interpreter_fd);
+    }
     struct statbuf interpreter_stat;
     int err = interpreter_fd->mount->fs->fstat(interpreter_fd, &interpreter_stat);
     if (!err && (!S_ISREG(interpreter_stat.mode) || !(interpreter_stat.mode & 0111) ||
@@ -628,7 +645,11 @@ static int shebang_exec(struct fd *fd, const char *file, struct exec_args argv, 
     if (!err) err = access_check(&interpreter_stat, AC_X);
     if (!err) err = format_exec(interpreter_fd, interpreter, new_argv, envp,
             (struct exec_ids) {current->euid, current->egid});
+    // The interpreter is a script too: run it the same way, one level deeper.
+    if (err == _ENOEXEC)
+        err = shebang_exec_depth(interpreter_fd, interpreter, new_argv, envp, false, depth + 1);
     fd_close(interpreter_fd);
+    free(new_argv_buf);
     return err;
 }
 
@@ -646,12 +667,34 @@ static int do_execve_fd(struct fd *fd, const char *file, struct exec_args argv,
         return err;
 
     struct exec_ids ids = {current->euid, current->egid};
+    struct file_caps filecaps = {0};
+    bool honor_filecaps = !(fd->mount->flags & MS_NOSUID_) && !current->ptrace.traced && !current->userns;
+    if (honor_filecaps) {
+        err = file_caps_read(fd, &filecaps);
+        if (err) return err;
+    }
     // Set-ID bits are not honoured inside a user namespace (owners may be unmapped).
     if (!(fd->mount->flags & MS_NOSUID_) && !current->ptrace.traced && !current->no_new_privs && !current->userns) {
         if (stat.mode & S_ISUID) ids.euid = stat.uid;
         if ((stat.mode & (S_ISGID | S_IXGRP)) == (S_ISGID | S_IXGRP))
             ids.egid = stat.gid;
     }
+    uint64_t permitted = (current->cap_inheritable & filecaps.inheritable) |
+            (filecaps.permitted & current->cap_bounding);
+    bool effective = filecaps.effective;
+    // Traditional root semantics, except a setuid-root executable with explicit
+    // file capabilities and a non-root real uid receives only those grants.
+    if ((current->uid == 0 || ids.euid == 0) &&
+            !(filecaps.present && current->uid != 0 && ids.euid == 0)) {
+        permitted = current->cap_bounding | current->cap_inheritable;
+        effective = ids.euid == 0;
+    }
+    if (current->no_new_privs || current->ptrace.traced) permitted &= current->cap_permitted;
+    // A capability-dumb binary marked effective must receive its full file
+    // permitted set, or fail exec instead of running with unexpected authority.
+    if (filecaps.effective && !current->no_new_privs &&
+            (filecaps.permitted & ~permitted)) return _EPERM;
+    ids.secure = (permitted & ~current->cap_permitted) != 0;
     struct fdtable *displaced = NULL;
     err = fdtable_unshare_current(&displaced);
     if (err) return err;
@@ -659,6 +702,9 @@ static int do_execve_fd(struct fd *fd, const char *file, struct exec_args argv,
     if (err == _ENOEXEC) {
         // Linux ignores set-ID mode bits on scripts.
         ids = (struct exec_ids) {current->euid, current->egid};
+        permitted = current->euid == 0 ? current->cap_bounding | current->cap_inheritable : 0;
+        if (current->no_new_privs || current->ptrace.traced) permitted &= current->cap_permitted;
+        effective = current->euid == 0;
         err = shebang_exec(fd, file, argv, envp, script_inaccessible);
     }
     if (err < 0) {
@@ -668,17 +714,21 @@ static int do_execve_fd(struct fd *fd, const char *file, struct exec_args argv,
     if (displaced) fdtable_release(displaced);
     // A successful ordinary exec restores dumpability; privilege-changing or
     // unreadable executable images use the conservative suid_dumpable=0 policy.
-    mm_set_dumpable(current->mm, ids.euid != current->euid || ids.egid != current->egid ||
+    mm_set_dumpable(current->mm, ids.secure || ids.euid != current->euid || ids.egid != current->egid ||
         access_check(&stat, AC_R) < 0 ? 0 : 1);
     // Linux clears the parent-death signal when exec changes credentials.
-    if (ids.euid != current->euid || ids.egid != current->egid) current->pdeath_signal = 0;
+    if (ids.secure || ids.euid != current->euid || ids.egid != current->egid) current->pdeath_signal = 0;
     // Saved IDs become the effective IDs after successful exec. Auxv was
     // already constructed with these same prospective IDs for the loader.
     current->euid = current->suid = ids.euid;
     current->egid = current->sgid = ids.egid;
-    // Linux recomputes capabilities on execve (no file capabilities here).
+    // Recompute guest sets on every exec; these never grant host capabilities.
     if (current->userns) userns_exec_capabilities();
-    else if (current->euid == 0) current->cap_effective = current->cap_permitted = CAP_FULL_SET_;
+    else {
+        current->cap_permitted = permitted;
+        current->cap_effective = effective ? permitted : 0;
+    }
+    current->keep_caps = false;
 
     // save current->comm
     lock(&current->general_lock);

@@ -64,8 +64,8 @@ body {
     font-variant-ligatures: normal;
     -webkit-font-smoothing: antialiased;
     contain: strict;
-    transform: translateZ(0);
-    will-change: transform;
+    /* No transform/will-change: WebKit rasterized these forced layers at the
+       1x scale of the offscreen web view, so text looked upscaled. */
     -webkit-touch-callout: none;
     -webkit-user-select: none;
     user-select: none;
@@ -73,8 +73,6 @@ body {
 
 #terminal canvas {
     display: block;
-    transform: translateZ(0);
-    will-change: transform;
     -webkit-touch-callout: none;
     -webkit-user-select: none;
     user-select: none;

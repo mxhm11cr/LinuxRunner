@@ -17,6 +17,11 @@ static void inspect(Display*d,Window w,unsigned depth,struct state*s){
 }
 int main(int argc,char**argv){
  Display*d=XOpenDisplay(0);if(!d){fputs("DESKTOP_PROBE: authenticated display connection failed\n",stderr);return 2;}
+ // --pointer: where the X server itself has the pointer. The app compares it
+ // with the position it sent over RFB: proof that input reaches the desktop.
+ if(argc>1&&!strcmp(argv[1],"--pointer")){Window r,c;int rx,ry,wx,wy;unsigned m;
+  if(!XQueryPointer(d,DefaultRootWindow(d),&r,&c,&rx,&ry,&wx,&wy,&m)){XCloseDisplay(d);return 3;}
+  printf("pointer=%d,%d\n",rx,ry);XCloseDisplay(d);return 0;}
  XSetErrorHandler(ignored);struct state s={.root=DefaultRootWindow(d),.width=DisplayWidth(d,DefaultScreen(d)),.height=DisplayHeight(d,DefaultScreen(d)),.wt=XInternAtom(d,"_NET_WM_WINDOW_TYPE",False),.dock=XInternAtom(d,"_NET_WM_WINDOW_TYPE_DOCK",False),.desk=XInternAtom(d,"_NET_WM_WINDOW_TYPE_DESKTOP",False)};
  Window owner=XGetSelectionOwner(d,XInternAtom(d,"WM_S0",False));inspect(d,s.root,0,&s);int ready=owner!=None&&s.panel>0&&s.surface>0;
  printf("root_geometry=%dx%d\nwm=%lu\npanel=%d\nsurface=%d\nready=%d\n",s.width,s.height,owner,s.panel,s.surface,ready);XCloseDisplay(d);return argc>1&&!strcmp(argv[1],"--ready")&&!ready?1:0;

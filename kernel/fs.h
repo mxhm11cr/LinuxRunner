@@ -67,6 +67,7 @@ int generic_accessat(struct fd *dirfd, const char *path, int mode);
 int generic_statat(struct fd *at, const char *path, struct statbuf *stat, bool follow_links);
 int generic_setattrat(struct fd *at, const char *path, struct attr attr, bool follow_links);
 int generic_utime(struct fd *at, const char *path, struct timespec atime, struct timespec mtime, bool follow_links);
+int generic_futime(struct fd *fd, struct timespec atime, struct timespec mtime);
 ssize_t generic_readlinkat(struct fd *at, const char *path, char *buf, size_t bufsize);
 int generic_mkdirat(struct fd *at, const char *path, mode_t_ mode);
 
@@ -170,11 +171,22 @@ struct fs_ops {
     int (*fstat)(struct fd *fd, struct statbuf *stat); // required
     int (*setattr)(struct mount *mount, const char *path, struct attr attr);
     int (*fsetattr)(struct fd *fd, struct attr attr);
-    int (*utime)(struct mount *mount, const char *path, struct timespec atime, struct timespec mtime);
+    // Times use host UTIME_NOW/UTIME_OMIT sentinels (already translated from
+    // the Linux values). follow_links=false must not follow a final symlink.
+    int (*utime)(struct mount *mount, const char *path, struct timespec atime, struct timespec mtime, bool follow_links);
+    // utimensat(fd, NULL, ...) / futimens(fd): set times on the open file
+    // itself. Optional; without it the kernel falls back to the fd's path.
+    int (*futime)(struct fd *fd, struct timespec atime, struct timespec mtime);
     // Returns the path of the file descriptor, null terminated, buf must be at least MAX_PATH+1
     int (*getpath)(struct fd *fd, char *buf); // required
 
     int (*flock)(struct fd *fd, int operation);
+
+    // Guest security.capability only. Unsupported namespaces remain ENOTSUP;
+    // no host security attributes or sandbox permissions are passed through.
+    ssize_t (*get_file_caps)(struct fd *fd, void *value, size_t size);
+    int (*set_file_caps)(struct fd *fd, const void *value, size_t size, int flags);
+    int (*remove_file_caps)(struct fd *fd);
 
     // If present, called when all references to an inode_data for this
     // filesystem go away.

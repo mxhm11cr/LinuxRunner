@@ -1,0 +1,87 @@
+--- a/app/LinuxRunner/GUIViewController.m
++++ b/app/LinuxRunner/GUIViewController.m
+@@ -1,6 +1,7 @@
+ #import "GUIViewController.h"
+ #import "RuntimeBridge.h"
+ #import "RFBClient.h"
++#import "../../tests/linuxrunner/gui/capture-probe/DeviceCaptureProbe.h"
+ #import "FramebufferPatch.h"
+ #import "DiagnosticLogTail.h"
+ #import "RFBProtocol.h"
+@@ -618,6 +619,8 @@
+ @property uint16_t audioPort;
+ @property BOOL viewerVisible;
+ @property NSUUID *storageActivitySource;
++@property LRDeviceCaptureProbe *captureProbe;
++@property NSMutableDictionary<NSNumber *,NSNumber *> *captureDecodedAt; // protected by frameLock
+ @property BOOL trackpadRequested;
+ - (void)updateStorageActivity;
+ @end
+@@ -1545,9 +1548,19 @@
+     if(UIApplication.sharedApplication.applicationState==UIApplicationStateBackground){[_frameLock unlock];return;}
+     uint16_t w=_pendingWidth,h=_pendingHeight;LRFrameDamage damage=_pendingDamage;double received=_pendingFrameReceivedAt;
+     NSData *patch=LRFramebufferPatch(_pendingFrame,w,h,damage);
++    NSNumber *probeSequence=_captureProbe?LRDeviceProbeSequence(_pendingFrame,w,h):nil;
++    double probeDecodedAt=probeSequence?[_captureDecodedAt[probeSequence] doubleValue]:0;
++    NSDictionary *probeBurst=probeSequence.unsignedIntValue==0xf00078?[_captureDecodedAt copy]:nil;
+     _pendingDamage=(LRFrameDamage){0};_presentationPatchBytes+=patch.length;[_frameLock unlock];
+     if(patch&&damage.width&&damage.height){
++        // Receiver timestamps are captured under the same frame lock as pixels.
++        // Associate them synchronously before submission; queued notifications
++        // can otherwise arrive after the newest frame is already presented.
++        for(NSNumber *n in probeBurst)if(n.unsignedIntValue>0x010000&&n.unsignedIntValue<=0x010078)
++            [_captureProbe decoded:n at:[probeBurst[n] doubleValue]];
++        [_captureProbe decoded:probeSequence at:probeDecodedAt];
+         double submitted=received?LRGUIClock():0;[_surface presentPatch:patch width:w height:h damage:damage];[_surface noteFramePresented];
++        [_captureProbe submitted:probeSequence at:LRDeviceProbeClock()];
+         // Readiness depends on authenticated X11 component windows and actual
+         // frame submission, never the wallpaper color or sampled pixel values.
+         if(_desktopMode&&!_desktopPainted){_desktopPainted=YES;
+@@ -1571,6 +1584,13 @@
+     [self updateStorageActivity];
+     __weak typeof(self) weak=self;
+     __weak LRRFBClient *thisClient=_client;
++    [_captureProbe invalidate];_captureProbe=nil;_captureDecodedAt=[NSMutableDictionary new];
++    if([NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerDesktop.captureProbe"]){
++        _captureProbe=[[LRDeviceCaptureProbe alloc]initWithURL:[_sessionURL URLByAppendingPathComponent:@"capture-probe.json"] send:^(NSUInteger kind){
++            if(kind==0){[thisClient pointerX:300 y:300 buttons:1];[thisClient pointerX:300 y:300 buttons:0];}
++            else {uint32_t key=kind==1?'q':'b';[thisClient key:key down:YES];[thisClient key:key down:NO];}
++        }];
++    }
+     _client.patchFrameHandler=^(NSData *patch,uint16_t w,uint16_t h,uint64_t frames,uint64_t bytes,LRFrameDamage damage){
+         typeof(self) self=weak;if(!self)return;[self.frameLock lock];
+         if(!self.client||self.client!=thisClient){[self.frameLock unlock];return;}
+@@ -1590,6 +1610,9 @@
+         if(self.desktopMode&&!self.traceFirstUpdate){self.traceFirstUpdate=YES;[LRRuntimeBridge desktopTrace:@"13 first-frame" result:@"start" detail:[NSString stringWithFormat:@"first framebuffer update %ux%u bytes=%lu frames=%llu",w,h,(unsigned long)patch.length,frames]];}
+ 
+         self.pendingFrameReceivedAt=self.client.transportMetricsHandler?LRGUIClock():0;
++        LRDeviceCaptureProbe *probe=self.captureProbe;
++        NSNumber *sequence=probe?LRDeviceProbeSequence(self.pendingFrame,w,h):nil;
++        if(sequence&&!self.captureDecodedAt[sequence])self.captureDecodedAt[sequence]=@(LRDeviceProbeClock());
+         self.patchBytes+=patch.length;self.pendingWidth=w;self.pendingHeight=h;self.frames=frames;self.bytes=bytes;
+         BOOL schedule=!self.presentationPending;self.presentationPending=YES;[self.frameLock unlock];
+         if(schedule)dispatch_async(dispatch_get_main_queue(),^{typeof(self) self=weak;if(self&&self.client==thisClient)[self drainFrameForClient:thisClient];});
+@@ -1633,6 +1656,7 @@
+         if(DesktopDegradedNotice(desktopState))progress=DesktopDegradedNotice(desktopState);
+         if([desktopState containsString:@"ready=1"]&&_queuedDesktopApplication){NSDictionary *app=_queuedDesktopApplication;_queuedDesktopApplication=nil;[self launchDesktopApplication:app];}}
+     _surface.accessibilityValue=[NSString stringWithFormat:@"%@; framebuffer %ux%u",progress,_surface.pixelWidth,_surface.pixelHeight];
++    if(_captureProbe.finished)_surface.accessibilityValue=[_surface.accessibilityValue stringByAppendingString:_captureProbe.passed?@"; Capture probe complete":@"; Capture probe failed"];
+     double now=LRGUIClock();
+     if(_rateTime>0&&now-_rateTime>=0.9){_updateRate=(double)(_frames-_rateFrames)/(now-_rateTime);_rateFrames=_frames;_rateTime=now;}
+     else if(_rateTime<=0||_frames<_rateFrames){_rateFrames=_frames;_rateTime=now;}
+@@ -1657,6 +1681,7 @@
+     }
+ }
+ - (void)stop{
++    [_captureProbe invalidate];_captureProbe=nil;
+     [_audio stop];_audio=nil;
+     for(UIView *control in _launchControls)control.hidden=_desktopMode;
+     if(_client)[self metrics];
+@@ -1686,6 +1711,7 @@
+     NSDictionary *symbols=@{@"Esc":@0xff1b,@"Tab":@0xff09,@"←":@0xff51,@"↑":@0xff52,@"↓":@0xff54,@"→":@0xff53};if(symbols[title])[_surface stroke:[symbols[title] unsignedIntValue]];
+ }
+ - (void)detachViewer{
++    [_captureProbe invalidate];_captureProbe=nil;
+     [_surface releaseInput];[self resetModifierButtons];[_surface resignFirstResponder];
+     _client.frameHandler=nil;_client.damageFrameHandler=nil;_client.patchFrameHandler=nil;_client.statusHandler=nil;[_client stop];_client=nil;_surface.client=nil;
+     [self updateStorageActivity];

@@ -2,6 +2,41 @@
 
 User-visible changes follow Added / Changed / Fixed / Known Issues.
 
+## [1.1.1] — 2026-11-08 (Build 905)
+
+Full release notes: [docs/releases/v1.1.1.md](docs/releases/v1.1.1.md).
+
+### Added
+
+- Redesigned Distributions tab: installed cards with each distribution's own logo, an Add a Distribution grid (2 columns on iPhone, 4 on iPad) and a simpler detail screen.
+- Redesigned Settings: header with version and active distribution, grouped categories (General, Desktop & Display, Graphics & Performance, Input & Controls, Linux Environment, Storage & Maintenance, Advanced, About) with colored icon rows. All existing settings and saved preferences are kept.
+- Installation screensaver for OLED screens: after 3, 4 (default) or 5 minutes without a touch during an installation, a dim, slowly moving status on black. Any touch, completion or failure dismisses it; installations continue.
+- SteamOS ARM64 (Experimental) in Setup and Distributions: **Install** downloads Valve's SteamFrame recovery image (3.8 GB, resumable) from Valve's server, checks its published SHA-256, unpacks only its root partition and reads that Btrfs filesystem natively (zstd, checksummed metadata), adding two pinned Arch Linux ARM display packages (x11vnc, libvncserver). No prepared archive or helper system is needed; the download is removed afterwards. Prepared archives (community PR #21) remain supported. Not official SteamOS support; Steam games are not supported.
+- Termux-like terminal on iPhone: sharp text, true black, two-row key bar, clipboard. Live desktop preview on Home. Desktop control pill and compact landscape pill.
+
+### Changed
+
+- Home: Applications section removed; iPad quick tiles are wide cards.
+- Plasma display bridge sends only changed screen tiles (about 7x less data per frame) and paces pointer motion to captured frames.
+- Long installations (Kali tools) no longer stop after one hour; they fail only after 45 minutes without progress.
+- Storage measurement pauses while a desktop is visible (community PR #18).
+- Guarded shared-memory desktop capture for Arch and SteamOS with crash-safe cleanup (community PR #20).
+- Interpreter memory: bounded translation cache on devices, released discarded pages, guest memory budget (community PR #26).
+
+### Fixed
+
+- Plasma panel clock (timerfd TFD_TIMER_CANCEL_ON_SET).
+- Fedora desktop: empty Applications menu and blank panel icons; desktop start no longer repeats a 14-second package check.
+- Home showed Stopped while the desktop was running.
+- Blurry terminal text.
+- Virtual display timing and vblank events (community PR #19).
+
+### Known Issues
+
+- SteamOS ARM64 is experimental and needs about 19.4 GB free while installing, 8.9 GB afterwards.
+- KDE Plasma menus update slowly (about 1 frame per second when hovering); Xfce and the LinuxRunner desktop are faster.
+- Kali tool installation remains slow (about 50 ms per unpacked file).
+
 ## [1.1.0] — 2026-11-01 (Build 900)
 
 ### Added

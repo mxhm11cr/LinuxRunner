@@ -73,6 +73,9 @@ struct fd {
         struct {
             struct timer *timer;
             uint64_t expirations;
+            int clockid;           // guest clock id
+            bool cancel_on_set;    // TFD_TIMER_CANCEL_ON_SET armed (absolute realtime)
+            int64_t wall_offset_ns; // CLOCK_REALTIME - CLOCK_MONOTONIC when armed
         } timerfd;
         struct {
             int domain;
@@ -87,6 +90,10 @@ struct fd {
             char unix_name[108];
             struct fd *unix_peer; // locked by peer_lock, for simplicity
             _Atomic bool unix_passcred; // locked by peer_lock
+            // Linux IP_MTU_DISCOVER mode plus one (0: never set, Linux default
+            // IP_PMTUDISC_WANT). Darwin keeps only the DF bit (IP_DONTFRAG).
+            _Atomic uint8_t ip_mtu_discover_plus1;
+            struct ip_errqueue *errqueue; // IP_RECVERR state (fs/errqueue.c), atomic pointer
             lock_t unix_send_lock; // orders native ancillary markers and metadata
             // Opt-in route-netlink state (socketpair reply endpoint).
             struct uevent_socket *uevent; // protocol-15 state, independent of route dumps
@@ -150,6 +157,7 @@ struct fd {
     // fs/inode data
     struct mount *mount;
     int real_fd; // seeks on this fd require the lock TODO think about making a special lock just for that
+    bool file_caps_storage; // fakefs-owned inode, never an external bind import
     DIR *dir;
     struct inode_data *inode;
     ino_t fake_inode;

@@ -40,6 +40,11 @@ expect REPOSITORY_METADATA_ERROR 'Err:3 https://deb.debian.org/debian trixie InR
   404  Not Found [IP: 151.101.2.132 443]
 E: The repository does not have a Release file.'
 expect FILESYSTEM_ERROR 'dpkg: error: unable to create new file /var/lib/dpkg/status-new: Read-only file system'
+expect PACKAGE_NOT_FOUND 'No match for argument: missing-fedora-package'
+expect DEPENDENCY_CONFLICT 'Problem: conflicting requests
+ - nothing provides missing-lib needed by requested-package'
+expect REPOSITORY_METADATA_ERROR 'GPG check FAILED'
+expect FILESYSTEM_FEATURE_UNSUPPORTED 'unpacking of archive failed on file /usr/libexec/gstreamer-1.0/gst-ptp-helper: cpio: cap_set_file failed - Operation not supported'
 rm -rf "$work"
 echo "CLASSIFY_FAILURE_TEST $([ $fails = 0 ] && echo PASS || echo FAIL) failures=$fails"
 [ $fails = 0 ]

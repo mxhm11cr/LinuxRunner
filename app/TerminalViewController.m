@@ -11,6 +11,7 @@
 #endif
 #import "AppDelegate.h"
 #import "TerminalView.h"
+#import <objc/runtime.h>
 #import "BarButton.h"
 #import "ArrowBarButton.h"
 #import "UserPreferences.h"
@@ -240,7 +241,7 @@
 - (int)startSession {
     NSArray<NSString *> *command = self.runnerCommand ?: UserPreferences.shared.launchCommand;
 #ifdef LINUXRUNNER
-    if (!self.runnerCommand && ([LRRuntimeBridge activeEnvironmentIsDebian] || [LRRuntimeBridge activeEnvironmentIsArch])) command = @[@"/bin/bash", @"-l"];
+    if (!self.runnerCommand && ([LRRuntimeBridge activeEnvironmentIsDebian] || [LRRuntimeBridge activeEnvironmentIsArch] || [LRRuntimeBridge activeEnvironmentIsFedora])) command = @[@"/bin/bash", @"-l"];
     if (!self.runnerCommand) {
         NSError *accountError = nil;
         NSArray<NSString *> *login = [LRRuntimeBridge defaultLinuxLoginCommand:&accountError];
@@ -293,10 +294,10 @@
     }
 
 #ifdef LINUXRUNNER
-    // Both glibc distributions use the same terminal/login path. su - selects
+    // The glibc distributions use the same terminal/login path. su - selects
     // the configured user's home; a default root login starts in its home too.
     if (!self.runnerDirectory.length && !self.runnerCommand &&
-        ([LRRuntimeBridge activeEnvironmentIsDebian] || [LRRuntimeBridge activeEnvironmentIsArch])) {
+        ([LRRuntimeBridge activeEnvironmentIsDebian] || [LRRuntimeBridge activeEnvironmentIsArch] || [LRRuntimeBridge activeEnvironmentIsFedora])) {
         struct fd *home = generic_open("/root", O_RDONLY_ | O_DIRECTORY_, 0);
         if (!IS_ERR(home)) fs_chdir(current->fs, home);
     }
@@ -441,7 +442,7 @@ session_failed:
     if (UserPreferences.shared.hideExtraKeysWithExternalKeyboard && self.hasExternalKeyboard) {
         self.termView.inputAccessoryView = nil;
     } else {
-        self.termView.inputAccessoryView = self.barView;
+        self.termView.inputAccessoryView = self.linuxKeyBar;
     }
     if (self.termView.inputAccessoryView != oldBarView && self.termView.isFirstResponder) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -583,6 +584,68 @@ session_failed:
     self.barButtonWidth.constant = buttonWidth;
 }
 
+// LinuxRunner's terminal keys (replaces iSH's bar): the classic two rows,
+//   ESC  /  -  HOME  ^  END  PGUP  ~  clipboard
+//   TAB CTRL ALT  <   v   >  PGDN  |  hide
+// plain labels on black; Ctrl and Alt latch for the next key and turn blue.
+- (UIView *)linuxKeyBar {
+    static const void *key = &key;
+    UIView *bar = objc_getAssociatedObject(self, key);
+    if (bar) return bar;
+    bar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 92)];
+    bar.backgroundColor = UIColor.blackColor; bar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    UIStackView *grid = [UIStackView new]; grid.axis = UILayoutConstraintAxisVertical; grid.distribution = UIStackViewDistributionFillEqually; grid.translatesAutoresizingMaskIntoConstraints = NO;
+    [bar addSubview:grid];
+    [NSLayoutConstraint activateConstraints:@[[grid.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor constant:2], [grid.trailingAnchor constraintEqualToAnchor:bar.trailingAnchor constant:-2], [grid.topAnchor constraintEqualToAnchor:bar.topAnchor constant:2], [grid.bottomAnchor constraintEqualToAnchor:bar.bottomAnchor constant:-2]]];
+    NSArray *rows = @[@[@"ESC", @"/", @"-", @"HOME", @"↑", @"END", @"PGUP", @"~", @"CLIP"], @[@"TAB", @"CTRL", @"ALT", @"←", @"↓", @"→", @"PGDN", @"|", @"HIDE"]];
+    for (NSArray *row in rows) {
+        UIStackView *line = [UIStackView new]; line.distribution = UIStackViewDistributionFillEqually; [grid addArrangedSubview:line];
+        for (NSString *label in row) {
+            UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+            b.tintColor = UIColor.whiteColor; b.layer.cornerRadius = 8;
+            if ([label isEqualToString:@"CLIP"] || [label isEqualToString:@"HIDE"]) {
+                BOOL clip = [label isEqualToString:@"CLIP"];
+                [b setImage:[UIImage systemImageNamed:clip ? @"doc.on.clipboard" : @"keyboard.chevron.compact.down" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
+                b.accessibilityLabel = clip ? @"Clipboard" : @"Hide Keyboard";
+                if (clip) {
+                    __weak typeof(self) weak = self;
+                    b.menu = [UIMenu menuWithTitle:@"" children:@[
+                        [UIAction actionWithTitle:@"Paste" image:[UIImage systemImageNamed:@"doc.on.clipboard"] identifier:nil handler:^(UIAction *a) { [weak.termView paste:nil]; }],
+                        [UIAction actionWithTitle:@"Copy Selection" image:[UIImage systemImageNamed:@"doc.on.doc"] identifier:nil handler:^(UIAction *a) { [weak.termView copy:nil]; }]]];
+                    b.showsMenuAsPrimaryAction = YES;
+                } else [b addTarget:self action:@selector(hideKeyboard:) forControlEvents:UIControlEventTouchUpInside];
+                [line addArrangedSubview:b]; continue;
+            }
+            [b setTitle:label forState:UIControlStateNormal];
+            b.titleLabel.font = [UIFont systemFontOfSize:label.length > 3 ? 13 : label.length > 2 ? 14 : 17 weight:UIFontWeightSemibold];
+            b.titleLabel.adjustsFontSizeToFitWidth = YES; b.titleLabel.minimumScaleFactor = 0.7;
+            [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+            [b setTitleColor:UIColor.systemBlueColor forState:UIControlStateSelected];
+            b.accessibilityIdentifier = [@"Term " stringByAppendingString:label];
+            [b addTarget:self action:@selector(linuxKey:) forControlEvents:UIControlEventTouchUpInside];
+            if ([label isEqualToString:@"CTRL"]) self.termView.controlKey = b;
+            if ([label isEqualToString:@"ALT"]) self.termView.altKey = b;
+            [line addArrangedSubview:b];
+        }
+    }
+    objc_setAssociatedObject(self, key, bar, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return bar;
+}
+- (void)linuxKey:(UIButton *)button {
+    NSString *label = [button titleForState:UIControlStateNormal];
+    if ([label isEqualToString:@"CTRL"] || [label isEqualToString:@"ALT"]) {
+        button.selected = !button.selected;   // blue label while latched; cleared after one key
+        return;
+    }
+    NSDictionary *sequences = @{@"ESC": @"\x1b", @"TAB": @"\t", @"HOME": @"\x1b[H", @"END": @"\x1b[F", @"PGUP": @"\x1b[5~", @"PGDN": @"\x1b[6~"};
+    if ([label isEqualToString:@"↑"]) [self pressKey:[self.terminal arrow:'A']];
+    else if ([label isEqualToString:@"↓"]) [self pressKey:[self.terminal arrow:'B']];
+    else if ([label isEqualToString:@"←"]) [self pressKey:[self.terminal arrow:'D']];
+    else if ([label isEqualToString:@"→"]) [self pressKey:[self.terminal arrow:'C']];
+    else if (sequences[label]) [self.terminal sendInput:[sequences[label] dataUsingEncoding:NSUTF8StringEncoding]];
+    else [self pressKey:label];   // "/", "-", "~", "|": through Ctrl/Alt latches like typed text
+}
+- (void)hideKeyboard:(id)sender { [self.termView resignFirstResponder]; }
 - (IBAction)pressEscape:(id)sender {
     [self pressKey:@"\x1b"];
 }

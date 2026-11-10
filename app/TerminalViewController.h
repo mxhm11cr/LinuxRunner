@@ -8,7 +8,10 @@
 #import <UIKit/UIKit.h>
 #import "Terminal.h"
 
+@class TerminalView;
 @interface TerminalViewController : UIViewController
+/// The terminal view (font size, clipboard) for LinuxRunner's terminal screen.
+@property (weak, nonatomic, readonly) TerminalView *termView;
 
 @property (nonatomic) Terminal *terminal;
 // Optional per-session argv for the LinuxRunner launcher. The normal shell

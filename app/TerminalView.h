@@ -26,6 +26,7 @@ enum OverrideAppearance {
 
 @property (weak) IBOutlet UIInputView *inputAccessoryView;
 @property (weak) IBOutlet UIButton *controlKey;
+@property (weak, nullable) UIButton *altKey;   // latched Alt: next character is sent with an ESC prefix
 
 @property (nonatomic) Terminal *terminal;
 

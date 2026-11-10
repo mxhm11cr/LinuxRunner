@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 case "${1:-}" in install.sh|install-qt.sh|install-browser.sh|install-desktop.sh|desktop-profile.sh) installer=$1;; *) exit 2;; esac
 shift
 # desktop-profile.sh takes only its fixed verbs.
-for arg in "$@"; do case "$arg" in repair|accounts|sudo|plasma|lxqt|enlightenment|wayfire|hyprland) ;; *) exit 2;; esac; done
+for arg in "$@"; do case "$arg" in repair|accounts|sudo|plasma|lxqt|enlightenment|wayfire|hyprland|xfce|kali-tools) ;; *) exit 2;; esac; done
 LR_PACMAN_RECOVERY_SCRIPT="$PWD/pacman-recover.sh"
 . ./package-lock.sh
 # Refuse duplicates before altering the active operation's output.

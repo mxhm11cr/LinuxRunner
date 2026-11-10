@@ -9,6 +9,8 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <poll.h>
+#include <signal.h>
+#include <sys/wait.h>
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
@@ -25,11 +27,90 @@ struct get_connector { uint64_t encoders, modes, props, prop_values; uint32_t co
 struct fb_cmd2 { uint32_t fb_id, width, height, pixel_format, flags, handles[4], pitches[4], offsets[4]; uint64_t modifier[4]; };
 struct page_flip { uint32_t crtc_id, fb_id, flags, reserved; uint64_t user_data; };
 struct vblank_event { uint32_t type, length; uint64_t user_data; uint32_t tv_sec, tv_usec, sequence, crtc_id; };
+struct crtc_sequence { uint32_t crtc_id, active; uint64_t sequence; int64_t sequence_ns; };
+struct queue_sequence { uint32_t crtc_id, flags; uint64_t sequence, user_data; };
+struct sequence_event { uint32_t type, length; uint64_t user_data; int64_t time_ns; uint64_t sequence; };
+union wait_vblank {
+    struct { uint32_t type, sequence; uint64_t signal; } request;
+    struct { uint32_t type, sequence; int64_t sec, usec; } reply;
+};
 #define IOWR(nr, size) (0xc0000000U | (size) << 16 | 'd' << 8 | (nr))
 static int fails;
 static void check(const char *step, int ok) { if (!ok) { printf("DRM_CONTRACT FAIL %s errno=%d (%s)\n", step, errno, strerror(errno)); fails++; } }
 
 static double now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
+
+static volatile sig_atomic_t received_signal;
+static void note_signal(int signal) { (void)signal; received_signal = 1; }
+static void vblank_signal_waits(int fd) {
+    struct sigaction action = {.sa_handler = note_signal}, original;
+    sigemptyset(&action.sa_mask);
+    check("vblank signal handler", sigaction(SIGUSR1, &action, &original) == 0);
+    for (unsigned i = 0; i < 8; i++) {
+        received_signal = 0;
+        pid_t parent = getpid(), child = fork();
+        check("vblank signal sender", child >= 0);
+        if (child < 0) break;
+        if (!child) { struct timespec delay = {.tv_nsec = 20000000}; nanosleep(&delay, NULL); kill(parent, SIGUSR1); _exit(0); }
+        union wait_vblank wait = {.request = {.type = 1, .sequence = 300}};
+        double start = now_ms();
+        int result = ioctl(fd, IOWR(0x3a, sizeof wait), &wait), error = errno;
+        check("vblank signal interrupts deadline", result < 0 && error == EINTR && received_signal && now_ms() - start < 1000);
+        int status;
+        check("vblank signal child reaped", waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    }
+    check("restore vblank signal handler", sigaction(SIGUSR1, &original, NULL) == 0);
+}
+
+static void vblank_events(int fd, uint32_t crtc, const char *node, uint32_t alternate_fb) {
+    struct queue_sequence q = {.crtc_id = crtc, .flags = 1, .sequence = 10, .user_data = 0x123456789abcdef0ULL};
+    double start = now_ms();
+    check("queue sequence", ioctl(fd, IOWR(0x3c, sizeof q), &q) == 0);
+    check("queue sequence is asynchronous", now_ms() - start < 100);
+    struct pollfd pollfd = {fd, POLLIN, 0};
+    check("future sequence is not ready", poll(&pollfd, 1, 0) == 0);
+    struct sequence_event event;
+    check("sequence poll wakeup", poll(&pollfd, 1, 1500) == 1 && (pollfd.revents & POLLIN));
+    check("sequence payload", read(fd, &event, sizeof event) == sizeof event && event.type == 3 &&
+          event.length == sizeof event && event.user_data == q.user_data && event.sequence >= q.sequence &&
+          event.time_ns == (int64_t) event.sequence * 16666667);
+    union wait_vblank legacy = {.request = {.type = 1 | 0x04000000, .sequence = 2, .signal = 0x87654321}};
+    check("legacy vblank queue", ioctl(fd, IOWR(0x3a, sizeof legacy), &legacy) == 0);
+    struct vblank_event v;
+    check("legacy vblank event", poll(&pollfd, 1, 1500) == 1 && read(fd, &v, sizeof v) == sizeof v &&
+          v.type == 1 && v.length == sizeof v && v.user_data == 0x87654321 && v.crtc_id == crtc && v.tv_sec > 0);
+    legacy = (union wait_vblank) {.request = {.type = 1, .sequence = 2}};
+    start = now_ms();
+    check("synchronous vblank wait", ioctl(fd, IOWR(0x3a, sizeof legacy), &legacy) == 0 && legacy.reply.sec > 0);
+    check("synchronous vblank pacing", now_ms() - start > 10 && now_ms() - start < 1000);
+    q = (struct queue_sequence) {.crtc_id = crtc, .flags = 4};
+    check("sequence invalid flags", ioctl(fd, IOWR(0x3c, sizeof q), &q) < 0 && errno == EINVAL);
+    q = (struct queue_sequence) {.crtc_id = crtc, .flags = 1, .sequence = UINT64_MAX};
+    check("sequence overflow", ioctl(fd, IOWR(0x3c, sizeof q), &q) < 0 && errno == EINVAL);
+    // Fill a separate file's bounded queue, then cancel outstanding events on
+    // close. Repeated close-before-deadline exercises worker/fd lifetime.
+    for (unsigned iteration = 0; iteration < 16; iteration++) {
+        int other = open(node, O_RDWR | O_CLOEXEC);
+        check("vblank worker file", other >= 0);
+        if (other < 0) break;
+        for (unsigned i = 0; i < (iteration ? 1u : 16u); i++) {
+            q = (struct queue_sequence) {.crtc_id = crtc, .flags = 1, .sequence = 3600, .user_data = i};
+            check("future event reservation", ioctl(other, IOWR(0x3c, sizeof q), &q) == 0);
+        }
+        if (!iteration) {
+            q = (struct queue_sequence) {.crtc_id = crtc, .flags = 1, .sequence = 3600};
+            check("bounded vblank queue", ioctl(other, IOWR(0x3c, sizeof q), &q) < 0 && errno == EBUSY);
+            struct mode_crtc before = {.crtc_id = crtc}, after = {.crtc_id = crtc};
+            check("read scanout before rejected flip", ioctl(other, IOWR(0xa1, sizeof before), &before) == 0);
+            struct page_flip flip = {.crtc_id = crtc, .fb_id = alternate_fb, .flags = 1, .user_data = 0x55};
+            check("full pending queue rejects event flip", ioctl(other, IOWR(0xb0, sizeof flip), &flip) < 0 && errno == EBUSY);
+            check("rejected flip preserves scanout", ioctl(other, IOWR(0xa1, sizeof after), &after) == 0 && before.fb_id == after.fb_id);
+
+        }
+        start = now_ms();
+        check("cancel future vblank on close", close(other) == 0 && now_ms() - start < 1000);
+    }
+}
 
 // Legacy modesetting on the virtual output, then reading the scanout from a
 // second open as the display bridge does.
@@ -62,14 +143,28 @@ static void kms(const char *node) {
     }
     struct mode_crtc set = {.set_connectors = (uintptr_t) &conn, .count_connectors = 1, .crtc_id = crtc, .fb_id = fbid[0], .mode_valid = 1, .mode = modes[0]};
     check("setcrtc", ioctl(fd, IOWR(0xa2, sizeof set), &set) == 0);
+    struct crtc_sequence before = {.crtc_id = crtc}, after_idle = {.crtc_id = crtc};
+    check("active CRTC clock", ioctl(fd, IOWR(0x3b, sizeof before), &before) == 0 && before.active && before.sequence_ns > 0);
+    struct timespec idle = {.tv_nsec = 70000000};
+    nanosleep(&idle, NULL);
+    check("CRTC clock without page flips", ioctl(fd, IOWR(0x3b, sizeof after_idle), &after_idle) == 0 &&
+          after_idle.sequence >= before.sequence + 3 && after_idle.sequence_ns > before.sequence_ns &&
+          after_idle.sequence_ns - before.sequence_ns == (int64_t) (after_idle.sequence - before.sequence) * 16666667);
+    vblank_events(fd, crtc, node, fbid[1]);
+    vblank_signal_waits(fd);
     double t0 = now_ms();
     int flips = 0;
+    uint32_t last_sequence = (uint32_t) after_idle.sequence;
     for (int i = 1; i <= 6; i++) {
         struct page_flip pf = {.crtc_id = crtc, .fb_id = fbid[i & 1], .flags = 1, .user_data = 1000 + i};
         if (ioctl(fd, IOWR(0xb0, sizeof pf), &pf)) break;
         struct pollfd p = {fd, POLLIN, 0};
         struct vblank_event ev;
-        if (poll(&p, 1, 1000) == 1 && read(fd, &ev, sizeof ev) == sizeof ev && ev.type == 2 && ev.user_data == 1000u + i && ev.crtc_id == crtc) flips++;
+        if (poll(&p, 1, 1000) == 1 && read(fd, &ev, sizeof ev) == sizeof ev && ev.type == 2 && ev.user_data == 1000u + i && ev.crtc_id == crtc) {
+            check("flip shares the CRTC clock", (uint32_t) (ev.sequence - last_sequence) < 0x80000000U);
+            last_sequence = ev.sequence;
+            flips++;
+        }
     }
     double per = (now_ms() - t0) / 6;
     check("page flips complete with events", flips == 6);

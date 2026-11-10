@@ -8,6 +8,7 @@
 #include "kernel/memory.h"
 #include "kernel/futex.h"
 #include "kernel/calls.h"
+#include "kernel/ipc.h"
 #include "asbestos/asbestos.h"
 #include <stdbool.h>
 #include <stdio.h>
@@ -299,7 +300,14 @@ static int proc_ish_show_fds(struct proc_entry *UNUSED(entry),struct proc_data *
 static int proc_ish_show_compat(struct proc_entry *UNUSED(entry),struct proc_data *buf) {
     compat_census(proc_fds_emit,buf);return 0;
 }
+static int proc_ish_show_shm(struct proc_entry *UNUSED(entry), struct proc_data *buf) {
+    struct ipc_shm_usage u; ipc_shm_usage(&u);
+    proc_printf(buf, "segments=%llu backing_fds=%llu bytes=%llu attachments=%llu capture_segments=%llu scopes=%llu close_failures=%llu\n",
+        u.segments, u.backing_fds, u.bytes, u.attachments, u.capture_segments, u.scopes, u.close_failures);
+    return 0;
+}
 struct proc_children proc_ish_children = PROC_CHILDREN({
+    {"shm", S_IFREG | 0444, .show = proc_ish_show_shm},
     {"fds", S_IFREG | 0400, .show = proc_ish_show_fds},
     {"compat", S_IFREG | 0444, .show = proc_ish_show_compat},
     {"tasks", S_IFREG | 0400, .show = proc_ish_show_tasks},

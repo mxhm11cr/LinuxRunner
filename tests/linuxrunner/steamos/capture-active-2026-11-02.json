@@ -1,0 +1,3379 @@
+{
+  "schema": 1,
+  "date": "2026-11-02",
+  "hardware": "iPad Air 13-inch (M4)",
+  "os": "iPadOS 27.2",
+  "app": "LinuxRunner Release 1.1.0 build 900 local integration; ARM64 interpreter, JIT disabled",
+  "scope": "Native RFB input enqueue to causally matched decoded pixels and main-thread native framebuffer submission; excludes UIKit input delivery, actual hardware keyboard/trackpad, GPU completion and panel response.",
+  "provenance": "Same instrumented app binary and sources in all four active runs. Socket/shared selected by ephemeral launch argument, with storage pause enabled in both. Full app termination and relaunch without override after each run. Measurement-only viewer patch was restored afterward.",
+  "source_sha256": {
+    "app/LinuxRunner/GUIViewController.m": "ba32fe45b3bea53ef815a0bd7ff5a88fef72b397031bb386c16b5794bdeb04bd",
+    "app/LinuxRunner/RuntimeBridge.m": "e537833123bb68fb4e76b9e7fa36450bc451a9e1bfd07dcfdbfa972bd92c8a74",
+    "app/UITests/ReferenceDistributionUITests.m": "decdb97366603dc31fe18caaaf4625f969993831c567abaa7372a094612833d9",
+    "app/UITests/LinuxRunnerUITests.m": "c2a5ee6a7685549583ee7a03a0d2c6a6b608afd9f321b1b1bc66844f4d2c6127",
+    "fs/sock.c": "2ebadba512af236fdf6f2a105da00305fbbfb148c2a8a5d485a3ba1beacb6ddb",
+    "graphics/virgl_host.c": "ef26e5384782e940038505ca82901f4fcd1eedc3d39491be83244f711188fd3e",
+    "app/LinuxRunner/GUISupport.bundle/session.sh": "6f167647f732ec2590f6db3a75e8ab329e328e17fc210928b3e48c7d1e01c921",
+    "app/LinuxRunner/GUISupport.bundle/support-manifest.json": "36343e222f37c1b34f234bfd53ab9753a867fa3145a6fe5c32bb74879480d421",
+    "tests/linuxrunner/gui/capture-probe/DeviceCaptureProbe.h": "653245e47f222e4fc0e59438ec831673f5d7fde01e698a779c05e629bc90b1f8",
+    "tests/linuxrunner/gui/capture-probe/fixture.c": "2c774c68f289bdcc47754323a3b86b88a32afd055e9b9dee82c8dfa413dfd099",
+    "tests/linuxrunner/gui/capture-probe/instrumentation.patch": "69b1195e93cd4ec9e6bd7bf97808a0b67a954beb6f1f898a3d6ead60abf56fa4",
+    "tests/linuxrunner/gui/capture-probe/DeviceCaptureProbeTests.m": "d0ae37d6dd6463c40f1b52875dde6a22b59bd651938f3feabd94570f36d2181d",
+    "tests/linuxrunner/ios/reference_desktop_broker.py": "e66e41d092b67c6caec9a4eac0897e3129ad7b91bf2d26cad1f28938ee96c587"
+  },
+  "fixture_elf_sha256": "64a85b81540a72d52370885657a09327473a6cfaaf933602d8cf79dd982fcfa1",
+  "quantiles": "Median; p95 nearest rank ceil(0.95*n). No significance test or independent repeat trials.",
+  "runs": {
+    "arch-socket": {
+      "binary_uuid": "90B3491D-9E0A-3053-BD41-742A691FAC7D",
+      "capture": "off",
+      "framebuffer_pixels": [
+        960,
+        540
+      ],
+      "thermal_start": 0,
+      "thermal_end": 0,
+      "physical_ui_test": "PASS: exact 60 matched input responses and controlled burst completed; screenshot retained privately",
+      "input_to_submission": {
+        "click": {
+          "count": 30,
+          "median_ms": 35.513500013621524,
+          "p95_ms": 60.874000017065555,
+          "max_ms": 63.805999991018325
+        },
+        "keyboard": {
+          "count": 30,
+          "median_ms": 64.23499999800697,
+          "p95_ms": 93.31299999030307,
+          "max_ms": 104.34199997689575
+        }
+      },
+      "raw_latency_events": [
+        {
+          "enqueued_s": 408645.762425,
+          "id": 1,
+          "submission_ms": 39.243999985046685,
+          "decode_ms": 38.809999998193234,
+          "decoded_s": 408645.801235,
+          "kind": "click",
+          "submitted_s": 408645.801669
+        },
+        {
+          "enqueued_s": 408645.927749,
+          "id": 2,
+          "submission_ms": 70.92099997680634,
+          "decode_ms": 70.65399998100474,
+          "decoded_s": 408645.998403,
+          "kind": "keyboard",
+          "submitted_s": 408645.99867
+        },
+        {
+          "enqueued_s": 408646.123311,
+          "id": 3,
+          "submission_ms": 36.37300000991672,
+          "decode_ms": 36.069000023417175,
+          "decoded_s": 408646.15938,
+          "kind": "click",
+          "submitted_s": 408646.159684
+        },
+        {
+          "enqueued_s": 408646.279865,
+          "id": 4,
+          "submission_ms": 86.77300001727417,
+          "decode_ms": 86.4910000236705,
+          "decoded_s": 408646.366356,
+          "kind": "keyboard",
+          "submitted_s": 408646.366638
+        },
+        {
+          "enqueued_s": 408646.489068,
+          "id": 5,
+          "submission_ms": 42.80200001085177,
+          "decode_ms": 42.53999999491498,
+          "decoded_s": 408646.531608,
+          "kind": "click",
+          "submitted_s": 408646.53187
+        },
+        {
+          "enqueued_s": 408646.65283,
+          "id": 6,
+          "submission_ms": 82.05300004919991,
+          "decode_ms": 81.72800001921132,
+          "decoded_s": 408646.734558,
+          "kind": "keyboard",
+          "submitted_s": 408646.734883
+        },
+        {
+          "enqueued_s": 408646.856583,
+          "id": 7,
+          "submission_ms": 60.874000017065555,
+          "decode_ms": 60.48700003884733,
+          "decoded_s": 408646.91707,
+          "kind": "click",
+          "submitted_s": 408646.917457
+        },
+        {
+          "enqueued_s": 408647.041593,
+          "id": 8,
+          "submission_ms": 66.20200001634657,
+          "decode_ms": 61.58600002527237,
+          "decoded_s": 408647.103179,
+          "kind": "keyboard",
+          "submitted_s": 408647.107795
+        },
+        {
+          "enqueued_s": 408647.238019,
+          "id": 9,
+          "submission_ms": 63.805999991018325,
+          "decode_ms": 44.572000042535365,
+          "decoded_s": 408647.282591,
+          "kind": "click",
+          "submitted_s": 408647.301825
+        },
+        {
+          "enqueued_s": 408647.450267,
+          "id": 10,
+          "submission_ms": 64.44200000260025,
+          "decode_ms": 64.15499997092411,
+          "decoded_s": 408647.514422,
+          "kind": "keyboard",
+          "submitted_s": 408647.514709
+        },
+        {
+          "enqueued_s": 408647.635182,
+          "id": 11,
+          "submission_ms": 38.83099998347461,
+          "decode_ms": 38.502999988850206,
+          "decoded_s": 408647.673685,
+          "kind": "click",
+          "submitted_s": 408647.674013
+        },
+        {
+          "enqueued_s": 408647.796586,
+          "id": 12,
+          "submission_ms": 58.81799996132031,
+          "decode_ms": 58.53499996010214,
+          "decoded_s": 408647.855121,
+          "kind": "keyboard",
+          "submitted_s": 408647.855404
+        },
+        {
+          "enqueued_s": 408647.977217,
+          "id": 13,
+          "submission_ms": 47.65600000973791,
+          "decode_ms": 47.399000031873584,
+          "decoded_s": 408648.024616,
+          "kind": "click",
+          "submitted_s": 408648.024873
+        },
+        {
+          "enqueued_s": 408648.145623,
+          "id": 14,
+          "submission_ms": 79.70400003250688,
+          "decode_ms": 79.46300000185147,
+          "decoded_s": 408648.225086,
+          "kind": "keyboard",
+          "submitted_s": 408648.225327
+        },
+        {
+          "enqueued_s": 408648.346695,
+          "id": 15,
+          "submission_ms": 31.214999966323376,
+          "decode_ms": 30.87199997389689,
+          "decoded_s": 408648.377567,
+          "kind": "click",
+          "submitted_s": 408648.37791
+        },
+        {
+          "enqueued_s": 408648.504,
+          "id": 16,
+          "submission_ms": 61.93099997472018,
+          "decode_ms": 61.602999980095774,
+          "decoded_s": 408648.565603,
+          "kind": "keyboard",
+          "submitted_s": 408648.565931
+        },
+        {
+          "enqueued_s": 408648.692033,
+          "id": 17,
+          "submission_ms": 31.881999981123954,
+          "decode_ms": 31.5849999897182,
+          "decoded_s": 408648.723618,
+          "kind": "click",
+          "submitted_s": 408648.723915
+        },
+        {
+          "enqueued_s": 408648.850066,
+          "id": 18,
+          "submission_ms": 68.86599998688325,
+          "decode_ms": 68.54199996450916,
+          "decoded_s": 408648.918608,
+          "kind": "keyboard",
+          "submitted_s": 408648.918932
+        },
+        {
+          "enqueued_s": 408649.044749,
+          "id": 19,
+          "submission_ms": 31.377999985124916,
+          "decode_ms": 31.026999989990145,
+          "decoded_s": 408649.075776,
+          "kind": "click",
+          "submitted_s": 408649.076127
+        },
+        {
+          "enqueued_s": 408649.213197,
+          "id": 20,
+          "submission_ms": 61.8990000220947,
+          "decode_ms": 34.35500001069158,
+          "decoded_s": 408649.247552,
+          "kind": "keyboard",
+          "submitted_s": 408649.275096
+        },
+        {
+          "enqueued_s": 408649.396211,
+          "id": 21,
+          "submission_ms": 47.66000004019588,
+          "decode_ms": 47.40600002696738,
+          "decoded_s": 408649.443617,
+          "kind": "click",
+          "submitted_s": 408649.443871
+        },
+        {
+          "enqueued_s": 408649.569891,
+          "id": 22,
+          "submission_ms": 64.02799999341369,
+          "decode_ms": 63.747000007424504,
+          "decoded_s": 408649.633638,
+          "kind": "keyboard",
+          "submitted_s": 408649.633919
+        },
+        {
+          "enqueued_s": 408649.754608,
+          "id": 23,
+          "submission_ms": 57.27400002069771,
+          "decode_ms": 56.98799999663606,
+          "decoded_s": 408649.811596,
+          "kind": "click",
+          "submitted_s": 408649.811882
+        },
+        {
+          "enqueued_s": 408649.931936,
+          "id": 24,
+          "submission_ms": 104.34199997689575,
+          "decode_ms": 104.07000000122935,
+          "decoded_s": 408650.036006,
+          "kind": "keyboard",
+          "submitted_s": 408650.036278
+        },
+        {
+          "enqueued_s": 408650.15825,
+          "id": 25,
+          "submission_ms": 56.52899999404326,
+          "decode_ms": 34.63300003204495,
+          "decoded_s": 408650.192883,
+          "kind": "click",
+          "submitted_s": 408650.214779
+        },
+        {
+          "enqueued_s": 408650.35279,
+          "id": 26,
+          "submission_ms": 70.63400000333786,
+          "decode_ms": 57.39200004609302,
+          "decoded_s": 408650.410182,
+          "kind": "keyboard",
+          "submitted_s": 408650.423424
+        },
+        {
+          "enqueued_s": 408650.544018,
+          "id": 27,
+          "submission_ms": 45.7639999804087,
+          "decode_ms": 45.464999973773956,
+          "decoded_s": 408650.589483,
+          "kind": "click",
+          "submitted_s": 408650.589782
+        },
+        {
+          "enqueued_s": 408650.711604,
+          "id": 28,
+          "submission_ms": 93.31299999030307,
+          "decode_ms": 93.06400001514703,
+          "decoded_s": 408650.804668,
+          "kind": "keyboard",
+          "submitted_s": 408650.804917
+        },
+        {
+          "enqueued_s": 408650.928517,
+          "id": 29,
+          "submission_ms": 33.31199998501688,
+          "decode_ms": 33.02299999631941,
+          "decoded_s": 408650.96154,
+          "kind": "click",
+          "submitted_s": 408650.961829
+        },
+        {
+          "enqueued_s": 408651.084919,
+          "id": 30,
+          "submission_ms": 47.17700002947822,
+          "decode_ms": 46.93599999882281,
+          "decoded_s": 408651.131855,
+          "kind": "keyboard",
+          "submitted_s": 408651.132096
+        },
+        {
+          "enqueued_s": 408651.258147,
+          "id": 31,
+          "submission_ms": 25.964000029489398,
+          "decode_ms": 25.680000020656735,
+          "decoded_s": 408651.283827,
+          "kind": "click",
+          "submitted_s": 408651.284111
+        },
+        {
+          "enqueued_s": 408651.404562,
+          "id": 32,
+          "submission_ms": 63.190999964717776,
+          "decode_ms": 62.885999970603734,
+          "decoded_s": 408651.467448,
+          "kind": "keyboard",
+          "submitted_s": 408651.467753
+        },
+        {
+          "enqueued_s": 408651.591677,
+          "id": 33,
+          "submission_ms": 45.93100002966821,
+          "decode_ms": 45.63300003064796,
+          "decoded_s": 408651.63731,
+          "kind": "click",
+          "submitted_s": 408651.637608
+        },
+        {
+          "enqueued_s": 408651.759347,
+          "id": 34,
+          "submission_ms": 68.48000001627952,
+          "decode_ms": 68.1779999868013,
+          "decoded_s": 408651.827525,
+          "kind": "keyboard",
+          "submitted_s": 408651.827827
+        },
+        {
+          "enqueued_s": 408651.951238,
+          "id": 35,
+          "submission_ms": 29.74899997934699,
+          "decode_ms": 29.472999973222613,
+          "decoded_s": 408651.980711,
+          "kind": "click",
+          "submitted_s": 408651.980987
+        },
+        {
+          "enqueued_s": 408652.106605,
+          "id": 36,
+          "submission_ms": 28.649000043515116,
+          "decode_ms": 28.33699999609962,
+          "decoded_s": 408652.134942,
+          "kind": "keyboard",
+          "submitted_s": 408652.135254
+        },
+        {
+          "enqueued_s": 408652.261529,
+          "id": 37,
+          "submission_ms": 26.50599996559322,
+          "decode_ms": 26.2419999926351,
+          "decoded_s": 408652.287771,
+          "kind": "click",
+          "submitted_s": 408652.288035
+        },
+        {
+          "enqueued_s": 408652.414167,
+          "id": 38,
+          "submission_ms": 59.57700003637001,
+          "decode_ms": 59.34700003126636,
+          "decoded_s": 408652.473514,
+          "kind": "keyboard",
+          "submitted_s": 408652.473744
+        },
+        {
+          "enqueued_s": 408652.59745,
+          "id": 39,
+          "submission_ms": 41.390999977011234,
+          "decode_ms": 41.10700002638623,
+          "decoded_s": 408652.638557,
+          "kind": "click",
+          "submitted_s": 408652.638841
+        },
+        {
+          "enqueued_s": 408652.762195,
+          "id": 40,
+          "submission_ms": 83.51399999810383,
+          "decode_ms": 83.2630000077188,
+          "decoded_s": 408652.845458,
+          "kind": "keyboard",
+          "submitted_s": 408652.845709
+        },
+        {
+          "enqueued_s": 408652.967499,
+          "id": 41,
+          "submission_ms": 35.32299998914823,
+          "decode_ms": 35.06199998082593,
+          "decoded_s": 408653.002561,
+          "kind": "click",
+          "submitted_s": 408653.002822
+        },
+        {
+          "enqueued_s": 408653.128847,
+          "id": 42,
+          "submission_ms": 23.859000008087605,
+          "decode_ms": 23.612999997567385,
+          "decoded_s": 408653.15246,
+          "kind": "keyboard",
+          "submitted_s": 408653.152706
+        },
+        {
+          "enqueued_s": 408653.276238,
+          "id": 43,
+          "submission_ms": 26.1119999922812,
+          "decode_ms": 25.849999976344407,
+          "decoded_s": 408653.302088,
+          "kind": "click",
+          "submitted_s": 408653.30235
+        },
+        {
+          "enqueued_s": 408653.428375,
+          "id": 44,
+          "submission_ms": 53.534000006038696,
+          "decode_ms": 53.259999956935644,
+          "decoded_s": 408653.481635,
+          "kind": "keyboard",
+          "submitted_s": 408653.481909
+        },
+        {
+          "enqueued_s": 408653.604443,
+          "id": 45,
+          "submission_ms": 44.883000024128705,
+          "decode_ms": 44.59000000497326,
+          "decoded_s": 408653.649033,
+          "kind": "click",
+          "submitted_s": 408653.649326
+        },
+        {
+          "enqueued_s": 408653.775403,
+          "id": 46,
+          "submission_ms": 68.9589999965392,
+          "decode_ms": 68.6429999768734,
+          "decoded_s": 408653.844046,
+          "kind": "keyboard",
+          "submitted_s": 408653.844362
+        },
+        {
+          "enqueued_s": 408653.968352,
+          "id": 47,
+          "submission_ms": 29.66599998762831,
+          "decode_ms": 29.3950000195764,
+          "decoded_s": 408653.997747,
+          "kind": "click",
+          "submitted_s": 408653.998018
+        },
+        {
+          "enqueued_s": 408654.119356,
+          "id": 48,
+          "submission_ms": 61.520000046584755,
+          "decode_ms": 61.252999992575496,
+          "decoded_s": 408654.180609,
+          "kind": "keyboard",
+          "submitted_s": 408654.180876
+        },
+        {
+          "enqueued_s": 408654.306905,
+          "id": 49,
+          "submission_ms": 24.526999972295016,
+          "decode_ms": 24.267999979201704,
+          "decoded_s": 408654.331173,
+          "kind": "click",
+          "submitted_s": 408654.331432
+        },
+        {
+          "enqueued_s": 408654.457516,
+          "id": 50,
+          "submission_ms": 61.96199997793883,
+          "decode_ms": 61.72099994728342,
+          "decoded_s": 408654.519237,
+          "kind": "keyboard",
+          "submitted_s": 408654.519478
+        },
+        {
+          "enqueued_s": 408654.645259,
+          "id": 51,
+          "submission_ms": 32.30799996526912,
+          "decode_ms": 32.03699999721721,
+          "decoded_s": 408654.677296,
+          "kind": "click",
+          "submitted_s": 408654.677567
+        },
+        {
+          "enqueued_s": 408654.799502,
+          "id": 52,
+          "submission_ms": 47.35800001071766,
+          "decode_ms": 47.04500001389533,
+          "decoded_s": 408654.846547,
+          "kind": "keyboard",
+          "submitted_s": 408654.84686
+        },
+        {
+          "enqueued_s": 408654.972384,
+          "id": 53,
+          "submission_ms": 31.7949999589473,
+          "decode_ms": 31.54799999902025,
+          "decoded_s": 408655.003932,
+          "kind": "click",
+          "submitted_s": 408655.004179
+        },
+        {
+          "enqueued_s": 408655.124592,
+          "id": 54,
+          "submission_ms": 67.70499999402091,
+          "decode_ms": 67.32299999566749,
+          "decoded_s": 408655.191915,
+          "kind": "keyboard",
+          "submitted_s": 408655.192297
+        },
+        {
+          "enqueued_s": 408655.317632,
+          "id": 55,
+          "submission_ms": 25.676999997813255,
+          "decode_ms": 25.406999979168177,
+          "decoded_s": 408655.343039,
+          "kind": "click",
+          "submitted_s": 408655.343309
+        },
+        {
+          "enqueued_s": 408655.466229,
+          "id": 56,
+          "submission_ms": 66.38299999758601,
+          "decode_ms": 66.1240000044927,
+          "decoded_s": 408655.532353,
+          "kind": "keyboard",
+          "submitted_s": 408655.532612
+        },
+        {
+          "enqueued_s": 408655.657012,
+          "id": 57,
+          "submission_ms": 35.70400003809482,
+          "decode_ms": 35.448000009637326,
+          "decoded_s": 408655.69246,
+          "kind": "click",
+          "submitted_s": 408655.692716
+        },
+        {
+          "enqueued_s": 408655.818788,
+          "id": 58,
+          "submission_ms": 27.582000009715557,
+          "decode_ms": 27.26000000257045,
+          "decoded_s": 408655.846048,
+          "kind": "keyboard",
+          "submitted_s": 408655.84637
+        },
+        {
+          "enqueued_s": 408655.972446,
+          "id": 59,
+          "submission_ms": 31.3359999563545,
+          "decode_ms": 31.02299995953217,
+          "decoded_s": 408656.003469,
+          "kind": "click",
+          "submitted_s": 408656.003782
+        },
+        {
+          "enqueued_s": 408656.124588,
+          "id": 60,
+          "submission_ms": 58.91199997859076,
+          "decode_ms": 58.652999985497445,
+          "decoded_s": 408656.183241,
+          "kind": "keyboard",
+          "submitted_s": 408656.1835
+        }
+      ],
+      "burst": {
+        "generated": 120,
+        "generation_elapsed_s": 1.987212,
+        "requested_hz": 60,
+        "unique_decoded": 30,
+        "unique_submitted": 30,
+        "submission_gaps": {
+          "count": 29,
+          "median_ms": 68.52900004014373,
+          "p95_ms": 86.92500001052395,
+          "max_ms": 96.77999996347353
+        },
+        "raw_decoded": [
+          {
+            "id": 65538,
+            "decoded_s": 408656.403165
+          },
+          {
+            "id": 65542,
+            "decoded_s": 408656.452383
+          },
+          {
+            "id": 65545,
+            "decoded_s": 408656.502543
+          },
+          {
+            "id": 65548,
+            "decoded_s": 408656.553824
+          },
+          {
+            "id": 65551,
+            "decoded_s": 408656.621265
+          },
+          {
+            "id": 65555,
+            "decoded_s": 408656.692971
+          },
+          {
+            "id": 65559,
+            "decoded_s": 408656.770567
+          },
+          {
+            "id": 65564,
+            "decoded_s": 408656.839383
+          },
+          {
+            "id": 65568,
+            "decoded_s": 408656.921618
+          },
+          {
+            "id": 65573,
+            "decoded_s": 408657.008542
+          },
+          {
+            "id": 65578,
+            "decoded_s": 408657.08716
+          },
+          {
+            "id": 65583,
+            "decoded_s": 408657.157244
+          },
+          {
+            "id": 65587,
+            "decoded_s": 408657.241337
+          },
+          {
+            "id": 65592,
+            "decoded_s": 408657.323265
+          },
+          {
+            "id": 65597,
+            "decoded_s": 408657.390861
+          },
+          {
+            "id": 65601,
+            "decoded_s": 408657.458101
+          },
+          {
+            "id": 65605,
+            "decoded_s": 408657.526337
+          },
+          {
+            "id": 65609,
+            "decoded_s": 408657.594357
+          },
+          {
+            "id": 65613,
+            "decoded_s": 408657.661918
+          },
+          {
+            "id": 65617,
+            "decoded_s": 408657.73032
+          },
+          {
+            "id": 65621,
+            "decoded_s": 408657.798923
+          },
+          {
+            "id": 65626,
+            "decoded_s": 408657.866718
+          },
+          {
+            "id": 65630,
+            "decoded_s": 408657.934112
+          },
+          {
+            "id": 65634,
+            "decoded_s": 408658.002997
+          },
+          {
+            "id": 65638,
+            "decoded_s": 408658.071528
+          },
+          {
+            "id": 65642,
+            "decoded_s": 408658.138743
+          },
+          {
+            "id": 65646,
+            "decoded_s": 408658.207742
+          },
+          {
+            "id": 65650,
+            "decoded_s": 408658.277923
+          },
+          {
+            "id": 65654,
+            "decoded_s": 408658.345166
+          },
+          {
+            "id": 65656,
+            "decoded_s": 408658.414662
+          }
+        ],
+        "raw_submitted": [
+          {
+            "id": 65538,
+            "submitted_s": 408656.403262
+          },
+          {
+            "id": 65542,
+            "submitted_s": 408656.454717
+          },
+          {
+            "id": 65545,
+            "submitted_s": 408656.502609
+          },
+          {
+            "id": 65548,
+            "submitted_s": 408656.553898
+          },
+          {
+            "id": 65551,
+            "submitted_s": 408656.62136
+          },
+          {
+            "id": 65555,
+            "submitted_s": 408656.693064
+          },
+          {
+            "id": 65559,
+            "submitted_s": 408656.770662
+          },
+          {
+            "id": 65564,
+            "submitted_s": 408656.83948
+          },
+          {
+            "id": 65568,
+            "submitted_s": 408656.921708
+          },
+          {
+            "id": 65573,
+            "submitted_s": 408657.008633
+          },
+          {
+            "id": 65578,
+            "submitted_s": 408657.08726
+          },
+          {
+            "id": 65583,
+            "submitted_s": 408657.157337
+          },
+          {
+            "id": 65587,
+            "submitted_s": 408657.241424
+          },
+          {
+            "id": 65592,
+            "submitted_s": 408657.323372
+          },
+          {
+            "id": 65597,
+            "submitted_s": 408657.390934
+          },
+          {
+            "id": 65601,
+            "submitted_s": 408657.458182
+          },
+          {
+            "id": 65605,
+            "submitted_s": 408657.526424
+          },
+          {
+            "id": 65609,
+            "submitted_s": 408657.59441
+          },
+          {
+            "id": 65613,
+            "submitted_s": 408657.661973
+          },
+          {
+            "id": 65617,
+            "submitted_s": 408657.730407
+          },
+          {
+            "id": 65621,
+            "submitted_s": 408657.798982
+          },
+          {
+            "id": 65626,
+            "submitted_s": 408657.866782
+          },
+          {
+            "id": 65630,
+            "submitted_s": 408657.934196
+          },
+          {
+            "id": 65634,
+            "submitted_s": 408658.003048
+          },
+          {
+            "id": 65638,
+            "submitted_s": 408658.071577
+          },
+          {
+            "id": 65642,
+            "submitted_s": 408658.138807
+          },
+          {
+            "id": 65646,
+            "submitted_s": 408658.235587
+          },
+          {
+            "id": 65650,
+            "submitted_s": 408658.304938
+          },
+          {
+            "id": 65654,
+            "submitted_s": 408658.372547
+          },
+          {
+            "id": 65656,
+            "submitted_s": 408658.443741
+          }
+        ]
+      },
+      "x11vnc_startup_read_MB_s": 53
+    },
+    "arch-shared": {
+      "binary_uuid": "90B3491D-9E0A-3053-BD41-742A691FAC7D",
+      "capture": "sysv",
+      "framebuffer_pixels": [
+        960,
+        540
+      ],
+      "thermal_start": 0,
+      "thermal_end": 0,
+      "physical_ui_test": "PASS: exact 60 matched input responses and controlled burst completed; screenshot retained privately",
+      "input_to_submission": {
+        "click": {
+          "count": 30,
+          "median_ms": 24.999500019475818,
+          "p95_ms": 57.44300002697855,
+          "max_ms": 64.485999988392
+        },
+        "keyboard": {
+          "count": 30,
+          "median_ms": 55.413000023690984,
+          "p95_ms": 66.33599998895079,
+          "max_ms": 67.15000001713634
+        }
+      },
+      "raw_latency_events": [
+        {
+          "enqueued_s": 408699.293578,
+          "id": 1,
+          "submission_ms": 48.855000000912696,
+          "decode_ms": 24.56200000597164,
+          "decoded_s": 408699.31814,
+          "kind": "click",
+          "submitted_s": 408699.342433
+        },
+        {
+          "enqueued_s": 408699.468438,
+          "id": 2,
+          "submission_ms": 54.9349999637343,
+          "decode_ms": 50.33499997807667,
+          "decoded_s": 408699.518773,
+          "kind": "keyboard",
+          "submitted_s": 408699.523373
+        },
+        {
+          "enqueued_s": 408699.648834,
+          "id": 3,
+          "submission_ms": 24.646000005304813,
+          "decode_ms": 24.36799998395145,
+          "decoded_s": 408699.673202,
+          "kind": "click",
+          "submitted_s": 408699.67348
+        },
+        {
+          "enqueued_s": 408699.793507,
+          "id": 4,
+          "submission_ms": 66.33599998895079,
+          "decode_ms": 66.09300000127405,
+          "decoded_s": 408699.8596,
+          "kind": "keyboard",
+          "submitted_s": 408699.859843
+        },
+        {
+          "enqueued_s": 408699.983633,
+          "id": 5,
+          "submission_ms": 27.531999978236854,
+          "decode_ms": 27.270000020507723,
+          "decoded_s": 408700.010903,
+          "kind": "click",
+          "submitted_s": 408700.011165
+        },
+        {
+          "enqueued_s": 408700.136668,
+          "id": 6,
+          "submission_ms": 52.40899999625981,
+          "decode_ms": 52.1500000031665,
+          "decoded_s": 408700.188818,
+          "kind": "keyboard",
+          "submitted_s": 408700.189077
+        },
+        {
+          "enqueued_s": 408700.315096,
+          "id": 7,
+          "submission_ms": 18.425000016577542,
+          "decode_ms": 18.152000033296645,
+          "decoded_s": 408700.333248,
+          "kind": "click",
+          "submitted_s": 408700.333521
+        },
+        {
+          "enqueued_s": 408700.458482,
+          "id": 8,
+          "submission_ms": 54.64500002563,
+          "decode_ms": 54.272000037599355,
+          "decoded_s": 408700.512754,
+          "kind": "keyboard",
+          "submitted_s": 408700.513127
+        },
+        {
+          "enqueued_s": 408700.634278,
+          "id": 9,
+          "submission_ms": 36.859999992884696,
+          "decode_ms": 36.36900003766641,
+          "decoded_s": 408700.670647,
+          "kind": "click",
+          "submitted_s": 408700.671138
+        },
+        {
+          "enqueued_s": 408700.797232,
+          "id": 10,
+          "submission_ms": 67.15000001713634,
+          "decode_ms": 66.64900004398078,
+          "decoded_s": 408700.863881,
+          "kind": "keyboard",
+          "submitted_s": 408700.864382
+        },
+        {
+          "enqueued_s": 408700.985453,
+          "id": 11,
+          "submission_ms": 22.243999992497265,
+          "decode_ms": 21.912000025622547,
+          "decoded_s": 408701.007365,
+          "kind": "click",
+          "submitted_s": 408701.007697
+        },
+        {
+          "enqueued_s": 408701.133733,
+          "id": 12,
+          "submission_ms": 56.594999972730875,
+          "decode_ms": 56.27699999604374,
+          "decoded_s": 408701.19001,
+          "kind": "keyboard",
+          "submitted_s": 408701.190328
+        },
+        {
+          "enqueued_s": 408701.313829,
+          "id": 13,
+          "submission_ms": 57.44300002697855,
+          "decode_ms": 23.289000033400953,
+          "decoded_s": 408701.337118,
+          "kind": "click",
+          "submitted_s": 408701.371272
+        },
+        {
+          "enqueued_s": 408701.509676,
+          "id": 14,
+          "submission_ms": 43.206000002101064,
+          "decode_ms": 42.9160000057891,
+          "decoded_s": 408701.552592,
+          "kind": "keyboard",
+          "submitted_s": 408701.552882
+        },
+        {
+          "enqueued_s": 408701.677407,
+          "id": 15,
+          "submission_ms": 24.84200004255399,
+          "decode_ms": 24.564000021200627,
+          "decoded_s": 408701.701971,
+          "kind": "click",
+          "submitted_s": 408701.702249
+        },
+        {
+          "enqueued_s": 408701.824949,
+          "id": 16,
+          "submission_ms": 53.614000033121556,
+          "decode_ms": 53.35000000195578,
+          "decoded_s": 408701.878299,
+          "kind": "keyboard",
+          "submitted_s": 408701.878563
+        },
+        {
+          "enqueued_s": 408702.000692,
+          "id": 17,
+          "submission_ms": 32.08100004121661,
+          "decode_ms": 31.833000015467405,
+          "decoded_s": 408702.032525,
+          "kind": "click",
+          "submitted_s": 408702.032773
+        },
+        {
+          "enqueued_s": 408702.15599,
+          "id": 18,
+          "submission_ms": 52.55399999441579,
+          "decode_ms": 52.29800002416596,
+          "decoded_s": 408702.208288,
+          "kind": "keyboard",
+          "submitted_s": 408702.208544
+        },
+        {
+          "enqueued_s": 408702.330792,
+          "id": 19,
+          "submission_ms": 33.31999998772517,
+          "decode_ms": 33.048000012058765,
+          "decoded_s": 408702.36384,
+          "kind": "click",
+          "submitted_s": 408702.364112
+        },
+        {
+          "enqueued_s": 408702.490152,
+          "id": 20,
+          "submission_ms": 47.89700004039332,
+          "decode_ms": 47.58000001311302,
+          "decoded_s": 408702.537732,
+          "kind": "keyboard",
+          "submitted_s": 408702.538049
+        },
+        {
+          "enqueued_s": 408702.664143,
+          "id": 21,
+          "submission_ms": 28.10000005410984,
+          "decode_ms": 27.53100002883002,
+          "decoded_s": 408702.691674,
+          "kind": "click",
+          "submitted_s": 408702.692243
+        },
+        {
+          "enqueued_s": 408702.815919,
+          "id": 22,
+          "submission_ms": 57.95300001045689,
+          "decode_ms": 57.50900000566617,
+          "decoded_s": 408702.873428,
+          "kind": "keyboard",
+          "submitted_s": 408702.873872
+        },
+        {
+          "enqueued_s": 408702.99991,
+          "id": 23,
+          "submission_ms": 42.13700001128018,
+          "decode_ms": 41.79699998348951,
+          "decoded_s": 408703.041707,
+          "kind": "click",
+          "submitted_s": 408703.042047
+        },
+        {
+          "enqueued_s": 408703.164046,
+          "id": 24,
+          "submission_ms": 55.36300002131611,
+          "decode_ms": 55.05500000435859,
+          "decoded_s": 408703.219101,
+          "kind": "keyboard",
+          "submitted_s": 408703.219409
+        },
+        {
+          "enqueued_s": 408703.35604,
+          "id": 25,
+          "submission_ms": 28.854000032879412,
+          "decode_ms": 28.529000002890825,
+          "decoded_s": 408703.384569,
+          "kind": "click",
+          "submitted_s": 408703.384894
+        },
+        {
+          "enqueued_s": 408703.511046,
+          "id": 26,
+          "submission_ms": 62.11300002178177,
+          "decode_ms": 52.05599998589605,
+          "decoded_s": 408703.563102,
+          "kind": "keyboard",
+          "submitted_s": 408703.573159
+        },
+        {
+          "enqueued_s": 408703.694883,
+          "id": 27,
+          "submission_ms": 35.6560000218451,
+          "decode_ms": 35.390000033658,
+          "decoded_s": 408703.730273,
+          "kind": "click",
+          "submitted_s": 408703.730539
+        },
+        {
+          "enqueued_s": 408703.856552,
+          "id": 28,
+          "submission_ms": 57.616000005509704,
+          "decode_ms": 57.34900000970811,
+          "decoded_s": 408703.913901,
+          "kind": "keyboard",
+          "submitted_s": 408703.914168
+        },
+        {
+          "enqueued_s": 408704.035758,
+          "id": 29,
+          "submission_ms": 20.83900000434369,
+          "decode_ms": 20.560000033583492,
+          "decoded_s": 408704.056318,
+          "kind": "click",
+          "submitted_s": 408704.056597
+        },
+        {
+          "enqueued_s": 408704.179957,
+          "id": 30,
+          "submission_ms": 64.01199998799711,
+          "decode_ms": 63.7529999949038,
+          "decoded_s": 408704.24371,
+          "kind": "keyboard",
+          "submitted_s": 408704.243969
+        },
+        {
+          "enqueued_s": 408704.366447,
+          "id": 31,
+          "submission_ms": 20.67599998554215,
+          "decode_ms": 20.348999998532236,
+          "decoded_s": 408704.386796,
+          "kind": "click",
+          "submitted_s": 408704.387123
+        },
+        {
+          "enqueued_s": 408704.508532,
+          "id": 32,
+          "submission_ms": 38.330000010319054,
+          "decode_ms": 38.03599998354912,
+          "decoded_s": 408704.546568,
+          "kind": "keyboard",
+          "submitted_s": 408704.546862
+        },
+        {
+          "enqueued_s": 408704.672936,
+          "id": 33,
+          "submission_ms": 25.156999996397644,
+          "decode_ms": 24.7100000269711,
+          "decoded_s": 408704.697646,
+          "kind": "click",
+          "submitted_s": 408704.698093
+        },
+        {
+          "enqueued_s": 408704.823084,
+          "id": 34,
+          "submission_ms": 59.43900003330782,
+          "decode_ms": 58.982000045944005,
+          "decoded_s": 408704.882066,
+          "kind": "keyboard",
+          "submitted_s": 408704.882523
+        },
+        {
+          "enqueued_s": 408705.00858,
+          "id": 35,
+          "submission_ms": 22.52199995564297,
+          "decode_ms": 22.2269999794662,
+          "decoded_s": 408705.030807,
+          "kind": "click",
+          "submitted_s": 408705.031102
+        },
+        {
+          "enqueued_s": 408705.156054,
+          "id": 36,
+          "submission_ms": 57.95599997509271,
+          "decode_ms": 57.64600000111386,
+          "decoded_s": 408705.2137,
+          "kind": "keyboard",
+          "submitted_s": 408705.21401
+        },
+        {
+          "enqueued_s": 408705.340094,
+          "id": 37,
+          "submission_ms": 64.485999988392,
+          "decode_ms": 40.45800003223121,
+          "decoded_s": 408705.380552,
+          "kind": "click",
+          "submitted_s": 408705.40458
+        },
+        {
+          "enqueued_s": 408705.52582,
+          "id": 38,
+          "submission_ms": 48.540999996475875,
+          "decode_ms": 48.272999993059784,
+          "decoded_s": 408705.574093,
+          "kind": "keyboard",
+          "submitted_s": 408705.574361
+        },
+        {
+          "enqueued_s": 408705.700377,
+          "id": 39,
+          "submission_ms": 24.315000046044588,
+          "decode_ms": 24.02000001166016,
+          "decoded_s": 408705.724397,
+          "kind": "click",
+          "submitted_s": 408705.724692
+        },
+        {
+          "enqueued_s": 408705.849358,
+          "id": 40,
+          "submission_ms": 64.42800001241267,
+          "decode_ms": 64.18899999698624,
+          "decoded_s": 408705.913547,
+          "kind": "keyboard",
+          "submitted_s": 408705.913786
+        },
+        {
+          "enqueued_s": 408706.036159,
+          "id": 41,
+          "submission_ms": 30.098000017460436,
+          "decode_ms": 29.85300001455471,
+          "decoded_s": 408706.066012,
+          "kind": "click",
+          "submitted_s": 408706.066257
+        },
+        {
+          "enqueued_s": 408706.187724,
+          "id": 42,
+          "submission_ms": 58.69400000665337,
+          "decode_ms": 58.421999972779304,
+          "decoded_s": 408706.246146,
+          "kind": "keyboard",
+          "submitted_s": 408706.246418
+        },
+        {
+          "enqueued_s": 408706.372473,
+          "id": 43,
+          "submission_ms": 21.065999986603856,
+          "decode_ms": 20.74099995661527,
+          "decoded_s": 408706.393214,
+          "kind": "click",
+          "submitted_s": 408706.393539
+        },
+        {
+          "enqueued_s": 408706.51685,
+          "id": 44,
+          "submission_ms": 64.28499997127801,
+          "decode_ms": 63.54699999792501,
+          "decoded_s": 408706.580397,
+          "kind": "keyboard",
+          "submitted_s": 408706.581135
+        },
+        {
+          "enqueued_s": 408706.705658,
+          "id": 45,
+          "submission_ms": 23.06999999564141,
+          "decode_ms": 22.714999970048666,
+          "decoded_s": 408706.728373,
+          "kind": "click",
+          "submitted_s": 408706.728728
+        },
+        {
+          "enqueued_s": 408706.854355,
+          "id": 46,
+          "submission_ms": 54.6679999679327,
+          "decode_ms": 54.31099998531863,
+          "decoded_s": 408706.908666,
+          "kind": "keyboard",
+          "submitted_s": 408706.909023
+        },
+        {
+          "enqueued_s": 408707.032111,
+          "id": 47,
+          "submission_ms": 39.64900004211813,
+          "decode_ms": 39.33699999470264,
+          "decoded_s": 408707.071448,
+          "kind": "click",
+          "submitted_s": 408707.07176
+        },
+        {
+          "enqueued_s": 408707.193834,
+          "id": 48,
+          "submission_ms": 51.33000004570931,
+          "decode_ms": 51.073000009637326,
+          "decoded_s": 408707.244907,
+          "kind": "keyboard",
+          "submitted_s": 408707.245164
+        },
+        {
+          "enqueued_s": 408707.376687,
+          "id": 49,
+          "submission_ms": 28.94600003492087,
+          "decode_ms": 28.687999991234392,
+          "decoded_s": 408707.405375,
+          "kind": "click",
+          "submitted_s": 408707.405633
+        },
+        {
+          "enqueued_s": 408707.536002,
+          "id": 50,
+          "submission_ms": 39.056000008713454,
+          "decode_ms": 38.773000007495284,
+          "decoded_s": 408707.574775,
+          "kind": "keyboard",
+          "submitted_s": 408707.575058
+        },
+        {
+          "enqueued_s": 408707.701078,
+          "id": 51,
+          "submission_ms": 24.50699999462813,
+          "decode_ms": 24.22099997056648,
+          "decoded_s": 408707.725299,
+          "kind": "click",
+          "submitted_s": 408707.725585
+        },
+        {
+          "enqueued_s": 408707.846776,
+          "id": 52,
+          "submission_ms": 55.463000026065856,
+          "decode_ms": 55.136999988462776,
+          "decoded_s": 408707.901913,
+          "kind": "keyboard",
+          "submitted_s": 408707.902239
+        },
+        {
+          "enqueued_s": 408708.028251,
+          "id": 53,
+          "submission_ms": 23.963000043295324,
+          "decode_ms": 23.695000039879233,
+          "decoded_s": 408708.051946,
+          "kind": "click",
+          "submitted_s": 408708.052214
+        },
+        {
+          "enqueued_s": 408708.174021,
+          "id": 54,
+          "submission_ms": 63.32499999552965,
+          "decode_ms": 63.043000001925975,
+          "decoded_s": 408708.237064,
+          "kind": "keyboard",
+          "submitted_s": 408708.237346
+        },
+        {
+          "enqueued_s": 408708.361018,
+          "id": 55,
+          "submission_ms": 18.785000022035092,
+          "decode_ms": 18.527999985963106,
+          "decoded_s": 408708.379546,
+          "kind": "click",
+          "submitted_s": 408708.379803
+        },
+        {
+          "enqueued_s": 408708.505859,
+          "id": 56,
+          "submission_ms": 47.84999997355044,
+          "decode_ms": 47.47399996267632,
+          "decoded_s": 408708.553333,
+          "kind": "keyboard",
+          "submitted_s": 408708.553709
+        },
+        {
+          "enqueued_s": 408708.676391,
+          "id": 57,
+          "submission_ms": 21.256999985780567,
+          "decode_ms": 20.93800000147894,
+          "decoded_s": 408708.697329,
+          "kind": "click",
+          "submitted_s": 408708.697648
+        },
+        {
+          "enqueued_s": 408708.823742,
+          "id": 58,
+          "submission_ms": 56.333000015001744,
+          "decode_ms": 55.992000037804246,
+          "decoded_s": 408708.879734,
+          "kind": "keyboard",
+          "submitted_s": 408708.880075
+        },
+        {
+          "enqueued_s": 408709.001098,
+          "id": 59,
+          "submission_ms": 23.721000005025417,
+          "decode_ms": 23.398000048473477,
+          "decoded_s": 408709.024496,
+          "kind": "click",
+          "submitted_s": 408709.024819
+        },
+        {
+          "enqueued_s": 408709.148603,
+          "id": 60,
+          "submission_ms": 36.95300000254065,
+          "decode_ms": 36.38100001262501,
+          "decoded_s": 408709.184984,
+          "kind": "keyboard",
+          "submitted_s": 408709.185556
+        }
+      ],
+      "burst": {
+        "generated": 120,
+        "generation_elapsed_s": 1.986588,
+        "requested_hz": 60,
+        "unique_decoded": 56,
+        "unique_submitted": 55,
+        "submission_gaps": {
+          "count": 54,
+          "median_ms": 38.79299998516217,
+          "p95_ms": 44.294000021182,
+          "max_ms": 55.37900002673268
+        },
+        "raw_decoded": [
+          {
+            "id": 65538,
+            "decoded_s": 408709.384721
+          },
+          {
+            "id": 65539,
+            "decoded_s": 408709.412673
+          },
+          {
+            "id": 65541,
+            "decoded_s": 408709.431605
+          },
+          {
+            "id": 65542,
+            "decoded_s": 408709.451135
+          },
+          {
+            "id": 65544,
+            "decoded_s": 408709.47202
+          },
+          {
+            "id": 65545,
+            "decoded_s": 408709.491308
+          },
+          {
+            "id": 65546,
+            "decoded_s": 408709.510531
+          },
+          {
+            "id": 65547,
+            "decoded_s": 408709.538606
+          },
+          {
+            "id": 65549,
+            "decoded_s": 408709.559151
+          },
+          {
+            "id": 65550,
+            "decoded_s": 408709.58683
+          },
+          {
+            "id": 65552,
+            "decoded_s": 408709.608504
+          },
+          {
+            "id": 65553,
+            "decoded_s": 408709.647154
+          },
+          {
+            "id": 65555,
+            "decoded_s": 408709.688068
+          },
+          {
+            "id": 65558,
+            "decoded_s": 408709.727106
+          },
+          {
+            "id": 65560,
+            "decoded_s": 408709.763123
+          },
+          {
+            "id": 65562,
+            "decoded_s": 408709.800385
+          },
+          {
+            "id": 65564,
+            "decoded_s": 408709.841885
+          },
+          {
+            "id": 65567,
+            "decoded_s": 408709.883664
+          },
+          {
+            "id": 65570,
+            "decoded_s": 408709.926381
+          },
+          {
+            "id": 65572,
+            "decoded_s": 408709.968534
+          },
+          {
+            "id": 65575,
+            "decoded_s": 408710.010814
+          },
+          {
+            "id": 65577,
+            "decoded_s": 408710.052879
+          },
+          {
+            "id": 65580,
+            "decoded_s": 408710.096627
+          },
+          {
+            "id": 65582,
+            "decoded_s": 408710.135909
+          },
+          {
+            "id": 65585,
+            "decoded_s": 408710.173502
+          },
+          {
+            "id": 65587,
+            "decoded_s": 408710.211621
+          },
+          {
+            "id": 65589,
+            "decoded_s": 408710.249683
+          },
+          {
+            "id": 65591,
+            "decoded_s": 408710.289501
+          },
+          {
+            "id": 65594,
+            "decoded_s": 408710.326753
+          },
+          {
+            "id": 65596,
+            "decoded_s": 408710.362723
+          },
+          {
+            "id": 65598,
+            "decoded_s": 408710.399803
+          },
+          {
+            "id": 65600,
+            "decoded_s": 408710.436062
+          },
+          {
+            "id": 65603,
+            "decoded_s": 408710.473455
+          },
+          {
+            "id": 65605,
+            "decoded_s": 408710.50925
+          },
+          {
+            "id": 65607,
+            "decoded_s": 408710.545652
+          },
+          {
+            "id": 65609,
+            "decoded_s": 408710.583576
+          },
+          {
+            "id": 65612,
+            "decoded_s": 408710.623855
+          },
+          {
+            "id": 65614,
+            "decoded_s": 408710.66158
+          },
+          {
+            "id": 65616,
+            "decoded_s": 408710.698069
+          },
+          {
+            "id": 65618,
+            "decoded_s": 408710.736402
+          },
+          {
+            "id": 65621,
+            "decoded_s": 408710.776014
+          },
+          {
+            "id": 65623,
+            "decoded_s": 408710.815272
+          },
+          {
+            "id": 65625,
+            "decoded_s": 408710.855599
+          },
+          {
+            "id": 65628,
+            "decoded_s": 408710.896819
+          },
+          {
+            "id": 65630,
+            "decoded_s": 408710.939103
+          },
+          {
+            "id": 65633,
+            "decoded_s": 408710.982133
+          },
+          {
+            "id": 65635,
+            "decoded_s": 408711.022962
+          },
+          {
+            "id": 65638,
+            "decoded_s": 408711.062588
+          },
+          {
+            "id": 65640,
+            "decoded_s": 408711.099792
+          },
+          {
+            "id": 65642,
+            "decoded_s": 408711.137775
+          },
+          {
+            "id": 65645,
+            "decoded_s": 408711.178324
+          },
+          {
+            "id": 65647,
+            "decoded_s": 408711.217695
+          },
+          {
+            "id": 65649,
+            "decoded_s": 408711.255849
+          },
+          {
+            "id": 65652,
+            "decoded_s": 408711.294789
+          },
+          {
+            "id": 65654,
+            "decoded_s": 408711.332342
+          },
+          {
+            "id": 65656,
+            "decoded_s": 408711.370861
+          }
+        ],
+        "raw_submitted": [
+          {
+            "id": 65538,
+            "submitted_s": 408709.406628
+          },
+          {
+            "id": 65539,
+            "submitted_s": 408709.412715
+          },
+          {
+            "id": 65541,
+            "submitted_s": 408709.431673
+          },
+          {
+            "id": 65544,
+            "submitted_s": 408709.475967
+          },
+          {
+            "id": 65545,
+            "submitted_s": 408709.491391
+          },
+          {
+            "id": 65546,
+            "submitted_s": 408709.510589
+          },
+          {
+            "id": 65547,
+            "submitted_s": 408709.545781
+          },
+          {
+            "id": 65549,
+            "submitted_s": 408709.55924
+          },
+          {
+            "id": 65550,
+            "submitted_s": 408709.586918
+          },
+          {
+            "id": 65552,
+            "submitted_s": 408709.608596
+          },
+          {
+            "id": 65553,
+            "submitted_s": 408709.647253
+          },
+          {
+            "id": 65555,
+            "submitted_s": 408709.688164
+          },
+          {
+            "id": 65558,
+            "submitted_s": 408709.727197
+          },
+          {
+            "id": 65560,
+            "submitted_s": 408709.763205
+          },
+          {
+            "id": 65562,
+            "submitted_s": 408709.80046
+          },
+          {
+            "id": 65564,
+            "submitted_s": 408709.841992
+          },
+          {
+            "id": 65567,
+            "submitted_s": 408709.883756
+          },
+          {
+            "id": 65570,
+            "submitted_s": 408709.926467
+          },
+          {
+            "id": 65572,
+            "submitted_s": 408709.968628
+          },
+          {
+            "id": 65575,
+            "submitted_s": 408710.010911
+          },
+          {
+            "id": 65577,
+            "submitted_s": 408710.052984
+          },
+          {
+            "id": 65580,
+            "submitted_s": 408710.096718
+          },
+          {
+            "id": 65582,
+            "submitted_s": 408710.136012
+          },
+          {
+            "id": 65585,
+            "submitted_s": 408710.173568
+          },
+          {
+            "id": 65587,
+            "submitted_s": 408710.21171
+          },
+          {
+            "id": 65589,
+            "submitted_s": 408710.255159
+          },
+          {
+            "id": 65591,
+            "submitted_s": 408710.2896
+          },
+          {
+            "id": 65594,
+            "submitted_s": 408710.332901
+          },
+          {
+            "id": 65596,
+            "submitted_s": 408710.362841
+          },
+          {
+            "id": 65598,
+            "submitted_s": 408710.399897
+          },
+          {
+            "id": 65600,
+            "submitted_s": 408710.455276
+          },
+          {
+            "id": 65603,
+            "submitted_s": 408710.473499
+          },
+          {
+            "id": 65605,
+            "submitted_s": 408710.5207
+          },
+          {
+            "id": 65607,
+            "submitted_s": 408710.545706
+          },
+          {
+            "id": 65609,
+            "submitted_s": 408710.583669
+          },
+          {
+            "id": 65612,
+            "submitted_s": 408710.623947
+          },
+          {
+            "id": 65614,
+            "submitted_s": 408710.661687
+          },
+          {
+            "id": 65616,
+            "submitted_s": 408710.698156
+          },
+          {
+            "id": 65618,
+            "submitted_s": 408710.736486
+          },
+          {
+            "id": 65621,
+            "submitted_s": 408710.776108
+          },
+          {
+            "id": 65623,
+            "submitted_s": 408710.815366
+          },
+          {
+            "id": 65625,
+            "submitted_s": 408710.855693
+          },
+          {
+            "id": 65628,
+            "submitted_s": 408710.896911
+          },
+          {
+            "id": 65630,
+            "submitted_s": 408710.939191
+          },
+          {
+            "id": 65633,
+            "submitted_s": 408710.982227
+          },
+          {
+            "id": 65635,
+            "submitted_s": 408711.023059
+          },
+          {
+            "id": 65638,
+            "submitted_s": 408711.062673
+          },
+          {
+            "id": 65640,
+            "submitted_s": 408711.099893
+          },
+          {
+            "id": 65642,
+            "submitted_s": 408711.137882
+          },
+          {
+            "id": 65645,
+            "submitted_s": 408711.178418
+          },
+          {
+            "id": 65647,
+            "submitted_s": 408711.217795
+          },
+          {
+            "id": 65649,
+            "submitted_s": 408711.255949
+          },
+          {
+            "id": 65652,
+            "submitted_s": 408711.294878
+          },
+          {
+            "id": 65654,
+            "submitted_s": 408711.332456
+          },
+          {
+            "id": 65656,
+            "submitted_s": 408711.37099
+          }
+        ]
+      },
+      "x11vnc_startup_read_MB_s": 794
+    },
+    "steamos-socket": {
+      "binary_uuid": "90B3491D-9E0A-3053-BD41-742A691FAC7D",
+      "capture": "off",
+      "framebuffer_pixels": [
+        1560,
+        1112
+      ],
+      "thermal_start": 0,
+      "thermal_end": 0,
+      "physical_ui_test": "PASS: exact 60 matched input responses and controlled burst completed; screenshot retained privately",
+      "input_to_submission": {
+        "click": {
+          "count": 30,
+          "median_ms": 108.44800001359545,
+          "p95_ms": 132.38799996906891,
+          "max_ms": 137.18899997184053
+        },
+        "keyboard": {
+          "count": 30,
+          "median_ms": 88.74949999153614,
+          "p95_ms": 131.3720000325702,
+          "max_ms": 133.61600000644103
+        }
+      },
+      "raw_latency_events": [
+        {
+          "enqueued_s": 408767.462405,
+          "id": 1,
+          "submission_ms": 79.82099999208003,
+          "decode_ms": 79.02399997692555,
+          "decoded_s": 408767.541429,
+          "kind": "click",
+          "submitted_s": 408767.542226
+        },
+        {
+          "enqueued_s": 408767.662592,
+          "id": 2,
+          "submission_ms": 116.72700004419312,
+          "decode_ms": 116.66800000239164,
+          "decoded_s": 408767.77926,
+          "kind": "keyboard",
+          "submitted_s": 408767.779319
+        },
+        {
+          "enqueued_s": 408767.903407,
+          "id": 3,
+          "submission_ms": 137.18899997184053,
+          "decode_ms": 137.10200000787154,
+          "decoded_s": 408768.040509,
+          "kind": "click",
+          "submitted_s": 408768.040596
+        },
+        {
+          "enqueued_s": 408768.163735,
+          "id": 4,
+          "submission_ms": 109.0470000053756,
+          "decode_ms": 108.97699999623,
+          "decoded_s": 408768.272712,
+          "kind": "keyboard",
+          "submitted_s": 408768.272782
+        },
+        {
+          "enqueued_s": 408768.392808,
+          "id": 5,
+          "submission_ms": 110.8269999967888,
+          "decode_ms": 110.75100000016391,
+          "decoded_s": 408768.503559,
+          "kind": "click",
+          "submitted_s": 408768.503635
+        },
+        {
+          "enqueued_s": 408768.62546,
+          "id": 6,
+          "submission_ms": 80.25699999416247,
+          "decode_ms": 80.18099999753758,
+          "decoded_s": 408768.705641,
+          "kind": "keyboard",
+          "submitted_s": 408768.705717
+        },
+        {
+          "enqueued_s": 408768.83103,
+          "id": 7,
+          "submission_ms": 112.01500002061948,
+          "decode_ms": 111.94199998863041,
+          "decoded_s": 408768.942972,
+          "kind": "click",
+          "submitted_s": 408768.943045
+        },
+        {
+          "enqueued_s": 408769.066426,
+          "id": 8,
+          "submission_ms": 90.08600004017353,
+          "decode_ms": 90.02600004896522,
+          "decoded_s": 408769.156452,
+          "kind": "keyboard",
+          "submitted_s": 408769.156512
+        },
+        {
+          "enqueued_s": 408769.282543,
+          "id": 9,
+          "submission_ms": 116.57399998512119,
+          "decode_ms": 116.51299998629838,
+          "decoded_s": 408769.399056,
+          "kind": "click",
+          "submitted_s": 408769.399117
+        },
+        {
+          "enqueued_s": 408769.534015,
+          "id": 10,
+          "submission_ms": 82.58600003318861,
+          "decode_ms": 82.51300000119954,
+          "decoded_s": 408769.616528,
+          "kind": "keyboard",
+          "submitted_s": 408769.616601
+        },
+        {
+          "enqueued_s": 408769.737829,
+          "id": 11,
+          "submission_ms": 67.19000003067777,
+          "decode_ms": 67.11400003405288,
+          "decoded_s": 408769.804943,
+          "kind": "click",
+          "submitted_s": 408769.805019
+        },
+        {
+          "enqueued_s": 408769.931046,
+          "id": 12,
+          "submission_ms": 84.69899999909103,
+          "decode_ms": 84.62500001769513,
+          "decoded_s": 408770.015671,
+          "kind": "keyboard",
+          "submitted_s": 408770.015745
+        },
+        {
+          "enqueued_s": 408770.1409,
+          "id": 13,
+          "submission_ms": 118.2849999750033,
+          "decode_ms": 118.22300002677366,
+          "decoded_s": 408770.259123,
+          "kind": "click",
+          "submitted_s": 408770.259185
+        },
+        {
+          "enqueued_s": 408770.379692,
+          "id": 14,
+          "submission_ms": 133.61600000644103,
+          "decode_ms": 133.53799999458715,
+          "decoded_s": 408770.51323,
+          "kind": "keyboard",
+          "submitted_s": 408770.513308
+        },
+        {
+          "enqueued_s": 408770.635141,
+          "id": 15,
+          "submission_ms": 114.68200001399964,
+          "decode_ms": 114.60700002498925,
+          "decoded_s": 408770.749748,
+          "kind": "click",
+          "submitted_s": 408770.749823
+        },
+        {
+          "enqueued_s": 408770.87587,
+          "id": 16,
+          "submission_ms": 80.10900003137067,
+          "decode_ms": 80.0370000069961,
+          "decoded_s": 408770.955907,
+          "kind": "keyboard",
+          "submitted_s": 408770.955979
+        },
+        {
+          "enqueued_s": 408771.082045,
+          "id": 17,
+          "submission_ms": 112.45800001779571,
+          "decode_ms": 108.29499998362735,
+          "decoded_s": 408771.19034,
+          "kind": "click",
+          "submitted_s": 408771.194503
+        },
+        {
+          "enqueued_s": 408771.315309,
+          "id": 18,
+          "submission_ms": 81.91199996508658,
+          "decode_ms": 81.85099996626377,
+          "decoded_s": 408771.39716,
+          "kind": "keyboard",
+          "submitted_s": 408771.397221
+        },
+        {
+          "enqueued_s": 408771.538012,
+          "id": 19,
+          "submission_ms": 79.64900002116337,
+          "decode_ms": 79.58700001472607,
+          "decoded_s": 408771.617599,
+          "kind": "click",
+          "submitted_s": 408771.617661
+        },
+        {
+          "enqueued_s": 408771.739018,
+          "id": 20,
+          "submission_ms": 113.22899995138869,
+          "decode_ms": 113.15999994985759,
+          "decoded_s": 408771.852178,
+          "kind": "keyboard",
+          "submitted_s": 408771.852247
+        },
+        {
+          "enqueued_s": 408771.974226,
+          "id": 21,
+          "submission_ms": 89.05799995409325,
+          "decode_ms": 88.98800000315532,
+          "decoded_s": 408772.063214,
+          "kind": "click",
+          "submitted_s": 408772.063284
+        },
+        {
+          "enqueued_s": 408772.18331,
+          "id": 22,
+          "submission_ms": 131.3720000325702,
+          "decode_ms": 131.30499998806044,
+          "decoded_s": 408772.314615,
+          "kind": "keyboard",
+          "submitted_s": 408772.314682
+        },
+        {
+          "enqueued_s": 408772.440486,
+          "id": 23,
+          "submission_ms": 116.96400004439056,
+          "decode_ms": 116.89200002001598,
+          "decoded_s": 408772.557378,
+          "kind": "click",
+          "submitted_s": 408772.55745
+        },
+        {
+          "enqueued_s": 408772.683526,
+          "id": 24,
+          "submission_ms": 78.5160000086762,
+          "decode_ms": 78.4529999946244,
+          "decoded_s": 408772.761979,
+          "kind": "keyboard",
+          "submitted_s": 408772.762042
+        },
+        {
+          "enqueued_s": 408772.888077,
+          "id": 25,
+          "submission_ms": 105.34000000916421,
+          "decode_ms": 105.26600002776831,
+          "decoded_s": 408772.993343,
+          "kind": "click",
+          "submitted_s": 408772.993417
+        },
+        {
+          "enqueued_s": 408773.114461,
+          "id": 26,
+          "submission_ms": 83.0089999944903,
+          "decode_ms": 82.94999995268881,
+          "decoded_s": 408773.197411,
+          "kind": "keyboard",
+          "submitted_s": 408773.19747
+        },
+        {
+          "enqueued_s": 408773.317999,
+          "id": 27,
+          "submission_ms": 115.70299998857081,
+          "decode_ms": 115.64599996199831,
+          "decoded_s": 408773.433645,
+          "kind": "click",
+          "submitted_s": 408773.433702
+        },
+        {
+          "enqueued_s": 408773.554057,
+          "id": 28,
+          "submission_ms": 96.66500001912937,
+          "decode_ms": 96.60100005567074,
+          "decoded_s": 408773.650658,
+          "kind": "keyboard",
+          "submitted_s": 408773.650722
+        },
+        {
+          "enqueued_s": 408773.771573,
+          "id": 29,
+          "submission_ms": 93.1540000019595,
+          "decode_ms": 93.08299998519942,
+          "decoded_s": 408773.864656,
+          "kind": "click",
+          "submitted_s": 408773.864727
+        },
+        {
+          "enqueued_s": 408773.985907,
+          "id": 30,
+          "submission_ms": 124.92099998053163,
+          "decode_ms": 124.85299998661503,
+          "decoded_s": 408774.11076,
+          "kind": "keyboard",
+          "submitted_s": 408774.110828
+        },
+        {
+          "enqueued_s": 408774.256855,
+          "id": 31,
+          "submission_ms": 83.88500002911314,
+          "decode_ms": 83.82599998731166,
+          "decoded_s": 408774.340681,
+          "kind": "click",
+          "submitted_s": 408774.34074
+        },
+        {
+          "enqueued_s": 408774.469386,
+          "id": 32,
+          "submission_ms": 82.38500001607463,
+          "decode_ms": 82.32099999440834,
+          "decoded_s": 408774.551707,
+          "kind": "keyboard",
+          "submitted_s": 408774.551771
+        },
+        {
+          "enqueued_s": 408774.6748,
+          "id": 33,
+          "submission_ms": 96.58800001488999,
+          "decode_ms": 96.52000002097338,
+          "decoded_s": 408774.77132,
+          "kind": "click",
+          "submitted_s": 408774.771388
+        },
+        {
+          "enqueued_s": 408774.892567,
+          "id": 34,
+          "submission_ms": 89.57700000610203,
+          "decode_ms": 89.51499999966472,
+          "decoded_s": 408774.982082,
+          "kind": "keyboard",
+          "submitted_s": 408774.982144
+        },
+        {
+          "enqueued_s": 408775.105951,
+          "id": 35,
+          "submission_ms": 107.7190000214614,
+          "decode_ms": 107.64299996662885,
+          "decoded_s": 408775.213594,
+          "kind": "click",
+          "submitted_s": 408775.21367
+        },
+        {
+          "enqueued_s": 408775.339738,
+          "id": 36,
+          "submission_ms": 84.80499999132007,
+          "decode_ms": 84.73499998217449,
+          "decoded_s": 408775.424473,
+          "kind": "keyboard",
+          "submitted_s": 408775.424543
+        },
+        {
+          "enqueued_s": 408775.550575,
+          "id": 37,
+          "submission_ms": 107.69299999810755,
+          "decode_ms": 107.62600001180544,
+          "decoded_s": 408775.658201,
+          "kind": "click",
+          "submitted_s": 408775.658268
+        },
+        {
+          "enqueued_s": 408775.780805,
+          "id": 38,
+          "submission_ms": 86.28099999623373,
+          "decode_ms": 86.2180000403896,
+          "decoded_s": 408775.867023,
+          "kind": "keyboard",
+          "submitted_s": 408775.867086
+        },
+        {
+          "enqueued_s": 408775.993114,
+          "id": 39,
+          "submission_ms": 109.1770000057295,
+          "decode_ms": 109.11099996883422,
+          "decoded_s": 408776.102225,
+          "kind": "click",
+          "submitted_s": 408776.102291
+        },
+        {
+          "enqueued_s": 408776.228339,
+          "id": 40,
+          "submission_ms": 80.01899998635054,
+          "decode_ms": 79.95699997991323,
+          "decoded_s": 408776.308296,
+          "kind": "keyboard",
+          "submitted_s": 408776.308358
+        },
+        {
+          "enqueued_s": 408776.429535,
+          "id": 41,
+          "submission_ms": 113.02400002023205,
+          "decode_ms": 112.95599996810779,
+          "decoded_s": 408776.542491,
+          "kind": "click",
+          "submitted_s": 408776.542559
+        },
+        {
+          "enqueued_s": 408776.668629,
+          "id": 42,
+          "submission_ms": 88.78799999365583,
+          "decode_ms": 88.72800000244752,
+          "decoded_s": 408776.757357,
+          "kind": "keyboard",
+          "submitted_s": 408776.757417
+        },
+        {
+          "enqueued_s": 408776.883478,
+          "id": 43,
+          "submission_ms": 62.65300000086427,
+          "decode_ms": 62.58399999933317,
+          "decoded_s": 408776.946062,
+          "kind": "click",
+          "submitted_s": 408776.946131
+        },
+        {
+          "enqueued_s": 408777.072143,
+          "id": 44,
+          "submission_ms": 106.68399999849498,
+          "decode_ms": 106.6189999692142,
+          "decoded_s": 408777.178762,
+          "kind": "keyboard",
+          "submitted_s": 408777.178827
+        },
+        {
+          "enqueued_s": 408777.301358,
+          "id": 45,
+          "submission_ms": 82.56999996956438,
+          "decode_ms": 82.4979999451898,
+          "decoded_s": 408777.383856,
+          "kind": "click",
+          "submitted_s": 408777.383928
+        },
+        {
+          "enqueued_s": 408777.505541,
+          "id": 46,
+          "submission_ms": 84.09299998311326,
+          "decode_ms": 84.02100001694635,
+          "decoded_s": 408777.589562,
+          "kind": "keyboard",
+          "submitted_s": 408777.589634
+        },
+        {
+          "enqueued_s": 408777.710855,
+          "id": 47,
+          "submission_ms": 110.48799997661263,
+          "decode_ms": 110.41999998269603,
+          "decoded_s": 408777.821275,
+          "kind": "click",
+          "submitted_s": 408777.821343
+        },
+        {
+          "enqueued_s": 408777.947438,
+          "id": 48,
+          "submission_ms": 88.71099998941645,
+          "decode_ms": 88.63900002324954,
+          "decoded_s": 408778.036077,
+          "kind": "keyboard",
+          "submitted_s": 408778.036149
+        },
+        {
+          "enqueued_s": 408778.156287,
+          "id": 49,
+          "submission_ms": 111.89400003058836,
+          "decode_ms": 111.83399998117238,
+          "decoded_s": 408778.268121,
+          "kind": "click",
+          "submitted_s": 408778.268181
+        },
+        {
+          "enqueued_s": 408778.396136,
+          "id": 50,
+          "submission_ms": 76.97900000493973,
+          "decode_ms": 76.91900001373142,
+          "decoded_s": 408778.473055,
+          "kind": "keyboard",
+          "submitted_s": 408778.473115
+        },
+        {
+          "enqueued_s": 408778.593155,
+          "id": 51,
+          "submission_ms": 132.38799996906891,
+          "decode_ms": 132.31399998767301,
+          "decoded_s": 408778.725469,
+          "kind": "click",
+          "submitted_s": 408778.725543
+        },
+        {
+          "enqueued_s": 408778.850931,
+          "id": 52,
+          "submission_ms": 100.6000000052154,
+          "decode_ms": 100.5379999987781,
+          "decoded_s": 408778.951469,
+          "kind": "keyboard",
+          "submitted_s": 408778.951531
+        },
+        {
+          "enqueued_s": 408779.074419,
+          "id": 53,
+          "submission_ms": 91.56699996674433,
+          "decode_ms": 91.50699997553602,
+          "decoded_s": 408779.165926,
+          "kind": "click",
+          "submitted_s": 408779.165986
+        },
+        {
+          "enqueued_s": 408779.288944,
+          "id": 54,
+          "submission_ms": 111.2919999868609,
+          "decode_ms": 111.21999996248633,
+          "decoded_s": 408779.400164,
+          "kind": "keyboard",
+          "submitted_s": 408779.400236
+        },
+        {
+          "enqueued_s": 408779.522997,
+          "id": 55,
+          "submission_ms": 113.18200000096112,
+          "decode_ms": 113.11400000704452,
+          "decoded_s": 408779.636111,
+          "kind": "click",
+          "submitted_s": 408779.636179
+        },
+        {
+          "enqueued_s": 408779.761508,
+          "id": 56,
+          "submission_ms": 80.96199994906783,
+          "decode_ms": 80.8989999932237,
+          "decoded_s": 408779.842407,
+          "kind": "keyboard",
+          "submitted_s": 408779.84247
+        },
+        {
+          "enqueued_s": 408779.967803,
+          "id": 57,
+          "submission_ms": 106.62199999205768,
+          "decode_ms": 106.55399999814108,
+          "decoded_s": 408780.074357,
+          "kind": "click",
+          "submitted_s": 408780.074425
+        },
+        {
+          "enqueued_s": 408780.199908,
+          "id": 58,
+          "submission_ms": 93.03799999179319,
+          "decode_ms": 92.97100000549108,
+          "decoded_s": 408780.292879,
+          "kind": "keyboard",
+          "submitted_s": 408780.292946
+        },
+        {
+          "enqueued_s": 408780.4255,
+          "id": 59,
+          "submission_ms": 106.72499996144325,
+          "decode_ms": 106.65799997514114,
+          "decoded_s": 408780.532158,
+          "kind": "click",
+          "submitted_s": 408780.532225
+        },
+        {
+          "enqueued_s": 408780.657246,
+          "id": 60,
+          "submission_ms": 113.31099999370053,
+          "decode_ms": 113.25100000249222,
+          "decoded_s": 408780.770497,
+          "kind": "keyboard",
+          "submitted_s": 408780.770557
+        }
+      ],
+      "burst": {
+        "generated": 120,
+        "generation_elapsed_s": 1.987744,
+        "requested_hz": 60,
+        "unique_decoded": 9,
+        "unique_submitted": 9,
+        "submission_gaps": {
+          "count": 8,
+          "median_ms": 251.62400002591312,
+          "p95_ms": 273.1599999824539,
+          "max_ms": 273.1599999824539
+        },
+        "raw_decoded": [
+          {
+            "id": 65538,
+            "decoded_s": 408781.172491
+          },
+          {
+            "id": 65554,
+            "decoded_s": 408781.424035
+          },
+          {
+            "id": 65569,
+            "decoded_s": 408781.67899
+          },
+          {
+            "id": 65585,
+            "decoded_s": 408781.92907
+          },
+          {
+            "id": 65599,
+            "decoded_s": 408782.180731
+          },
+          {
+            "id": 65615,
+            "decoded_s": 408782.453881
+          },
+          {
+            "id": 65631,
+            "decoded_s": 408782.711371
+          },
+          {
+            "id": 65646,
+            "decoded_s": 408782.948293
+          },
+          {
+            "id": 65656,
+            "decoded_s": 408783.188042
+          }
+        ],
+        "raw_submitted": [
+          {
+            "id": 65538,
+            "submitted_s": 408781.172538
+          },
+          {
+            "id": 65554,
+            "submitted_s": 408781.424125
+          },
+          {
+            "id": 65569,
+            "submitted_s": 408781.679085
+          },
+          {
+            "id": 65585,
+            "submitted_s": 408781.929159
+          },
+          {
+            "id": 65599,
+            "submitted_s": 408782.18082
+          },
+          {
+            "id": 65615,
+            "submitted_s": 408782.45398
+          },
+          {
+            "id": 65631,
+            "submitted_s": 408782.711468
+          },
+          {
+            "id": 65646,
+            "submitted_s": 408782.948384
+          },
+          {
+            "id": 65656,
+            "submitted_s": 408783.188135
+          }
+        ]
+      },
+      "x11vnc_startup_read_MB_s": 40
+    },
+    "steamos-shared": {
+      "binary_uuid": "90B3491D-9E0A-3053-BD41-742A691FAC7D",
+      "capture": "sysv",
+      "framebuffer_pixels": [
+        1560,
+        1112
+      ],
+      "thermal_start": 0,
+      "thermal_end": 1,
+      "physical_ui_test": "PASS: exact 60 matched input responses and controlled burst completed; screenshot retained privately",
+      "input_to_submission": {
+        "click": {
+          "count": 30,
+          "median_ms": 63.790499989409,
+          "p95_ms": 107.39899997133762,
+          "max_ms": 131.24099996639416
+        },
+        "keyboard": {
+          "count": 30,
+          "median_ms": 69.62700001895428,
+          "p95_ms": 104.42500002682209,
+          "max_ms": 112.12199996225536
+        }
+      },
+      "raw_latency_events": [
+        {
+          "enqueued_s": 408845.178695,
+          "id": 1,
+          "submission_ms": 131.24099996639416,
+          "decode_ms": 107.01199999311939,
+          "decoded_s": 408845.285707,
+          "kind": "click",
+          "submitted_s": 408845.309936
+        },
+        {
+          "enqueued_s": 408845.43009,
+          "id": 2,
+          "submission_ms": 104.42500002682209,
+          "decode_ms": 104.35400001006201,
+          "decoded_s": 408845.534444,
+          "kind": "keyboard",
+          "submitted_s": 408845.534515
+        },
+        {
+          "enqueued_s": 408845.655417,
+          "id": 3,
+          "submission_ms": 74.17500001611188,
+          "decode_ms": 74.1089999792166,
+          "decoded_s": 408845.729526,
+          "kind": "click",
+          "submitted_s": 408845.729592
+        },
+        {
+          "enqueued_s": 408845.855661,
+          "id": 4,
+          "submission_ms": 59.56799996783957,
+          "decode_ms": 59.496000001672655,
+          "decoded_s": 408845.915157,
+          "kind": "keyboard",
+          "submitted_s": 408845.915229
+        },
+        {
+          "enqueued_s": 408846.038907,
+          "id": 5,
+          "submission_ms": 63.492999994196,
+          "decode_ms": 63.40500002261251,
+          "decoded_s": 408846.102312,
+          "kind": "click",
+          "submitted_s": 408846.1024
+        },
+        {
+          "enqueued_s": 408846.222492,
+          "id": 6,
+          "submission_ms": 70.55500004207715,
+          "decode_ms": 70.48800005577505,
+          "decoded_s": 408846.29298,
+          "kind": "keyboard",
+          "submitted_s": 408846.293047
+        },
+        {
+          "enqueued_s": 408846.413273,
+          "id": 7,
+          "submission_ms": 65.22099999710917,
+          "decode_ms": 65.15199999557808,
+          "decoded_s": 408846.478425,
+          "kind": "click",
+          "submitted_s": 408846.478494
+        },
+        {
+          "enqueued_s": 408846.604662,
+          "id": 8,
+          "submission_ms": 55.30699994415045,
+          "decode_ms": 55.23399997036904,
+          "decoded_s": 408846.659896,
+          "kind": "keyboard",
+          "submitted_s": 408846.659969
+        },
+        {
+          "enqueued_s": 408846.780633,
+          "id": 9,
+          "submission_ms": 65.77099999412894,
+          "decode_ms": 65.70099998498335,
+          "decoded_s": 408846.846334,
+          "kind": "click",
+          "submitted_s": 408846.846404
+        },
+        {
+          "enqueued_s": 408846.967186,
+          "id": 10,
+          "submission_ms": 57.55299999145791,
+          "decode_ms": 57.49499995727092,
+          "decoded_s": 408847.024681,
+          "kind": "keyboard",
+          "submitted_s": 408847.024739
+        },
+        {
+          "enqueued_s": 408847.145172,
+          "id": 11,
+          "submission_ms": 61.38600001577288,
+          "decode_ms": 61.323000001721084,
+          "decoded_s": 408847.206495,
+          "kind": "click",
+          "submitted_s": 408847.206558
+        },
+        {
+          "enqueued_s": 408847.346369,
+          "id": 12,
+          "submission_ms": 65.47600001795217,
+          "decode_ms": 65.41500001912937,
+          "decoded_s": 408847.411784,
+          "kind": "keyboard",
+          "submitted_s": 408847.411845
+        },
+        {
+          "enqueued_s": 408847.534903,
+          "id": 13,
+          "submission_ms": 82.38700003130361,
+          "decode_ms": 82.32200000202283,
+          "decoded_s": 408847.617225,
+          "kind": "click",
+          "submitted_s": 408847.61729
+        },
+        {
+          "enqueued_s": 408847.738882,
+          "id": 14,
+          "submission_ms": 76.61800005007535,
+          "decode_ms": 76.54800004092976,
+          "decoded_s": 408847.81543,
+          "kind": "keyboard",
+          "submitted_s": 408847.8155
+        },
+        {
+          "enqueued_s": 408847.93839,
+          "id": 15,
+          "submission_ms": 68.56399995740503,
+          "decode_ms": 68.49699997110292,
+          "decoded_s": 408848.006887,
+          "kind": "click",
+          "submitted_s": 408848.006954
+        },
+        {
+          "enqueued_s": 408848.12782,
+          "id": 16,
+          "submission_ms": 69.07500000670552,
+          "decode_ms": 69.00499999755993,
+          "decoded_s": 408848.196825,
+          "kind": "keyboard",
+          "submitted_s": 408848.196895
+        },
+        {
+          "enqueued_s": 408848.31815,
+          "id": 17,
+          "submission_ms": 59.30000002263114,
+          "decode_ms": 59.23000001348555,
+          "decoded_s": 408848.37738,
+          "kind": "click",
+          "submitted_s": 408848.37745
+        },
+        {
+          "enqueued_s": 408848.498404,
+          "id": 18,
+          "submission_ms": 97.06000000005588,
+          "decode_ms": 96.99599997838959,
+          "decoded_s": 408848.5954,
+          "kind": "keyboard",
+          "submitted_s": 408848.595464
+        },
+        {
+          "enqueued_s": 408848.718922,
+          "id": 19,
+          "submission_ms": 56.96300003910437,
+          "decode_ms": 56.899000017438084,
+          "decoded_s": 408848.775821,
+          "kind": "click",
+          "submitted_s": 408848.775885
+        },
+        {
+          "enqueued_s": 408848.901957,
+          "id": 20,
+          "submission_ms": 60.2719999733381,
+          "decode_ms": 57.86299996543676,
+          "decoded_s": 408848.95982,
+          "kind": "keyboard",
+          "submitted_s": 408848.962229
+        },
+        {
+          "enqueued_s": 408849.088355,
+          "id": 21,
+          "submission_ms": 52.04099998809397,
+          "decode_ms": 51.976999966427684,
+          "decoded_s": 408849.140332,
+          "kind": "click",
+          "submitted_s": 408849.140396
+        },
+        {
+          "enqueued_s": 408849.272686,
+          "id": 22,
+          "submission_ms": 73.28300003428012,
+          "decode_ms": 73.20099999196827,
+          "decoded_s": 408849.345887,
+          "kind": "keyboard",
+          "submitted_s": 408849.345969
+        },
+        {
+          "enqueued_s": 408849.469685,
+          "id": 23,
+          "submission_ms": 64.087999984622,
+          "decode_ms": 64.02799999341369,
+          "decoded_s": 408849.533713,
+          "kind": "click",
+          "submitted_s": 408849.533773
+        },
+        {
+          "enqueued_s": 408849.657386,
+          "id": 24,
+          "submission_ms": 82.38000003620982,
+          "decode_ms": 82.31900003738701,
+          "decoded_s": 408849.739705,
+          "kind": "keyboard",
+          "submitted_s": 408849.739766
+        },
+        {
+          "enqueued_s": 408849.862374,
+          "id": 25,
+          "submission_ms": 63.03499999921769,
+          "decode_ms": 62.9649999900721,
+          "decoded_s": 408849.925339,
+          "kind": "click",
+          "submitted_s": 408849.925409
+        },
+        {
+          "enqueued_s": 408850.05522,
+          "id": 26,
+          "submission_ms": 70.17900003120303,
+          "decode_ms": 58.44500003149733,
+          "decoded_s": 408850.113665,
+          "kind": "keyboard",
+          "submitted_s": 408850.125399
+        },
+        {
+          "enqueued_s": 408850.259666,
+          "id": 27,
+          "submission_ms": 74.99499997356907,
+          "decode_ms": 74.92999994428828,
+          "decoded_s": 408850.334596,
+          "kind": "click",
+          "submitted_s": 408850.334661
+        },
+        {
+          "enqueued_s": 408850.459634,
+          "id": 28,
+          "submission_ms": 90.35499999299645,
+          "decode_ms": 90.29499994358048,
+          "decoded_s": 408850.549929,
+          "kind": "keyboard",
+          "submitted_s": 408850.549989
+        },
+        {
+          "enqueued_s": 408850.670421,
+          "id": 29,
+          "submission_ms": 59.76299999747425,
+          "decode_ms": 59.692999988328665,
+          "decoded_s": 408850.730114,
+          "kind": "click",
+          "submitted_s": 408850.730184
+        },
+        {
+          "enqueued_s": 408850.856269,
+          "id": 30,
+          "submission_ms": 59.43500000284985,
+          "decode_ms": 59.36900002416223,
+          "decoded_s": 408850.915638,
+          "kind": "keyboard",
+          "submitted_s": 408850.915704
+        },
+        {
+          "enqueued_s": 408851.041729,
+          "id": 31,
+          "submission_ms": 61.95200001820922,
+          "decode_ms": 61.883000016678125,
+          "decoded_s": 408851.103612,
+          "kind": "click",
+          "submitted_s": 408851.103681
+        },
+        {
+          "enqueued_s": 408851.223802,
+          "id": 32,
+          "submission_ms": 58.001000026706606,
+          "decode_ms": 57.92799999471754,
+          "decoded_s": 408851.28173,
+          "kind": "keyboard",
+          "submitted_s": 408851.281803
+        },
+        {
+          "enqueued_s": 408851.407931,
+          "id": 33,
+          "submission_ms": 51.130999985616654,
+          "decode_ms": 51.06399999931455,
+          "decoded_s": 408851.458995,
+          "kind": "click",
+          "submitted_s": 408851.459062
+        },
+        {
+          "enqueued_s": 408851.580004,
+          "id": 34,
+          "submission_ms": 94.44499999517575,
+          "decode_ms": 94.37400003662333,
+          "decoded_s": 408851.674378,
+          "kind": "keyboard",
+          "submitted_s": 408851.674449
+        },
+        {
+          "enqueued_s": 408851.800535,
+          "id": 35,
+          "submission_ms": 60.76500000199303,
+          "decode_ms": 60.69499999284744,
+          "decoded_s": 408851.86123,
+          "kind": "click",
+          "submitted_s": 408851.8613
+        },
+        {
+          "enqueued_s": 408851.987428,
+          "id": 36,
+          "submission_ms": 55.86099997162819,
+          "decode_ms": 55.80299999564886,
+          "decoded_s": 408852.043231,
+          "kind": "keyboard",
+          "submitted_s": 408852.043289
+        },
+        {
+          "enqueued_s": 408852.16338,
+          "id": 37,
+          "submission_ms": 69.86099999630824,
+          "decode_ms": 69.7980000404641,
+          "decoded_s": 408852.233178,
+          "kind": "click",
+          "submitted_s": 408852.233241
+        },
+        {
+          "enqueued_s": 408852.356498,
+          "id": 38,
+          "submission_ms": 60.74700003955513,
+          "decode_ms": 60.67600002279505,
+          "decoded_s": 408852.417174,
+          "kind": "keyboard",
+          "submitted_s": 408852.417245
+        },
+        {
+          "enqueued_s": 408852.537948,
+          "id": 39,
+          "submission_ms": 65.18999999389052,
+          "decode_ms": 65.12300000758842,
+          "decoded_s": 408852.603071,
+          "kind": "click",
+          "submitted_s": 408852.603138
+        },
+        {
+          "enqueued_s": 408852.729212,
+          "id": 40,
+          "submission_ms": 57.369999994989485,
+          "decode_ms": 57.302000001072884,
+          "decoded_s": 408852.786514,
+          "kind": "keyboard",
+          "submitted_s": 408852.786582
+        },
+        {
+          "enqueued_s": 408852.907003,
+          "id": 41,
+          "submission_ms": 69.03100002091378,
+          "decode_ms": 68.96900001447648,
+          "decoded_s": 408852.975972,
+          "kind": "click",
+          "submitted_s": 408852.976034
+        },
+        {
+          "enqueued_s": 408853.096525,
+          "id": 42,
+          "submission_ms": 86.93499997025356,
+          "decode_ms": 86.86199999647215,
+          "decoded_s": 408853.183387,
+          "kind": "keyboard",
+          "submitted_s": 408853.18346
+        },
+        {
+          "enqueued_s": 408853.30746,
+          "id": 43,
+          "submission_ms": 51.1570000089705,
+          "decode_ms": 51.09000002266839,
+          "decoded_s": 408853.35855,
+          "kind": "click",
+          "submitted_s": 408853.358617
+        },
+        {
+          "enqueued_s": 408853.484664,
+          "id": 44,
+          "submission_ms": 83.199999993667,
+          "decode_ms": 83.12999998452142,
+          "decoded_s": 408853.567794,
+          "kind": "keyboard",
+          "submitted_s": 408853.567864
+        },
+        {
+          "enqueued_s": 408853.693952,
+          "id": 45,
+          "submission_ms": 60.6510000070557,
+          "decode_ms": 60.591000015847385,
+          "decoded_s": 408853.754543,
+          "kind": "click",
+          "submitted_s": 408853.754603
+        },
+        {
+          "enqueued_s": 408853.880687,
+          "id": 46,
+          "submission_ms": 56.52199999894947,
+          "decode_ms": 56.45799997728318,
+          "decoded_s": 408853.937145,
+          "kind": "keyboard",
+          "submitted_s": 408853.937209
+        },
+        {
+          "enqueued_s": 408854.057861,
+          "id": 47,
+          "submission_ms": 64.95500000892207,
+          "decode_ms": 64.89400001009926,
+          "decoded_s": 408854.122755,
+          "kind": "click",
+          "submitted_s": 408854.122816
+        },
+        {
+          "enqueued_s": 408854.247977,
+          "id": 48,
+          "submission_ms": 71.58899999922141,
+          "decode_ms": 56.21700000483543,
+          "decoded_s": 408854.304194,
+          "kind": "keyboard",
+          "submitted_s": 408854.319566
+        },
+        {
+          "enqueued_s": 408854.442696,
+          "id": 49,
+          "submission_ms": 92.40000002318993,
+          "decode_ms": 92.32600004179403,
+          "decoded_s": 408854.535022,
+          "kind": "click",
+          "submitted_s": 408854.535096
+        },
+        {
+          "enqueued_s": 408854.657371,
+          "id": 50,
+          "submission_ms": 76.15900004748255,
+          "decode_ms": 76.09600003343076,
+          "decoded_s": 408854.733467,
+          "kind": "keyboard",
+          "submitted_s": 408854.73353
+        },
+        {
+          "enqueued_s": 408854.854248,
+          "id": 51,
+          "submission_ms": 107.39899997133762,
+          "decode_ms": 107.32799995457754,
+          "decoded_s": 408854.961576,
+          "kind": "click",
+          "submitted_s": 408854.961647
+        },
+        {
+          "enqueued_s": 408855.087659,
+          "id": 52,
+          "submission_ms": 59.1310000163503,
+          "decode_ms": 59.05499996151775,
+          "decoded_s": 408855.146714,
+          "kind": "keyboard",
+          "submitted_s": 408855.14679
+        },
+        {
+          "enqueued_s": 408855.271302,
+          "id": 53,
+          "submission_ms": 49.58799999440089,
+          "decode_ms": 49.52600004617125,
+          "decoded_s": 408855.320828,
+          "kind": "click",
+          "submitted_s": 408855.32089
+        },
+        {
+          "enqueued_s": 408855.444899,
+          "id": 54,
+          "submission_ms": 92.58400002727285,
+          "decode_ms": 92.51699998276308,
+          "decoded_s": 408855.537416,
+          "kind": "keyboard",
+          "submitted_s": 408855.537483
+        },
+        {
+          "enqueued_s": 408855.657888,
+          "id": 55,
+          "submission_ms": 62.30299995513633,
+          "decode_ms": 62.22899997374043,
+          "decoded_s": 408855.720117,
+          "kind": "click",
+          "submitted_s": 408855.720191
+        },
+        {
+          "enqueued_s": 408855.842493,
+          "id": 56,
+          "submission_ms": 65.77600003220141,
+          "decode_ms": 65.70500001544133,
+          "decoded_s": 408855.908198,
+          "kind": "keyboard",
+          "submitted_s": 408855.908269
+        },
+        {
+          "enqueued_s": 408856.029662,
+          "id": 57,
+          "submission_ms": 61.418999976012856,
+          "decode_ms": 61.339000007137656,
+          "decoded_s": 408856.091001,
+          "kind": "click",
+          "submitted_s": 408856.091081
+        },
+        {
+          "enqueued_s": 408856.217167,
+          "id": 58,
+          "submission_ms": 59.84900001203641,
+          "decode_ms": 59.79000002844259,
+          "decoded_s": 408856.276957,
+          "kind": "keyboard",
+          "submitted_s": 408856.277016
+        },
+        {
+          "enqueued_s": 408856.3975,
+          "id": 59,
+          "submission_ms": 65.48900000052527,
+          "decode_ms": 65.4219999560155,
+          "decoded_s": 408856.462922,
+          "kind": "click",
+          "submitted_s": 408856.462989
+        },
+        {
+          "enqueued_s": 408856.583333,
+          "id": 60,
+          "submission_ms": 112.12199996225536,
+          "decode_ms": 112.06099996343255,
+          "decoded_s": 408856.695394,
+          "kind": "keyboard",
+          "submitted_s": 408856.695455
+        }
+      ],
+      "burst": {
+        "generated": 120,
+        "generation_elapsed_s": 1.985186,
+        "requested_hz": 60,
+        "unique_decoded": 30,
+        "unique_submitted": 30,
+        "submission_gaps": {
+          "count": 29,
+          "median_ms": 66.70600001234561,
+          "p95_ms": 77.60000001871958,
+          "max_ms": 83.18999997572973
+        },
+        "raw_decoded": [
+          {
+            "id": 65539,
+            "decoded_s": 408856.91006
+          },
+          {
+            "id": 65543,
+            "decoded_s": 408856.971652
+          },
+          {
+            "id": 65546,
+            "decoded_s": 408857.026476
+          },
+          {
+            "id": 65549,
+            "decoded_s": 408857.089346
+          },
+          {
+            "id": 65554,
+            "decoded_s": 408857.165695
+          },
+          {
+            "id": 65558,
+            "decoded_s": 408857.232597
+          },
+          {
+            "id": 65562,
+            "decoded_s": 408857.300563
+          },
+          {
+            "id": 65566,
+            "decoded_s": 408857.367211
+          },
+          {
+            "id": 65570,
+            "decoded_s": 408857.431222
+          },
+          {
+            "id": 65574,
+            "decoded_s": 408857.497936
+          },
+          {
+            "id": 65578,
+            "decoded_s": 408857.564078
+          },
+          {
+            "id": 65581,
+            "decoded_s": 408857.628571
+          },
+          {
+            "id": 65586,
+            "decoded_s": 408857.695121
+          },
+          {
+            "id": 65590,
+            "decoded_s": 408857.761606
+          },
+          {
+            "id": 65594,
+            "decoded_s": 408857.828557
+          },
+          {
+            "id": 65597,
+            "decoded_s": 408857.894362
+          },
+          {
+            "id": 65602,
+            "decoded_s": 408857.964005
+          },
+          {
+            "id": 65606,
+            "decoded_s": 408858.027641
+          },
+          {
+            "id": 65610,
+            "decoded_s": 408858.095895
+          },
+          {
+            "id": 65613,
+            "decoded_s": 408858.161722
+          },
+          {
+            "id": 65618,
+            "decoded_s": 408858.239309
+          },
+          {
+            "id": 65622,
+            "decoded_s": 408858.306362
+          },
+          {
+            "id": 65626,
+            "decoded_s": 408858.371832
+          },
+          {
+            "id": 65630,
+            "decoded_s": 408858.441468
+          },
+          {
+            "id": 65634,
+            "decoded_s": 408858.512525
+          },
+          {
+            "id": 65639,
+            "decoded_s": 408858.595694
+          },
+          {
+            "id": 65643,
+            "decoded_s": 408858.661446
+          },
+          {
+            "id": 65648,
+            "decoded_s": 408858.733641
+          },
+          {
+            "id": 65652,
+            "decoded_s": 408858.806301
+          },
+          {
+            "id": 65656,
+            "decoded_s": 408858.876487
+          }
+        ],
+        "raw_submitted": [
+          {
+            "id": 65539,
+            "submitted_s": 408856.910099
+          },
+          {
+            "id": 65543,
+            "submitted_s": 408856.971744
+          },
+          {
+            "id": 65546,
+            "submitted_s": 408857.026567
+          },
+          {
+            "id": 65549,
+            "submitted_s": 408857.089507
+          },
+          {
+            "id": 65554,
+            "submitted_s": 408857.165791
+          },
+          {
+            "id": 65558,
+            "submitted_s": 408857.232674
+          },
+          {
+            "id": 65562,
+            "submitted_s": 408857.300659
+          },
+          {
+            "id": 65566,
+            "submitted_s": 408857.367301
+          },
+          {
+            "id": 65570,
+            "submitted_s": 408857.431313
+          },
+          {
+            "id": 65574,
+            "submitted_s": 408857.498019
+          },
+          {
+            "id": 65578,
+            "submitted_s": 408857.564165
+          },
+          {
+            "id": 65581,
+            "submitted_s": 408857.628646
+          },
+          {
+            "id": 65586,
+            "submitted_s": 408857.695207
+          },
+          {
+            "id": 65590,
+            "submitted_s": 408857.761692
+          },
+          {
+            "id": 65594,
+            "submitted_s": 408857.828639
+          },
+          {
+            "id": 65597,
+            "submitted_s": 408857.89444
+          },
+          {
+            "id": 65602,
+            "submitted_s": 408857.970224
+          },
+          {
+            "id": 65606,
+            "submitted_s": 408858.027725
+          },
+          {
+            "id": 65610,
+            "submitted_s": 408858.095983
+          },
+          {
+            "id": 65613,
+            "submitted_s": 408858.1618
+          },
+          {
+            "id": 65618,
+            "submitted_s": 408858.2394
+          },
+          {
+            "id": 65622,
+            "submitted_s": 408858.306446
+          },
+          {
+            "id": 65626,
+            "submitted_s": 408858.371903
+          },
+          {
+            "id": 65630,
+            "submitted_s": 408858.441547
+          },
+          {
+            "id": 65634,
+            "submitted_s": 408858.512608
+          },
+          {
+            "id": 65639,
+            "submitted_s": 408858.595798
+          },
+          {
+            "id": 65643,
+            "submitted_s": 408858.661537
+          },
+          {
+            "id": 65648,
+            "submitted_s": 408858.73372
+          },
+          {
+            "id": 65652,
+            "submitted_s": 408858.806395
+          },
+          {
+            "id": 65656,
+            "submitted_s": 408858.876567
+          }
+        ]
+      },
+      "x11vnc_startup_read_MB_s": 763
+    }
+  },
+  "limits": [
+    "One sequential socket/shared pair per desktop, without randomized order or repeated independent runs.",
+    "Arch is Xvfb/Core Graphics at 960x540 with default VNC timing; SteamOS is accelerated Xorg/Metal presentation at 1560x1112 with adaptive timing. Compare modes within a desktop; these are not matched cross-distribution workloads.",
+    "Controlled fullscreen Xlib color/strip repaints do not establish real desktop/game FPS, sustained performance, battery life or physical input-to-panel latency.",
+    "SteamOS shared run began nominal and ended at fair thermal state; matched-thermal repeats remain unqualified. This observation does not establish that shared capture caused heating.",
+    "The known x11vnc SIGKILL SysV resource-lifetime issue remains. These measurements do not qualify crash cleanup or promote shared capture to default.",
+    "Earlier instrumentation pilots are excluded. Final runs use larger encoded markers and receiver timestamps retained under the frame lock, associated synchronously with the submitted snapshot.",
+    "Native instrumentation adds observer overhead. Missing generated IDs can be coalesced before decode or at native submission. Arch/shared decoded 56 distinct burst IDs and submitted 55; every other run submitted all decoded IDs."
+  ],
+  "normal_build_restoration": {
+    "viewer_source_sha256": "9f836077ceee995c0978fce6e9ffaec61e02c8e80f87540d7a612dee09ce91d0",
+    "binary_uuid": "9FE94715-0035-312C-A990-1B5E86224929",
+    "probe_class_absent": true,
+    "physical_steamos_ui_test": "PASS: desktop, Konsole, visible aarch64 and completed 30-line repaint workload without a capture override"
+  }
+}

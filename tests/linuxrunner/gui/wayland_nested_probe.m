@@ -7,8 +7,10 @@ int main(int argc,char **argv){@autoreleasepool{
  NSLock *lock=[NSLock new];__block NSData *pixels;__block uint16_t width=0,height=0;__block uint64_t frames=0;
  client.frameHandler=^(NSData *data,uint16_t w,uint16_t h,uint64_t f,uint64_t bytes){(void)bytes;[lock lock];pixels=data;width=w;height=h;frames=f;[lock unlock];};
  [client start];BOOL sent=NO,found=NO;NSDate *start=NSDate.date;
- NSString *logPath=@(getenv("LR_WAYLAND_PROBE_LOG")?:"");NSString *text=@"";
- while(-[start timeIntervalSinceNow]<45){[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.1]];
+ NSString *logPath=getenv("LR_WAYLAND_PROBE_LOG")?@(getenv("LR_WAYLAND_PROBE_LOG")):[[@(getenv("LR_GUI_APPLICATION_LOG")?:"") stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"terminal.log"];NSString *text=@"";
+ double limit=getenv("LR_WAYLAND_PROBE_SECONDS")?atof(getenv("LR_WAYLAND_PROBE_SECONDS")):45;
+ if(limit<5||limit>180)return 2;
+ while(-[start timeIntervalSinceNow]<limit){[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.1]];
   [lock lock];NSData *data=pixels;uint16_t w=width,h=height;[lock unlock];
   if(data&&!sent){const uint8_t *p=data.bytes;unsigned count=0,x0=0,y0=0;
    for(unsigned y=10;y+10<h;y++)for(unsigned x=10;x+10<w;x++){size_t n=(y*w+x)*4;if(p[n]==0x55&&p[n+1]>20&&p[n+2]>20){if(!count){x0=x;y0=y;}count++;}}

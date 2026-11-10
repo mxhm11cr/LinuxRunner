@@ -17,6 +17,7 @@
 #include "fs/path.h"
 #include "fs/real.h"
 #include "fs/sock.h"
+#include "fs/unix_socket_path.h"
 #include "fs/poll.h"
 #include "debug.h"
 
@@ -29,6 +30,11 @@ extern volatile bool g_trace_syscalls;
 // represents a bounded reply queue. Enqueue whole snapshots atomically: a
 // full native datagram queue must not leave half a dump after a failed send.
 #include "fs/netlink.h"
+#include "fs/errqueue.h"
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#endif
+static void errqueue_note_send(struct fd *sock, int host_errno, const struct sockaddr *dst, const void *payload, size_t len);
 #include "fs/uevent.h"
 
 bool ish_netlink_stub_enabled(void) {
@@ -567,6 +573,23 @@ static void unix_abstract_release(struct unix_abstract *name) {
 
 const char *sock_tmp_prefix = "/tmp/ishsock";
 
+// Host AF_UNIX backing names must fit sun_path (104 bytes on Darwin) and the
+// app's temporary directory is already ~85 bytes on iOS. Use a compact
+// base-36 "<pid>.<id>" suffix (at most 14 bytes) instead of decimal digits.
+static size_t base36(char *out, uint64_t value) {
+    char tmp[16]; size_t n = 0;
+    do { tmp[n++] = "0123456789abcdefghijklmnopqrstuvwxyz"[value % 36]; value /= 36; } while (value && n < sizeof(tmp));
+    for (size_t i = 0; i < n; i++) out[i] = tmp[n - 1 - i];
+    out[n] = '\0';
+    return n;
+}
+static int sock_host_name(char *buf, size_t size, uint32_t socket_id) {
+    char pid[16], id[16];
+    base36(pid, (uint64_t) getpid());
+    base36(id, socket_id);
+    return snprintf(buf, size, "%s%s.%s", sock_tmp_prefix, pid, id);
+}
+
 static int sockaddr_read_bind(addr_t sockaddr_addr, void *sockaddr, uint_t *sockaddr_len, struct fd *bind_fd) {
     // Make sure we can read things without overflowing buffers
     if (*sockaddr_len < 2)
@@ -616,8 +639,7 @@ static int sockaddr_read_bind(addr_t sockaddr_addr, void *sockaddr, uint_t *sock
             }
 
             struct sockaddr_un *real_addr_un = sockaddr;
-            int path_len = snprintf(real_addr_un->sun_path, sizeof(real_addr_un->sun_path),
-                                    "%s%d.%u", sock_tmp_prefix, getpid(), socket_id);
+            int path_len = sock_host_name(real_addr_un->sun_path, sizeof(real_addr_un->sun_path), socket_id);
             if (path_len < 0 || (size_t) path_len >= sizeof(real_addr_un->sun_path))
                 return _ENAMETOOLONG;
             // The call to real bind will fail if the backing socket already
@@ -1112,9 +1134,14 @@ static int_t sock_sendto(fd_t sock_fd, addr_t buffer_addr, dword_t len, dword_t 
     if (!handled) res = sendto(sock->real_fd, buffer, len, real_flags,
             sockaddr_addr ? (void *) &sockaddr : NULL, sockaddr_len);
     else if (res < 0) { free(buffer); return res; }
-    free(buffer);
-    if (res < 0)
+    if (res < 0) {
+        int saved = errno;
+        errqueue_note_send(sock, saved, sockaddr_addr ? (void *) &sockaddr : NULL, buffer, len);
+        free(buffer);
+        errno = saved;
         return errno_map();
+    }
+    free(buffer);
     return res;
 
 error:
@@ -1215,6 +1242,16 @@ int_t sys_recvfrom(fd_t sock_fd, addr_t buffer_addr, dword_t len, dword_t flags,
     if (uevent_socket(sock)) return uevent_recvfrom(sock, buffer_addr, len, flags, sockaddr_addr, sockaddr_len_addr);
     if (fd_is_netlink_stub(sock))
         return netlink_recvfrom(sock, buffer_addr, len, flags, sockaddr_addr, sockaddr_len_addr);
+    if (flags & MSG_ERRQUEUE_) {
+        // Linux: the queued datagram's payload, never blocking; no ancillary data here.
+        if (flags & MSG_PEEK_) return _EAGAIN;
+        struct ip_queued_error e;
+        int err = ip_errqueue_pop(sock, &e);
+        if (err < 0) return err;
+        size_t n = e.payload_len < len ? e.payload_len : len;
+        if (n && user_write(buffer_addr, e.payload, n)) return _EFAULT;
+        return (int_t) n;
+    }
     int real_flags = sock_flags_to_real(flags);
     if (real_flags < 0)
         return _EINVAL;
@@ -1395,11 +1432,36 @@ int_t sys_setsockopt(fd_t sock_fd, dword_t level, dword_t option, addr_t value_a
     // ICMP6_FILTER can only be set on real SOCK_RAW
     if (level == IPPROTO_ICMPV6 && option == ICMP6_FILTER_)
         goto out;
-    // IP_MTU_DISCOVER has no equivalent on Darwin
+    // IP_RECVERR on IPv4 datagram sockets: real ICMP errors via fs/errqueue.c.
+    if (level == IPPROTO_IP && option == IP_RECVERR_ && sock->socket.domain == AF_INET_ &&
+            sock->socket.type == SOCK_DGRAM_) {
+        int on = 0;
+        if (value_len >= sizeof(on)) memcpy(&on, value, sizeof(on));
+        else if (value_len >= 1) on = value[0];
+        else { ret = _EINVAL; goto out; }
+        ret = ip_errqueue_set(sock, on != 0);
+        goto out;
+    }
+    // IP_MTU_DISCOVER: Darwin has no per-socket PMTU mode, only the DF bit for
+    // datagram/raw sockets (IP_DONTFRAG). DO/PROBE/INTERFACE/OMIT set DF,
+    // DONT/WANT clear it (Darwin fragments locally like WANT). TCP always runs
+    // host path-MTU discovery, so the mode is recorded for getsockopt only.
     if (level == IPPROTO_IP && option == IP_MTU_DISCOVER_) {
-#ifdef __APPLE__
-        ret = _ENOPROTOOPT; goto out;
+        int mode;
+        if (value_len < sizeof(mode)) { ret = _EINVAL; goto out; }
+        memcpy(&mode, value, sizeof(mode));
+        if (mode < 0 || mode > 5) { ret = _EINVAL; goto out; }
+        if (sock->socket.domain != AF_INET_) { ret = _ENOPROTOOPT; goto out; }
+#if defined(__APPLE__) && defined(IP_DONTFRAG)
+        if (sock->socket.type != SOCK_STREAM_) {
+            int dontfrag = mode >= 2;
+            if (setsockopt(sock->real_fd, IPPROTO_IP, IP_DONTFRAG, &dontfrag, sizeof(dontfrag)) < 0) {
+                ret = errno_map(); goto out;
+            }
+        }
 #endif
+        sock->socket.ip_mtu_discover_plus1 = (uint8_t)(mode + 1);
+        goto out;
     }
     // TCP_CONGESTION also has no equivalent on Darwin
 #if defined(__APPLE__)
@@ -1465,6 +1527,16 @@ int_t sys_getsockopt(fd_t sock_fd, dword_t level, dword_t option, addr_t value_a
         lock(&peer_lock); enabled = sock->socket.unix_passcred; unlock(&peer_lock);
         value_len = buffer_len < sizeof enabled ? buffer_len : sizeof enabled;
         if (value_len) memcpy(value, &enabled, value_len);
+    } else if (level == IPPROTO_IP && option == IP_RECVERR_ && sock->socket.domain == AF_INET_ &&
+            sock->socket.type == SOCK_DGRAM_) {
+        int enabled = ip_errqueue_enabled(sock);
+        value_len = buffer_len < sizeof enabled ? buffer_len : sizeof enabled;
+        if (value_len) memcpy(value, &enabled, value_len);
+    } else if (level == IPPROTO_IP && option == IP_MTU_DISCOVER_ && sock->socket.domain == AF_INET_) {
+        uint8_t stored = sock->socket.ip_mtu_discover_plus1;
+        int mode = stored ? stored - 1 : 1; // IP_PMTUDISC_WANT
+        value_len = buffer_len < sizeof mode ? buffer_len : sizeof mode;
+        if (value_len) memcpy(value, &mode, value_len);
     } else if (level == SOL_SOCKET_ && (option == SO_DOMAIN_ || option == SO_TYPE_ || option == SO_PROTOCOL_)) {
         dword_t *value_p = (dword_t *) value;
         if (buffer_len != sizeof(*value_p)) {
@@ -1749,11 +1821,14 @@ static int ip_recv_control(const struct msghdr *msg, addr_t address, size_t capa
         if(c->cmsg_len<CMSG_LEN(0))return _EIO;
         int type=ip_control_type(c->cmsg_level,c->cmsg_type,true);if(type<0)continue;
         size_t payload=c->cmsg_len-CMSG_LEN(0), expected=ip_control_payload(c->cmsg_level,type);
+        // Darwin's IP_RECVTTL carries one byte; Linux's IP_TTL cmsg is an int.
+        int widened_ttl;const void *data=CMSG_DATA(c);
+        if(c->cmsg_level==IPPROTO_IP && type==IP_TTL_ && payload==1){widened_ttl=*(const uint8_t *)data;data=&widened_ttl;payload=sizeof widened_ttl;}
         if(payload!=expected && !(c->cmsg_level==IPPROTO_IP && type==IP_TOS_ && payload==1))continue;
         struct cmsghdr_guest header={.len=sizeof header+payload,.level=c->cmsg_level,.type=type};
         if(!address || capacity-used<sizeof header || sizeof header+payload>sizeof guest-used){*truncated=true;break;}
         size_t copied=sizeof header+payload;if(copied>capacity-used){copied=capacity-used;*truncated=true;}
-        header.len=copied;memcpy(guest+used,&header,sizeof header);memcpy(guest+used+sizeof header,CMSG_DATA(c),copied-sizeof header);
+        header.len=copied;memcpy(guest+used,&header,sizeof header);memcpy(guest+used+sizeof header,data,copied-sizeof header);
         size_t aligned=(copied+sizeof(header.len)-1)&~(sizeof(header.len)-1);
         used+=aligned<=capacity-used?aligned:copied;
         if(*truncated)break;
@@ -2089,6 +2164,9 @@ static int_t sock_sendmsg(struct fd *sock, addr_t msghdr_addr, int_t flags) {
         if (err < 0)
             goto out_free_scm;
     } else if (err < 0) {
+        int saved = errno;
+        if (msg.msg_iovlen) errqueue_note_send(sock, saved, msg.msg_name, msg.msg_iov[0].iov_base, msg.msg_iov[0].iov_len);
+        errno = saved;
         err = errno_map();
         goto out_free_scm;
     }
@@ -2128,10 +2206,111 @@ int_t sys_sendmsg(fd_t sock_fd, addr_t msghdr_addr, int_t flags) {
     return result;
 }
 
+// A datagram send failed with a local error the guest asked to see through
+// IP_RECVERR (Linux ip_local_error): record EMSGSIZE with the path MTU.
+static void errqueue_note_send(struct fd *sock, int host_errno, const struct sockaddr *dst,
+                               const void *payload, size_t len) {
+    if (host_errno != EMSGSIZE || !ip_errqueue_enabled(sock)) return;
+    struct sockaddr_in to = {0};
+    if (dst && dst->sa_family == AF_INET) {
+        memcpy(&to, dst, sizeof(to));
+    } else {
+        socklen_t to_len = sizeof(to);
+        if (getpeername(sock->real_fd, (struct sockaddr *) &to, &to_len) < 0 || to.sin_family != AF_INET) return;
+    }
+    // Darwin refuses a datagram above the interface MTU (with DF), the socket
+    // send buffer or net.inet.udp.maxdgram. Report the smallest real limit as
+    // an IP-level size (+28 for the IPv4 and UDP headers), as Linux reports MTU.
+    uint32_t limit = ip_errqueue_route_mtu(&to);
+    int sndbuf = 0; socklen_t sndbuf_len = sizeof(sndbuf);
+    if (getsockopt(sock->real_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, &sndbuf_len) == 0 && sndbuf > 0 &&
+            (!limit || (uint32_t) sndbuf + 28 < limit))
+        limit = (uint32_t) sndbuf + 28;
+#ifdef __APPLE__
+    int maxdgram = 0; size_t maxdgram_len = sizeof(maxdgram);
+    if (sysctlbyname("net.inet.udp.maxdgram", &maxdgram, &maxdgram_len, NULL, 0) == 0 && maxdgram > 0 &&
+            (!limit || (uint32_t) maxdgram + 28 < limit))
+        limit = (uint32_t) maxdgram + 28;
+#endif
+    // A limit at or above what just failed would make the guest retry forever.
+    if (limit && limit >= len + 28) limit = 0;
+    ip_errqueue_local(sock, -_EMSGSIZE, limit, &to, payload, len);
+}
+
+// recvmsg(MSG_ERRQUEUE): never blocks (Linux returns EAGAIN for an empty
+// queue). Delivers the quoted payload, msg_name = original destination and
+// an IP_RECVERR control message (sock_extended_err + offender), plus IP_TTL
+// of the ICMP packet when IP_RECVTTL is enabled.
+static int_t errqueue_recvmsg(struct fd *sock, addr_t msghdr_addr, int_t flags) {
+#ifdef GUEST_ARM64
+    if (flags & ~(MSG_ERRQUEUE_ | MSG_DONTWAIT_ | MSG_PEEK_ | MSG_TRUNC_ | 0x40000000)) return _EINVAL;
+    struct msghdr64_ m;
+    if (user_get(msghdr_addr, m)) return _EFAULT;
+    if (m.msg_iovlen > 1024) return _EMSGSIZE;
+    struct ip_queued_error e;
+    if (flags & MSG_PEEK_) return _EAGAIN; // peeking the error queue is not supported here
+    int err = ip_errqueue_pop(sock, &e);
+    if (err < 0) return err;
+    // payload into the iovecs
+    size_t copied = 0;
+    for (uint64_t i = 0; i < m.msg_iovlen && copied < e.payload_len; i++) {
+        struct iovec64_ v;
+        if (user_get(m.msg_iov + i * sizeof(v), v)) return _EFAULT;
+        size_t chunk = e.payload_len - copied < v.len ? e.payload_len - copied : (size_t) v.len;
+        if (chunk && user_write(v.base, e.payload + copied, chunk)) return _EFAULT;
+        copied += chunk;
+    }
+    int32_t out_flags = MSG_ERRQUEUE_;
+    if (copied < e.payload_len) out_flags |= MSG_TRUNC_;
+    // msg_name: original destination
+    if (m.msg_name && m.msg_namelen) {
+        struct { uint16_t family, port; uint32_t addr; uint8_t zero[8]; } name = {2, e.dst_port, e.dst.s_addr, {0}};
+        uint32_t n = m.msg_namelen < sizeof(name) ? m.msg_namelen : sizeof(name);
+        if (user_write(m.msg_name, &name, n)) return _EFAULT;
+        m.msg_namelen = sizeof(name);
+    } else {
+        m.msg_namelen = 0;
+    }
+    // control messages
+    uint8_t control[128] = {0};
+    size_t used = 0;
+    struct { uint32_t ee_errno; uint8_t origin, type, code, pad; uint32_t info, data; } ee = {
+        e.ee_errno, e.origin, e.type, e.code, 0, e.info, 0};
+    struct { uint16_t family, port; uint32_t addr; uint8_t zero[8]; } offender = {
+        e.has_offender ? 2 : 0, 0, e.has_offender ? e.offender.s_addr : 0, {0}};
+    struct cmsghdr64_ h = {16 + sizeof(ee) + sizeof(offender), 0 /* SOL_IP */, IP_RECVERR_};
+    memcpy(control, &h, 16); memcpy(control + 16, &ee, sizeof(ee)); memcpy(control + 16 + sizeof(ee), &offender, sizeof(offender));
+    used = (h.len + 7) & ~(size_t) 7;
+    int recvttl = 0; socklen_t recvttl_len = sizeof(recvttl);
+    if (e.origin == 2 && getsockopt(sock->real_fd, IPPROTO_IP, IP_RECVTTL, &recvttl, &recvttl_len) == 0 && recvttl) {
+        int32_t ttl = e.ttl;
+        struct cmsghdr64_ t = {16 + sizeof(ttl), 0, IP_TTL_};
+        memcpy(control + used, &t, 16); memcpy(control + used + 16, &ttl, sizeof(ttl));
+        used += (t.len + 7) & ~(size_t) 7;
+    }
+    if (m.msg_controllen < used) {
+        out_flags |= MSG_CTRUNC_;
+        used = m.msg_controllen >= 16 + sizeof(ee) + sizeof(offender) ? ((16 + sizeof(ee) + sizeof(offender) + 7) & ~(size_t) 7) : 0;
+        if (used > m.msg_controllen) used = 0;
+    }
+    if (used && m.msg_control && user_write(m.msg_control, control, used)) return _EFAULT;
+    m.msg_controllen = used;
+    m.msg_flags = out_flags;
+    if (user_put(msghdr_addr, m)) return _EFAULT;
+    return (flags & MSG_TRUNC_) ? (int_t) e.payload_len : (int_t) copied;
+#else
+    (void) sock; (void) msghdr_addr; (void) flags;
+    return _EAGAIN;
+#endif
+}
+
 static int_t sock_recvmsg(struct fd *sock, addr_t msghdr_addr, int_t flags) {
     if (uevent_socket(sock)) return uevent_recvmsg(sock, msghdr_addr, flags);
     if (fd_is_netlink_stub(sock))
         return netlink_stub_recvmsg(sock, msghdr_addr, flags);
+    // Darwin has no MSG_ERRQUEUE; never pass it on as an ordinary (blocking) read.
+    if (flags & MSG_ERRQUEUE_)
+        return errqueue_recvmsg(sock, msghdr_addr, flags);
 
     // Read the guest msghdr struct into our internal 32-bit representation
     struct msghdr_ msg_fake;
@@ -2620,6 +2799,7 @@ static int sock_close(struct fd *fd) {
         close(fd->socket.netlink_peer_fd);
     }
 
+    ip_errqueue_free(fd);
     sockrestart_end_listen(fd);
     // FIXME next 3 lines should go in a function like release_unix_names
     inode_release_if_exist(fd->socket.unix_name_inode);
@@ -2731,6 +2911,7 @@ static int socket_ioctl(struct fd *fd,int cmd,void *arg) {
 
 static int sock_poll(struct fd *fd) {
     int events = realfs_poll(fd);
+    if (ip_errqueue_enabled(fd) && ip_errqueue_pending(fd)) events |= POLL_ERR;
     if (uevent_socket(fd)) return events | uevent_poll_error(fd);
     if (fd->socket.domain != AF_LOCAL_ ||
         (fd->socket.type != SOCK_STREAM_ && fd->socket.type != SOCK_SEQPACKET_)) return events;

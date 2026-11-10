@@ -365,7 +365,27 @@ int generic_utime(struct fd *at, const char *path_raw, struct timespec atime, st
     struct mount *mount = find_mount_and_trim_path(path);
     err = _EPERM;
     if (mount->fs->utime)
-        err = mount->fs->utime(mount, path, atime, mtime);
+        err = mount->fs->utime(mount, path, atime, mtime, follow_links);
+    mount_release(mount);
+    return err;
+}
+
+// Set the times of an open file (utimensat(fd, NULL), futimens, AT_EMPTY_PATH).
+// Filesystems with a futime op act on the descriptor; others fall back to the
+// descriptor's current path without walking it again as a directory base.
+int generic_futime(struct fd *fd, struct timespec atime, struct timespec mtime) {
+    if (fd->mount == NULL)
+        return _EPERM; // pipes, sockets and other anonymous fds
+    if (fd->mount->fs->futime)
+        return fd->mount->fs->futime(fd, atime, mtime);
+    if (fd->mount->fs->utime == NULL)
+        return _EPERM;
+    char path[MAX_PATH];
+    int err = generic_getpath(fd, path);
+    if (err < 0)
+        return err;
+    struct mount *mount = find_mount_and_trim_path(path);
+    err = mount->fs->utime(mount, path, atime, mtime, false);
     mount_release(mount);
     return err;
 }

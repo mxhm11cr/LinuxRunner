@@ -18,7 +18,13 @@ lr_gpu_route() {
      *) export LR_GUI_GPU_ACTIVE=mesa; echo "GPU_ROUTING: requested=$lr_mode active=mesa reason=unknown-mode"; return 0;;
     esac
     lr_provider="$lr_support/liblinuxrunner-mesa-metal.so" lr_why=
-    grep -Eq '^ID="?debian"?$' /etc/os-release 2>/dev/null || lr_why=requires-debian-glibc
+    # Distributions whose own Mesa passed the bridge contract
+    # (gpu-mesa-metal-check.sh: GLX core context, Metal draws verified against
+    # Mesa, pixels/HDR/sRGB): Debian, Fedora, Arch Linux ARM, Kali (Build 902).
+    case "$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | tr -d '"')" in
+        debian|fedora|arch|archarm|kali) ;;
+        *) lr_why=distribution-not-yet-qualified;;
+    esac
     [ -n "$lr_why" ] || [ -r "$lr_provider" ] || lr_why=provider-missing-refresh-gui-support
     [ -n "$lr_why" ] || [ -c /dev/linuxrunner-gpu ] || lr_why=metal-device-node-missing
     [ -n "$lr_why" ] || { [ -r /dev/linuxrunner-gpu ] && [ -w /dev/linuxrunner-gpu ]; } || lr_why=metal-device-not-accessible-to-$(id -un)

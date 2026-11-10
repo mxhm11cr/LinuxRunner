@@ -21,10 +21,23 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
+		1C1100000000000000000C02 /* lr_zstd_decompress.c in Sources */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000C02; };
+		1C1100000000000000000C01 /* steamos_image.c in Sources */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000C01; };
+        1A13000000000000000000C1 /* CaptureCleanupUITests.m in Sources */ = {isa = PBXBuildFile; fileRef = 1A14000000000000000000C1; };
         1F5300000000000000000048 /* LinuxRunnerLaunch.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 1F5400000000000000000048; };
 		1C1100000000000000000004 /* DebianSupport.bundle */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000004; };
 		1C1100000000000000000003 /* DebianInstaller.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000003; };
 		1C1100000000000000000A01 /* ArchInstaller.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000A01; };
+		1C1100000000000000000F01 /* FedoraInstaller.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000F01; };
+		1C1100000000000000000F02 /* KaliInstaller.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000F02; };
+		1C1100000000000000000F06 /* BluetoothSerialView.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000F06; };
+		1C1100000000000000000F05 /* LongTaskCenter.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000F05; };
+		1C1100000000000000000F04 /* HomeComponents.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000F04; };
+		1C1100000000000000000F03 /* AppStoreView.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000F03; };
+		1C1100000000000000000B03 /* SteamOSSupport.bundle */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000B03; };
+		1C1100000000000000000B04 /* DistroLogos.bundle */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000B04; };
+		1C1100000000000000000B02 /* SteamOSInstaller.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000B02; };
+		1C1100000000000000000B01 /* SteamOSManifest.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000B01; };
 		1C1100000000000000000002 /* DebianBootstrap.c */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000002; };
 		AABBCCDD1122334455667701 /* netlink.c in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD1122334455667702 /* netlink.c */; };
 		0FC2383C2991FBA6004C09EC /* mmx.c in Sources */ = {isa = PBXBuildFile; fileRef = 0FC2383B2991FB82004C09EC /* mmx.c */; };
@@ -112,6 +125,10 @@
 		49FF844B2A06249F00850B7A /* ExceptionExfiltrator.m in Sources */ = {isa = PBXBuildFile; fileRef = 49FF844A2A06249F00850B7A /* ExceptionExfiltrator.m */; };
 		AA000020AF96D90D00FFB7A4 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = BB792B621F96D90D00FFB7A4 /* main.m */; };
 		AA000021AF96D90D00FFB7A4 /* LocationDevice.m in Sources */ = {isa = PBXBuildFile; fileRef = BB235533235D488400139E00 /* LocationDevice.m */; };
+		1C1100000000000000000F10 /* BLESerial.m in Sources */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000F10 /* BLESerial.m */; };
+		1C1100000000000000000F20 /* MIDISerial.m in Sources */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000F20 /* MIDISerial.m */; };
+		1C1100000000000000000F21 /* MIDISerial.m in Sources */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000F20 /* MIDISerial.m */; };
+		1C1100000000000000000F11 /* BLESerial.m in Sources */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000F10 /* BLESerial.m */; };
 		AA000022AF96D90D00FFB7A4 /* iOSFS.m in Sources */ = {isa = PBXBuildFile; fileRef = 408A2639236440F8008A4E81 /* iOSFS.m */; };
 		AA000023AF96D90D00FFB7A4 /* PasteboardDevice.m in Sources */ = {isa = PBXBuildFile; fileRef = 650B337322EA235C00B4C03E /* PasteboardDevice.m */; };
 		AA000031AF96D90D00FFB7A4 /* libarchive.a in Frameworks */ = {isa = PBXBuildFile; fileRef = BB10E5C8248DBAA1009C7A74 /* libarchive.a */; };
@@ -349,6 +366,7 @@
 		1A1100000000000000000003 /* RuntimeBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = 1A1200000000000000000003; };
 		1A1100000000000000000004 /* FileTransfer.c in Sources */ = {isa = PBXBuildFile; fileRef = 1A1200000000000000000004; };
 		1A1300000000000000000001 /* LinuxRunnerUITests.m in Sources */ = {isa = PBXBuildFile; fileRef = 1A1400000000000000000001; };
+		1A13000000000000000000B1 /* ReferenceDistributionUITests.m in Sources */ = {isa = PBXBuildFile; fileRef = 1A14000000000000000000B1; };
 		1F5100000000000000000048 /* MetalFramebufferView.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F5200000000000000000048; };
 		1F51000000000000000000A1 /* AudioBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F52000000000000000000A1; };
 		1F51000000000000000000A4 /* PasswordHash.c in Sources */ = {isa = PBXBuildFile; fileRef = 1F52000000000000000000A4; };
@@ -552,10 +570,23 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		1C1200000000000000000C02 /* lr_zstd_decompress.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = deps/zstd/lr_zstd_decompress.c; sourceTree = SOURCE_ROOT; };
+		1C1200000000000000000C01 /* steamos_image.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = tools/steamos_image.c; sourceTree = SOURCE_ROOT; };
+        1A14000000000000000000C1 /* CaptureCleanupUITests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = app/UITests/CaptureCleanupUITests.m; sourceTree = SOURCE_ROOT; };
         1F5400000000000000000048 /* LinuxRunnerLaunch.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = app/LinuxRunner/LinuxRunnerLaunch.storyboard; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000004 /* DebianSupport.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = app/LinuxRunner/DebianSupport.bundle; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000003 /* DebianInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/DebianInstaller.swift; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000A01 /* ArchInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/ArchInstaller.swift; sourceTree = SOURCE_ROOT; };
+		1C1200000000000000000F01 /* FedoraInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/FedoraInstaller.swift; sourceTree = SOURCE_ROOT; };
+		1C1200000000000000000F02 /* KaliInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/KaliInstaller.swift; sourceTree = SOURCE_ROOT; };
+		1C1200000000000000000F06 /* BluetoothSerialView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/BluetoothSerialView.swift; sourceTree = SOURCE_ROOT; };
+		1C1200000000000000000F05 /* LongTaskCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/LongTaskCenter.swift; sourceTree = SOURCE_ROOT; };
+		1C1200000000000000000F04 /* HomeComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/HomeComponents.swift; sourceTree = SOURCE_ROOT; };
+		1C1200000000000000000F03 /* AppStoreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/AppStoreView.swift; sourceTree = SOURCE_ROOT; };
+		1C1200000000000000000B03 /* SteamOSSupport.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = app/LinuxRunner/SteamOSSupport.bundle; sourceTree = SOURCE_ROOT; };
+		1C1200000000000000000B04 /* DistroLogos.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = app/LinuxRunner/DistroLogos.bundle; sourceTree = SOURCE_ROOT; };
+		1C1200000000000000000B02 /* SteamOSInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/SteamOSInstaller.swift; sourceTree = SOURCE_ROOT; };
+		1C1200000000000000000B01 /* SteamOSManifest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/SteamOSManifest.swift; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000002 /* DebianBootstrap.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = app/LinuxRunner/DebianBootstrap.c; sourceTree = SOURCE_ROOT; };
 		AABBCCDD1122334455667702 /* netlink.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = netlink.c; sourceTree = "<group>"; };
 		0FC2383B2991FB82004C09EC /* mmx.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = mmx.c; sourceTree = "<group>"; };
@@ -773,6 +804,10 @@
 		BB21A16F2689041500BD19B4 /* libfakefs.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libfakefs.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		BB21A18C268951CA00BD19B4 /* NotLinux.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = NotLinux.xcconfig; sourceTree = "<group>"; };
 		BB235533235D488400139E00 /* LocationDevice.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = LocationDevice.m; sourceTree = "<group>"; };
+		1C1200000000000000000F10 /* BLESerial.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = BLESerial.m; sourceTree = "<group>"; };
+		1C1200000000000000000F20 /* MIDISerial.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MIDISerial.m; sourceTree = "<group>"; };
+		1C1200000000000000000F22 /* MIDISerial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MIDISerial.h; sourceTree = "<group>"; };
+		1C1200000000000000000F12 /* BLESerial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BLESerial.h; sourceTree = "<group>"; };
 		BB235535235D489400139E00 /* LocationDevice.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = LocationDevice.h; sourceTree = "<group>"; };
 		BB235536235D49B300139E00 /* CoreLocation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreLocation.framework; path = System/Library/Frameworks/CoreLocation.framework; sourceTree = SDKROOT; };
 		BB23F58B231E1D1400585522 /* ScrollbarView.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ScrollbarView.h; sourceTree = "<group>"; };
@@ -902,6 +937,7 @@
 		1A1200000000000000000003 /* RuntimeBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = app/LinuxRunner/RuntimeBridge.m; sourceTree = SOURCE_ROOT; };
 		1A1200000000000000000004 /* FileTransfer.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = app/LinuxRunner/FileTransfer.c; sourceTree = SOURCE_ROOT; };
 		1A1400000000000000000001 /* LinuxRunnerUITests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = app/UITests/LinuxRunnerUITests.m; sourceTree = SOURCE_ROOT; };
+		1A14000000000000000000B1 /* ReferenceDistributionUITests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = app/UITests/ReferenceDistributionUITests.m; sourceTree = SOURCE_ROOT; };
 		1F5200000000000000000048 /* MetalFramebufferView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = app/LinuxRunner/MetalFramebufferView.m; sourceTree = SOURCE_ROOT; };
 		1F52000000000000000000A1 /* AudioBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = app/LinuxRunner/AudioBridge.m; sourceTree = SOURCE_ROOT; };
 		1F52000000000000000000A2 /* AudioBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = app/LinuxRunner/AudioBridge.h; sourceTree = SOURCE_ROOT; };
@@ -1122,6 +1158,10 @@
 				BBBF9CBB27C217A6002A30F7 /* PasteboardDeviceLinux.c */,
 				BB235535235D489400139E00 /* LocationDevice.h */,
 				BB235533235D488400139E00 /* LocationDevice.m */,
+				1C1200000000000000000F10 /* BLESerial.m */,
+				1C1200000000000000000F12 /* BLESerial.h */,
+				1C1200000000000000000F20 /* MIDISerial.m */,
+				1C1200000000000000000F22 /* MIDISerial.h */,
 				408A263B23644102008A4E81 /* iOSFS.h */,
 				408A2639236440F8008A4E81 /* iOSFS.m */,
 			);
@@ -1194,6 +1234,7 @@
 			isa = PBXGroup;
 			children = (
 				1A1400000000000000000001,
+                1A14000000000000000000C1,
 				1A1200000000000000000004 /* FileTransfer.c */,
 				1F5200000000000000000048 /* MetalFramebufferView.m */,
 				1F52000000000000000000A1 /* AudioBridge.m */,
@@ -1214,7 +1255,19 @@
 				1C1200000000000000000004 /* DebianSupport.bundle */,
 				1C1200000000000000000003 /* DebianInstaller.swift */,
 				1C1200000000000000000A01 /* ArchInstaller.swift */,
+				1C1200000000000000000F01 /* FedoraInstaller.swift */,
+				1C1200000000000000000F02 /* KaliInstaller.swift */,
+				1C1200000000000000000F06 /* BluetoothSerialView.swift */,
+				1C1200000000000000000F05 /* LongTaskCenter.swift */,
+				1C1200000000000000000F04 /* HomeComponents.swift */,
+				1C1200000000000000000F03 /* AppStoreView.swift */,
+				1C1200000000000000000B03 /* SteamOSSupport.bundle */,
+				1C1200000000000000000B04 /* DistroLogos.bundle */,
+				1C1200000000000000000B02 /* SteamOSInstaller.swift */,
+				1C1200000000000000000B01 /* SteamOSManifest.swift */,
 				1C1200000000000000000002 /* DebianBootstrap.c */,
+				1C1200000000000000000C02 /* lr_zstd_decompress.c */,
+				1C1200000000000000000C01 /* steamos_image.c */,
 				BB792B521F96D90D00FFB7A4 /* app */,
 				BB9C7B88240A343400F5D4F0 /* iSH.xcconfig */,
 				BB4A53931FAA393B00A72ACE /* most of the code */,
@@ -2044,6 +2097,8 @@
 				1F5300000000000000000048 /* LinuxRunnerLaunch.storyboard in Resources */,
 				1B1100000000000000000004 /* GUISupport.bundle in Resources */,
 				1C1100000000000000000004 /* DebianSupport.bundle */,
+				1C1100000000000000000B03 /* SteamOSSupport.bundle */,
+				1C1100000000000000000B04 /* DistroLogos.bundle */,
 				CC000002AF96D90D00FFB7A4 /* RootfsPatch.bundle in Resources */,
 				JB000001AF96D90D00FFB7A4 /* JetBrainsMonoNerdFontMono-Regular.ttf in Resources */,
 				JB000002AF96D90D00FFB7A4 /* JetBrainsMonoNerdFontMono-Bold.ttf in Resources */,
@@ -2596,9 +2651,19 @@
                 1C1100000000000000000001 /* Diagnostics.swift in Sources */,
 				1C1100000000000000000003 /* DebianInstaller.swift */,
 				1C1100000000000000000A01 /* ArchInstaller.swift */,
+				1C1100000000000000000F01 /* FedoraInstaller.swift */,
+				1C1100000000000000000F02 /* KaliInstaller.swift */,
+				1C1100000000000000000F06 /* BluetoothSerialView.swift */,
+				1C1100000000000000000F05 /* LongTaskCenter.swift */,
+				1C1100000000000000000F04 /* HomeComponents.swift */,
+				1C1100000000000000000F03 /* AppStoreView.swift */,
+				1C1100000000000000000B02 /* SteamOSInstaller.swift */,
+				1C1100000000000000000B01 /* SteamOSManifest.swift */,
 				1C1100000000000000000002 /* DebianBootstrap.c */,
 				AA000020AF96D90D00FFB7A4 /* main.m in Sources */,
 				AA000021AF96D90D00FFB7A4 /* LocationDevice.m in Sources */,
+				1C1100000000000000000F10 /* BLESerial.m in Sources */,
+				1C1100000000000000000F20 /* MIDISerial.m in Sources */,
 				AA000022AF96D90D00FFB7A4 /* iOSFS.m in Sources */,
 				AA000023AF96D90D00FFB7A4 /* PasteboardDevice.m in Sources */,
 				AA000100AF96D90D00FFB7A4 /* AboutAppearanceViewController.m in Sources */,
@@ -2636,6 +2701,8 @@
 				AA00011FAF96D90D00FFB7A4 /* NSObject+SaneKVO.m in Sources */,
 				AA000120AF96D90D00FFB7A4 /* ThemesViewController.m in Sources */,
 				AA000121AF96D90D00FFB7A4 /* fakefs.c in Sources */,
+				1C1100000000000000000C02 /* lr_zstd_decompress.c in Sources */,
+				1C1100000000000000000C01 /* steamos_image.c in Sources */,
 				AA000122AF96D90D00FFB7A4 /* ArrowBarButton.m in Sources */,
 				AA000130AF96D90D00FFB7A4 /* DebugServer.c in Sources */,
 			);
@@ -2654,6 +2721,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				BB28C7BB268975AE00BDC834 /* LocationDevice.m in Sources */,
+				1C1100000000000000000F11 /* BLESerial.m in Sources */,
+				1C1100000000000000000F21 /* MIDISerial.m in Sources */,
 				BB28C7BA268975AA00BDC834 /* iOSFS.m in Sources */,
 				BB28C7BC268975B000BDC834 /* PasteboardDevice.m in Sources */,
 			);
@@ -2664,6 +2733,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				1A1300000000000000000001,
+				1A13000000000000000000B1,
+                1A13000000000000000000C1,
 				BB41591F255EF9E300E0950C /* UITests.m in Sources */,
 				BBD23D5F258DA450003DCB40 /* Screenshots.m in Sources */,
 				BBD23D77258DA4BC003DCB40 /* SnapshotHelper.swift in Sources */,

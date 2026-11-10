@@ -7,6 +7,7 @@
 #include "fs/tty.h"
 #include "kernel/mm.h"
 #include "kernel/ptrace.h"
+#include "kernel/ipc.h"
 
 // Architecture-specific register access for fork/clone
 #if defined(GUEST_ARM64)
@@ -163,6 +164,8 @@ static int copy_task(struct task *task, dword_t flags, addr_t stack, addr_t ptid
     task->pdeath_signal = 0;   // PR_SET_PDEATHSIG is not inherited
 
     // remember to do CLONE_SYSVSEM
+    if (flags & CLONE_THREAD_)
+        ipc_capture_shm_inherit_thread(task);
     return 0;
 
 fail_free_sighand:
@@ -224,6 +227,7 @@ static dword_t clone_task(dword_t flags, addr_t stack, addr_t ptid, addr_t tls, 
         userns_release(task->userns);
         task->userns = ns;
         task->cap_effective = task->cap_permitted = CAP_FULL_SET_;
+        task->cap_bounding = CAP_FULL_SET_;
     }
     if (new_pidns || current->pidns) {
         lock(&pids_lock);
@@ -408,6 +412,7 @@ int_t sys_unshare(dword_t flags) {
     struct user_ns *old = current->userns;
     current->userns = ns;
     current->cap_effective = current->cap_permitted = CAP_FULL_SET_;
+    current->cap_bounding = CAP_FULL_SET_;
     userns_release(old);
     return 0;
 }

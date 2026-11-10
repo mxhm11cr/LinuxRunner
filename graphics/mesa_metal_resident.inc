@@ -628,10 +628,14 @@ static void bridge_consider_retiring(struct bridge_context *c){
  struct resident_state *s=c->resident;
  uint64_t metal=s->draws-metal_at,mesa=s->mesa_draws-mesa_at,wb=(s->writebacks-writebacks_at)+(s->uploads-uploads_at);
  metal_at=s->draws;mesa_at=s->mesa_draws;writebacks_at=s->writebacks;uploads_at=s->uploads;
- if(mesa*5>metal+mesa&&wb>2*30){   // wb: Metal<->Mesa copies (write-backs and re-uploads)
+ // Also: no draw reached Metal in 30 frames while every frame still paid a
+ // write-back (legacy GL such as glBegin/display lists is not routed through
+ // the bridge; only its clears were): pure overhead, so retire.
+ int idle=metal==0&&wb>=30;
+ if((mesa*5>metal+mesa&&wb>2*30)||idle){   // wb: Metal<->Mesa copies (write-backs and re-uploads)
   resident_sync(c,0,0);resident_unbind(c);atomic_store(&bridge_retired,1);
   {struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);atomic_store(&bridge_retired_ns,(uint64_t)t.tv_sec*1000000000ull+(uint64_t)t.tv_nsec);atomic_store(&bridge_retired_frames,atomic_load(&stats_frames));}
-  note("bridge_retired frames=%llu metal_draws=%llu mesa_draws=%llu transfers=%llu reason=mixed-rendering-slower-than-mesa",(unsigned long long)frames,(unsigned long long)metal,(unsigned long long)mesa,(unsigned long long)wb);
+  note("bridge_retired frames=%llu metal_draws=%llu mesa_draws=%llu transfers=%llu reason=%s",(unsigned long long)frames,(unsigned long long)metal,(unsigned long long)mesa,(unsigned long long)wb,idle?"no-metal-draws":"mixed-rendering-slower-than-mesa");
   report_reason("bridge-retired");
  }
 }

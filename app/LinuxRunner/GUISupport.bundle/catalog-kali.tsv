@@ -1,0 +1,11 @@
+# Kali additions to the Debian catalog.
+metasploit-framework	Metasploit	Security	0
+burpsuite	Burp Suite	Security	1
+sqlmap	sqlmap	Security	0
+hydra	Hydra	Security	0
+john	John the Ripper	Security	0
+aircrack-ng	Aircrack-ng	Security	0
+gobuster	Gobuster	Security	0
+nikto	Nikto	Security	0
+zaproxy	OWASP ZAP	Security	1
+kali-linux-default	Kali standard tools	Security	0

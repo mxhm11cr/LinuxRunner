@@ -9,6 +9,7 @@ extern const struct fd_ops socket_fdops;
 #include "kernel/fs.h"
 #include "fs/fd.h"
 #include "fs/poll.h"
+#include "fs/errqueue.h"
 #include "kernel/calls.h"
 extern volatile bool g_trace_syscalls;
 
@@ -22,7 +23,8 @@ static int native_poll_set(struct pollfd_ *set, struct fd **files, unsigned coun
         files[i]->ops->poll!=realfs_poll && files[i]->ops!=&socket_fdops &&
         files[i]->ops!=&epoll_fdops)) return 0;
     *handled=true;
-    struct pollfd local[64], *host=count<=64?local:calloc(count,sizeof(*host));
+    // Two host slots per entry: the socket and its IP_RECVERR ICMP companion.
+    struct pollfd local[128], *host=count<=64?local:calloc(count*2,sizeof(*host));
     if(!host)return _ENOMEM;
     struct timespec begin;clock_gettime(CLOCK_MONOTONIC,&begin);
     int result=0;
@@ -36,6 +38,13 @@ static int native_poll_set(struct pollfd_ *set, struct fd **files, unsigned coun
                 unsigned slot=0;while(slot<host_count && host[slot].fd!=files[i]->real_fd)slot++;
                 if(slot==host_count)host[host_count++]=(struct pollfd){.fd=files[i]->real_fd};
                 host[slot].events|=((set[i].events&POLL_READ)?POLLIN:0)|((set[i].events&POLL_WRITE)?POLLOUT:0)|((set[i].events&POLL_PRI)?POLLPRI:0);
+                // Linux reports POLLERR unrequested: wake for queued ICMP errors too.
+                int companion=ip_errqueue_host_fd(files[i]);
+                if(companion>=0){
+                    unsigned c=0;while(c<host_count && host[c].fd!=companion)c++;
+                    if(c==host_count)host[host_count++]=(struct pollfd){.fd=companion};
+                    host[c].events|=POLLIN;
+                }
             }
         }
         if(result)break;

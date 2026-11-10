@@ -9,9 +9,20 @@
 # visibility as in ANGLE's shared libEGL, and that object replaces it.
 #   angle-static-archive.py ANGLE_OUT_DIR OUTPUT.a
 import pathlib, re, shlex, subprocess, sys
+import importlib.util
 out_dir = pathlib.Path(sys.argv[1]).resolve(); target = pathlib.Path(sys.argv[2]).resolve()
-ninja = (out_dir / 'obj/libGLESv2_framework_shared_library.ninja').read_text()
-line = next(l for l in ninja.splitlines() if l.startswith('build obj/libGLESv2 obj/libGLESv2.TOC: solink '))
+# iOS emits a framework target; macOS emits libGLESv2.dylib. Both describe
+# the same library's link inputs and must work for host GPU qualification.
+ninja_files = [out_dir / 'obj' / name for name in
+               ('libGLESv2_framework_shared_library.ninja', 'libGLESv2.ninja')]
+ninja_file = next((p for p in ninja_files if p.is_file()), None)
+if ninja_file is None:
+    sys.exit('missing ANGLE libGLESv2 link rule')
+lines = [line for line in ninja_file.read_text().splitlines()
+         if line.startswith('build ') and ': solink ' in line]
+if len(lines) != 1:
+    sys.exit('ambiguous ANGLE libGLESv2 link rule')
+line = lines[0]
 inputs = line.split(': solink ', 1)[1].split(' | ')[0].split(' || ')[0].split()
 llvm_ar = out_dir.parent.parent / 'third_party/llvm-build/Release+Asserts/bin/llvm-ar'
 def expand(path):
@@ -34,6 +45,12 @@ for p in inputs + ['obj/libEGL_static.a']:
     # the app links its own compiler runtime
     if p.endswith(('.o', '.a')) and 'libclang_rt' not in p:
         members += [str(exported) if m.endswith('/' + egl_object) else m for m in expand(out_dir / p)]
+spec = importlib.util.spec_from_file_location('angle_zero_border', pathlib.Path(__file__).with_name('angle-zero-border.py'))
+zero_border = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(zero_border)
+replacements = zero_border.build(out_dir, members)
+assert all(members.count(original) == 1 for original in replacements), 'unexpected ANGLE zero-border inputs'
+members = [replacements.get(member, member) for member in members]
 missing = [m for m in members if not pathlib.Path(m).exists()]
 if missing: sys.exit('missing inputs: ' + ' '.join(missing[:5]))
 target.parent.mkdir(parents=True, exist_ok=True)

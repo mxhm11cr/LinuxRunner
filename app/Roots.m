@@ -389,6 +389,31 @@ static void root_stream_progress_callback(void *cookie, double progress, const c
     return YES;
 }
 
+#ifdef LINUXRUNNER
+- (BOOL)stageRemovalOfRoot:(NSString *)name extraDirectories:(NSArray<NSURL *> *)directories destination:(NSURL *)destination error:(NSError **)error {
+    NSAssert(NSThread.isMainThread, @"Root removal is serialized on the main thread");
+    if ([name isEqual:self.defaultRoot] || ![self.roots containsObject:name]) {
+        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EBUSY userInfo:@{NSLocalizedDescriptionKey:@"Select another environment before removing this one."}];
+        return NO;
+    }
+    NSFileManager *files = NSFileManager.defaultManager;
+    if (![files createDirectoryAtURL:destination withIntermediateDirectories:YES attributes:nil error:error]) return NO;
+    NSArray<NSURL *> *sources = [@[[self rootUrl:name]] arrayByAddingObjectsFromArray:directories];
+    NSMutableArray<NSArray<NSURL *> *> *moved = [NSMutableArray new];
+    for (NSURL *source in sources) {
+        if (![files attributesOfItemAtPath:source.path error:nil]) continue;
+        NSURL *target = [destination URLByAppendingPathComponent:[NSString stringWithFormat:@"%lu",(unsigned long)moved.count]];
+        if (![files moveItemAtURL:source toURL:target error:error]) {
+            for (NSArray<NSURL *> *pair in moved.reverseObjectEnumerator) [files moveItemAtURL:pair[1] toURL:pair[0] error:nil];
+            return NO;
+        }
+        [moved addObject:@[source,target]];
+    }
+    [[self mutableOrderedSetValueForKey:@"roots"] removeObject:name];
+    return YES;
+}
+#endif
+
 - (BOOL)destroyRootNamed:(NSString *)name error:(NSError **)error {
 #ifdef LINUXRUNNER
     if (!validRunnerRoot(name) || ![self.roots containsObject:name]) {

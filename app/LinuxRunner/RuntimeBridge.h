@@ -13,6 +13,7 @@ void LRSetDatalessMaterialization(void);
 + (NSDictionary *)applicationDiscoveryContextContract;
 + (NSDictionary *)networkABIContract;
 + (void)runDesktopFilesContract:(void (^)(NSDictionary *result))completion;
++ (void)runEnvironmentRemovalContract:(void (^)(NSDictionary *result))completion;
 #endif
 + (UIViewController *)guiController;
 + (UIViewController *)desktopController;
@@ -99,6 +100,7 @@ void LRSetDatalessMaterialization(void);
 + (BOOL)activateJIT:(NSString * _Nullable * _Nullable)detail;
 + (void)prepareExecutionBackendAtLaunch;
 + (void)createEnvironment:(NSString *)root completion:(void (^)(NSError * _Nullable))completion;
++ (void)removeEnvironment:(NSString *)root completion:(void (^)(NSError * _Nullable))completion;
 // The mounted root stays in use until app relaunch, even after guest init exits.
 + (nullable NSString *)environmentDeletionUnavailableReason:(NSString *)root;
 + (void)deleteEnvironment:(NSString *)root completion:(void (^)(NSError * _Nullable))completion;

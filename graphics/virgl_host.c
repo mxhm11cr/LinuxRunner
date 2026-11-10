@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <virgl/virglrenderer.h>
 #include "graphics/virgl_backend.h"
+#include "graphics/host_gpu_job.h"
 #include "graphics/virgl_caps.h"
 
 // Private bridge for the transparent-zero border used by desktop samplers.
@@ -77,8 +78,7 @@ static bool job_done, ready, init_ok;
 static char status[192];
 const char *lr_virgl_host_status(void) { return status; }
 
-static void *gpu_main(void *unused) {
-    (void) unused;
+static void initialize_gpu(void *result) {
 #ifdef LINUXRUNNER_ANGLE_ZERO_BORDER
     lr_vrend_set_zero_border_sampler(LinuxRunnerANGLESetSamplerZeroBorder);
 #endif
@@ -119,6 +119,18 @@ static void *gpu_main(void *unused) {
     else if (count != 1) snprintf(status, sizeof status, "no RGBA8 GLES 3 configuration");
     else if (root == EGL_NO_CONTEXT) snprintf(status, sizeof status, "could not create a GLES 3 context (error %#x)", eglGetError());
     else snprintf(status, sizeof status, "virglrenderer did not initialise");
+    *(bool *)result=ok;
+}
+struct gpu_operation { void (*run)(void *); void *arg; };
+static void run_gpu_operation(void *value) {
+    struct gpu_operation *operation=value;
+    virgl_renderer_force_ctx_0();
+    operation->run(operation->arg);
+}
+static void *gpu_main(void *unused) {
+    (void)unused;
+    bool ok=false;
+    lr_host_gpu_job(initialize_gpu,&ok);
     pthread_mutex_lock(&slot_lock);
     init_ok = ok; ready = true;
     pthread_cond_broadcast(&slot_cond);
@@ -126,12 +138,8 @@ static void *gpu_main(void *unused) {
         while (!job) pthread_cond_wait(&slot_cond, &slot_lock);
         void (*run)(void *) = job; void *arg = job_arg;
         pthread_mutex_unlock(&slot_lock);
-        // Context creation and global resource operations can change actual
-        // GL bindings without going through virglrenderer's guest-context
-        // cache. Start every embedder operation on its host context so later
-        // submissions switch to the right guest context and retain its FBOs.
-        virgl_renderer_force_ctx_0();
-        run(arg);
+        struct gpu_operation operation={run,arg};
+        lr_host_gpu_job(run_gpu_operation,&operation);
         pthread_mutex_lock(&slot_lock);
         job = NULL; job_done = true;
         pthread_cond_broadcast(&slot_cond);

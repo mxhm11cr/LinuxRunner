@@ -24,7 +24,7 @@
     },
     {
       "name": "browser-launch.sh",
-      "sha256": "dfe7f6cdf71d6d9d28ac220c9f51afdf4bb00bda6c317f08a472c43d11a9e625",
+      "sha256": "a6781fbd61539675552579d5253181f1539d78b9aa933fbdb860f80b96c5a9dc",
       "mode": "0755"
     },
     {
@@ -79,7 +79,7 @@
     },
     {
       "name": "desktop-components.sh",
-      "sha256": "8d8ec3eefd8dd794fd26170b6795021b069d8fd83f683852241dacc91ef9d16f",
+      "sha256": "49ec1df76d856927a0314bca34445e2378e2ea2420e2c77ce7d8e26defd9e6c4",
       "mode": "0755"
     },
     {
@@ -89,7 +89,7 @@
     },
     {
       "name": "desktop-env.sh",
-      "sha256": "99dfeee24553dcb7dbcbb4ec13bdebf2c5483f7aeafb6bc2785c0a803894109d",
+      "sha256": "b1b47333c76b513062c370d6eb0f00817aaa5d3f6a5e0674aa07ae8577fa930e",
       "mode": "0755"
     },
     {
@@ -119,7 +119,7 @@
     },
     {
       "name": "desktop-profile.sh",
-      "sha256": "d151e12590c160f51c150c7895ec6883c7cc64aa66c8206e419b78705c57d943",
+      "sha256": "d2e988f19184b077e5ef9d5888ce71f3462844b5e96aeabf797f0b4cea3be134",
       "mode": "0755"
     },
     {
@@ -151,6 +151,16 @@
       "name": "desktop-xfce-panel.xml",
       "sha256": "990d74e43743c37e921c3ce393db7be625840c2aa6f303854a58e2798adfe942",
       "mode": "0644"
+    },
+    {
+      "name": "firefox-desktop.sh",
+      "sha256": "7160077a1f767026a66a339621f19b84801f40ef1872ea22deca61a617c40319",
+      "mode": "0755"
+    },
+    {
+      "name": "firefox-launch.sh",
+      "sha256": "f6c50e75cd40284a10a17b22fbc98107003f3f79a119d5eb8644c9d23cc92181",
+      "mode": "0755"
     },
     {
       "name": "firefox-test.html",
@@ -324,7 +334,7 @@
     },
     {
       "name": "gui-test.c",
-      "sha256": "bbbd75b823bece4d2d61fef34cfb2c4153be91a96e7d9a5835832405a00f28e1",
+      "sha256": "718246c8760954ebce422a398b7fb246c7198de256063cb92014c757d3b05109",
       "mode": "0644"
     },
     {
@@ -374,7 +384,7 @@
     },
     {
       "name": "launch.sh",
-      "sha256": "4bd0ee1a432ca4e10d326387b32f191bc6cdbf2e9c64947dfbf0cde6cf1b76f4",
+      "sha256": "c2a92240002467294702c7816a8d5c97c4343532031c7817b66b81544c069b5d",
       "mode": "0755"
     },
     {
@@ -419,7 +429,7 @@
     },
     {
       "name": "lr-kms-bridge.c",
-      "sha256": "9b1916f9c7efc4ba17623004f25457e9d2ed32d97a6eaff7e75ee2c0dfcbdd7f",
+      "sha256": "b0d1457901856f5af7f176469973d86b58fbc6599087f37b228f498056507168",
       "mode": "0644"
     },
     {
@@ -478,6 +488,11 @@
       "mode": "0755"
     },
     {
+      "name": "publish-wayland-env.sh",
+      "sha256": "d6108031123876deb64bb0a1b5c5c0eaffb37c0e32f848df2e5a14306977b059",
+      "mode": "0755"
+    },
+    {
       "name": "qt-test.cpp",
       "sha256": "8b3a261e13944164f60f2618dae78373f56eb1338d3f731bd43ed0e9c0b110cb",
       "mode": "0644"
@@ -489,7 +504,7 @@
     },
     {
       "name": "session.sh",
-      "sha256": "fe564dbb59d0e6daedf48ffc9a74f463badd095ef63f6377da104165dc1907be",
+      "sha256": "8eb70a6138959473f36363d7998ca2fb94ba29911a5aa19f53f21cb1b114810f",
       "mode": "0755"
     },
     {

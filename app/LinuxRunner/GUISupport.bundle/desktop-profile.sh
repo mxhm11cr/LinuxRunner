@@ -25,6 +25,10 @@ if [ "$distro" = steamos ]; then exec /bin/sh ./steamos-profile.sh "$@"; fi
 distro_id=$distro
 [ "$distro" != kali ] || distro=debian
 have() { command -v "$1" >/dev/null 2>&1; }
+wayfire_available() {
+    for program in wayfire wf-panel foot seatd Xwayland; do have "$program" || return 1; done
+    pkg-config --exists xext wayland-client xkbcommon 2>/dev/null
+}
 helper_key() { { cat support-version; sha256sum "$@"; } | sha256sum | awk '{print $1}'; }
 
 gui_missing() {
@@ -105,8 +109,8 @@ check() {
       else echo plasma=missing; fi
       if have startlxqt && have lxqt-panel && have pcmanfm-qt; then echo lxqt=installed; else echo lxqt=missing; fi
       if have enlightenment_start && have terminology; then echo enlightenment=installed; else echo enlightenment=missing; fi
-      if have wayfire && have wf-panel && have foot; then echo wayfire=installed; else echo wayfire=missing; fi
-      if have Hyprland && have waybar && have fuzzel && have seatd; then echo hyprland=installed; else echo hyprland=missing; fi
+      if wayfire_available; then echo wayfire=installed; else echo wayfire=missing; fi
+      if have Hyprland && have waybar && have fuzzel && have seatd && have Xwayland; then echo hyprland=installed; else echo hyprland=missing; fi
       # Startup timeline: real initialization state, independent of package history.
       if [ "$distro" = fedora ] || [ -e /usr/lib/linuxrunner/initialize-debian.sh ] || [ -e /usr/lib/linuxrunner/initialize-arch.sh ]; then
           if [ -f /var/lib/linuxrunner/initialized ] && { [ "$distro" != fedora ] || have awk; }; then echo first-start=done; else echo first-start=pending; fi
@@ -397,17 +401,16 @@ case "$mode" in
         echo 'PROFILE: enlightenment=PASS';;
     wayfire)
         # Wayfire (wlroots), its wf-shell panel/dock/background, the foot terminal
-        # and the WCM settings app from the distribution's packages. It runs
-        # inside the session's X server with wlroots' software renderer.
+        # and the KMS bridge build files from the distribution packages.
         repair "${2:-}"
         [ "$distro" != alpine ] || support_fail PROFILE wayfire-unavailable-on-alpine
-        if ! { have wayfire && have wf-panel && have foot; }; then
-            install_packages "Wayfire" wayfire wf-shell foot wcm xwayland \
+        if ! wayfire_available; then
+            install_packages "Wayfire" wayfire wf-shell foot wcm xwayland seatd libxext-dev libwayland-dev libxkbcommon-dev \
                 -- wayfire \
-                -- wayfire wf-shell foot wcm xorg-xwayland \
+                -- wayfire wf-shell foot wcm xorg-xwayland seatd libxext wayland libxkbcommon \
                 -- wayfire wf-shell foot xorg-x11-server-Xwayland seatd wayland-devel wayland-protocols-devel libxkbcommon-devel || support_fail PROFILE wayfire-packages
         fi
-        have wayfire && have wf-panel && have foot || support_fail PROFILE wayfire-missing
+        wayfire_available || support_fail PROFILE wayfire-missing
         echo 'PROFILE: wayfire=PASS';;
     xfce)
         # Xfce 4 X11 session from the distribution's packages, on top of the
@@ -439,11 +442,11 @@ case "$mode" in
         # ARM packages it; Debian 13 does not.
         repair "${2:-}"
         case "$distro" in arch|archarm) ;; *) support_fail PROFILE hyprland-needs-arch;; esac
-        if ! { have Hyprland && have waybar && have fuzzel && have seatd; }; then
+        if ! { have Hyprland && have waybar && have fuzzel && have seatd && have Xwayland; }; then
             install_packages "Hyprland" hyprland -- hyprland \
-                -- hyprland waybar fuzzel foot seatd otf-font-awesome || support_fail PROFILE hyprland-packages
+                -- hyprland waybar fuzzel foot seatd xorg-xwayland otf-font-awesome || support_fail PROFILE hyprland-packages
         fi
-        have Hyprland && have waybar && have fuzzel && have seatd || support_fail PROFILE hyprland-missing
+        have Hyprland && have waybar && have fuzzel && have seatd && have Xwayland || support_fail PROFILE hyprland-missing
         # Appearance of the LinuxRunner preset: wallpaper (swaybg), icons and
         # fonts. Optional: without them the desktop works with a plain background.
         if ! { have swaybg && [ -d /usr/share/icons/Papirus-Dark ] && [ -d /usr/share/fonts/inter ]; }; then

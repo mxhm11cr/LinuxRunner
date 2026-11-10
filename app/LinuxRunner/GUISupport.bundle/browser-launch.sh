@@ -16,12 +16,11 @@ case "${1:-}" in
     shift; exec ./browser "$@"
     ;;
  firefox)
-    export MOZ_ENABLE_WAYLAND=0 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=softpipe
     launcher=$(command -v firefox || command -v firefox-esr)
     mkdir -p "$HOME/.local/share/linuxrunner-firefox"
     shift
     [ "$#" -gt 0 ] || set -- "file://$PWD/firefox-test.html"
-    exec "$launcher" --no-remote --profile "$HOME/.local/share/linuxrunner-firefox" "$@"
+    exec /bin/sh ./firefox-launch.sh "$launcher" --no-remote --profile "$HOME/.local/share/linuxrunner-firefox" "$@"
     ;;
  *) echo 'Expected chromium or firefox'; exit 2;;
 esac

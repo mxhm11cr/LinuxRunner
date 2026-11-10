@@ -10,4 +10,5 @@
 extern struct dev_ops software_drm_dev;
 // Preferred KMS mode = the desktop session size (set by the app before each desktop starts).
 void drm_set_display_size(unsigned width, unsigned height);
+void drm_refresh_native_display(void);
 #endif

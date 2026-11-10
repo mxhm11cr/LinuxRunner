@@ -539,6 +539,37 @@ static NSString *LRThermalState(void) {
     if (environmentDeletionActive) return;
     if (validRoot(name) && [Roots.instance.roots containsObject:name]) Roots.instance.defaultRoot = name;
 }
++ (void)removeEnvironment:(NSString *)root completion:(void (^)(NSError *))completion {
+    NSAssert(NSThread.isMainThread, @"Environment removal is serialized on the main thread");
+    Roots *roots = Roots.instance;
+    if (!validRoot(root) || ![roots.roots containsObject:root]) { completion(lrError(EINVAL,@"This environment no longer exists.")); return; }
+    if (bootAttempted && [root isEqual:self.activeRootName]) { completion(lrError(EBUSY,@"Use another environment and restart LinuxRunner before removing this one.")); return; }
+    NSString *previous = roots.defaultRoot;
+    if ([previous isEqual:root]) {
+        NSString *replacement = nil;
+        for (NSString *name in roots.roots) if (![name isEqual:root]) { replacement=name; break; }
+        if (!replacement) { completion(lrError(EBUSY,@"Install another environment before removing the last one.")); return; }
+        roots.defaultRoot = replacement;
+    }
+    NSURL *trash = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES] URLByAppendingPathComponent:[@"LinuxRunner-removed-" stringByAppendingString:NSUUID.UUID.UUIDString] isDirectory:YES];
+    NSError *error = nil;
+    if (![roots stageRemovalOfRoot:root extraDirectories:@[[self exchangeURL:root],[self sharedExchangeURL:root]] destination:trash error:&error]) {
+        roots.defaultRoot = previous;
+        completion(error); return;
+    }
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    for (NSString *prefix in @[@"LinuxRunnerDefaultUser.",@"LinuxRunnerDesktop.environment.",@"LinuxRunnerDesktop.resolution."])
+        [defaults removeObjectForKey:[prefix stringByAppendingString:root]];
+    if ([[defaults stringForKey:@"LinuxRunnerSetup.root"] isEqual:root]) {
+        [defaults removeObjectForKey:@"LinuxRunnerSetup.root"];
+        [defaults setObject:@"welcome" forKey:@"LinuxRunnerSetup.step"];
+    }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
+        NSError *cleanupError = nil;
+        [NSFileManager.defaultManager removeItemAtURL:trash error:&cleanupError];
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(cleanupError); });
+    });
+}
 + (NSURL *)rootURL:(NSString *)name {
     NSParameterAssert(validRoot(name));
     return [Roots.instance rootUrl:name];
@@ -1992,6 +2023,7 @@ static int LRSharedDirectory(NSString *root,NSString *relative){
 
 #if TARGET_OS_SIMULATOR
 #include "../../tests/linuxrunner/desktop_files_contract.inc"
+#include "../../tests/linuxrunner/environment_removal_contract.inc"
 #endif
 @end
 

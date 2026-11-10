@@ -40,6 +40,8 @@ X11 sessions use Xvfb and x11vnc to feed the native RFB viewer. Managed launcher
 
 Experimental Wayfire/Hyprland sessions use LinuxRunner's virtual DRM/KMS display path. Compatible guest Mesa/virgl workloads send rendering commands to the app's virglrenderer integration, which uses ANGLE's Metal backend. Software rendering remains available. This is distinct from the earlier selective graphics interposer and from Metal presentation of an already-rendered framebuffer.
 
+The experimental **Direct Wayland Display** preference bypasses the X11 scanout window and RFB transport for Hyprland and GPU-backed Wayfire. Virtual KMS flips publish owned snapshots directly to the native viewer; the guest helper handles Wayland input only. It defaults to off and still copies CPU pixels and uploads them for presentation. See [direct KMS implementation and validation](engine/DIRECT_KMS.md).
+
 Metal is not universal graphics API support. The application, guest Mesa driver, compositor, memory limits and display path all matter. [Performance and activation](PERFORMANCE.md)
 
 ## Forward Display and Input

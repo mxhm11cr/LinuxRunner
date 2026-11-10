@@ -211,6 +211,25 @@ static NSDictionary *LRTrackpadMenuContractResult(void) {
     BOOL pass=visible&&waiting&&cancelVisible&&cancelled&&outputOffAccessible&&noPrematureMode&&requestedStart&&automatic&&exited&&ordered&&reset&&reentered;
     return @{@"status":pass?@"PASS":@"FAIL",@"always_accessible":@(visible&&outputOffAccessible),@"enables_output_and_waits":@(waiting&&noPrematureMode),@"cancel_waiting":@(cancelVisible&&cancelled),@"requests_desktop_start":@(requestedStart),@"activates_after_frame":@(automatic),@"ordered_dropdown":@(ordered),@"returns_to_viewer":@(exited),@"disconnect_clears_mode":@(reset),@"reenter_without_new_client":@(reentered),@"scope":@"Simulator production controller/menu, simulated display availability; no physical monitor or KDE claim"};
 }
+@interface LRKeyboardFocusContractView : LRFramebufferView
+@property BOOL keyboardConnected;
+@end
+@implementation LRKeyboardFocusContractView
+- (BOOL)hasExternalKeyboard{return self.keyboardConnected;}
+- (UIView *)inputView{return [UIView new];}
+@end
+static BOOL LRKeyboardFocusContract(void) {
+    UIWindow *window=nil;
+    for(UIWindowScene *scene in UIApplication.sharedApplication.connectedScenes)
+        if([scene isKindOfClass:UIWindowScene.class])for(UIWindow *candidate in scene.windows)if(candidate.isKeyWindow)window=candidate;
+    if(!window)return NO;
+    LRKeyboardFocusContractView *surface=[LRKeyboardFocusContractView new];surface.frame=CGRectMake(0,0,100,100);
+    surface.pixelWidth=100;surface.pixelHeight=100;[window addSubview:surface];[surface layoutIfNeeded];
+    [surface click:1 at:CGPointMake(50,50)];BOOL noSoftwareKeyboard=!surface.isFirstResponder;
+    surface.keyboardConnected=YES;[surface click:1 at:CGPointMake(50,50)];BOOL connectedFocus=surface.isFirstResponder;
+    [surface resignFirstResponder];surface.hidden=YES;[surface focusExternalKeyboard];BOOL hiddenIgnored=!surface.isFirstResponder;
+    [surface removeFromSuperview];return noSoftwareKeyboard&&connectedFocus&&hiddenIgnored;
+}
 static void LRRunExternalDisplayContract(void (^completion)(NSDictionary *)) {
     LRThreadContractDesktop *threadProbe=[[LRThreadContractDesktop alloc]initDesktop];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{[threadProbe externalDisplayChanged:nil];});
@@ -239,6 +258,7 @@ static void LRRunExternalDisplayContract(void (^completion)(NSDictionary *)) {
         result[@"accessory_registration"]=registration&&registration.enabled?@"PASS":@"FAIL";
     }
 #endif
+    result[@"external_keyboard_focus"]=@(LRKeyboardFocusContract());
     result[@"trackpad_dropdown"]=LRTrackpadMenuContractResult();
     result[@"landscape_viewport"]=LRLandscapeViewportContract();
     result[@"hardware_keyboard"]=LRHardwareKeyboardContract();
@@ -262,7 +282,7 @@ static void LRRunExternalDisplayContract(void (^completion)(NSDictionary *)) {
                 [NSUserDefaults.standardUserDefaults setBool:NO forKey:LRExternalDisplayEnabledKey];
                 [view presentFrame:first width:16 height:16 damage:(LRFrameDamage){0,0,16,16}];
                 result[@"disabled_does_not_render"]=@(!view.frameScheduled&&view.pendingPixels==nil);
-                BOOL passed=YES;for(NSString *name in @[@"surface_observers_owned",@"surface_released",@"last_update_flushed",@"resize_damage_reset",@"resized_final_pixels",@"cancelled_frame_stays_blank",@"disabled_does_not_render"])passed=passed&&[result[name] boolValue];
+                BOOL passed=YES;for(NSString *name in @[@"external_keyboard_focus",@"surface_observers_owned",@"surface_released",@"last_update_flushed",@"resize_damage_reset",@"resized_final_pixels",@"cancelled_frame_stays_blank",@"disabled_does_not_render"])passed=passed&&[result[name] boolValue];
                 NSDictionary *benchmark=LRMeasureHiddenFramePresentation();result[@"hidden_fallback_benchmark"]=benchmark;
                 passed=passed&&[benchmark[@"no_hidden_image"] boolValue]&&[benchmark[@"resume_latest_pixels"] boolValue];
                 result[@"background_notification_on_main_thread"]=@(threadProbe.detached&&threadProbe.detachedOnMainThread);

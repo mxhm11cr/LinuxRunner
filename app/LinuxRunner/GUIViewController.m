@@ -87,6 +87,90 @@ static NSString *ApplicationPreflightFailure(NSURL *session) {
 #import "PointerPolicy.h"
 #import "KeyboardPolicy.h"
 #import "DisplayPolicy.h"
+// Reuse the viewer's frame/input interface; this client never opens an RFB socket.
+#include "fs/kms_display.h"
+extern void drm_refresh_native_display(void);
+@interface LRKMSClient : LRRFBClient
+@property NSURL *sessionURL;
+@end
+@implementation LRKMSClient {
+    NSTimer *_frameTimer;
+    uint64_t _token, _delivered, _copied;
+    uint32_t _width, _height;
+    NSTimeInterval _lastLifecycleCheck;
+    NSMutableData *_typedInput;
+}
+- (void)start {
+    if (_token) return;
+    _token = lr_kms_display_begin();
+    drm_refresh_native_display();
+    __weak typeof(self) weak = self;
+    _frameTimer = [NSTimer timerWithTimeInterval:1.0/60 repeats:YES block:^(NSTimer *timer) {
+        typeof(self) self = weak; if (!self) { [timer invalidate]; return; }
+        NSTimeInterval now=NSProcessInfo.processInfo.systemUptime;
+        if (now-self->_lastLifecycleCheck>=0.25) {
+            self->_lastLifecycleCheck=now;
+            if ([NSFileManager.defaultManager fileExistsAtPath:[self.sessionURL URLByAppendingPathComponent:@"display-ended"].path]) {
+                [self stop];
+                if (self.statusHandler) self.statusHandler(@"Linux display ended");
+                return;
+            }
+        }
+        if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+        [self drainTypedInput];
+        struct lr_kms_frame frame = {0};
+        if (!lr_kms_display_take(self->_token, &frame)) return;
+        size_t bytes = (size_t)frame.width * frame.height * 4;
+        NSData *pixels = [NSData dataWithBytesNoCopy:frame.pixels length:bytes freeWhenDone:YES];
+        self->_width = frame.width; self->_height = frame.height;
+        self->_delivered++; self->_copied += bytes;
+        if (self.patchFrameHandler) self.patchFrameHandler(pixels, frame.width, frame.height,
+            self->_delivered, self->_copied, (LRFrameDamage){0,0,frame.width,frame.height});
+    }];
+    [NSRunLoop.mainRunLoop addTimer:_frameTimer forMode:NSRunLoopCommonModes];
+    if (self.statusHandler) self.statusHandler(@"Connected to native Linux KMS display");
+}
+- (void)stop {
+    [_frameTimer invalidate]; _frameTimer = nil;
+    if (_token) lr_kms_display_end(_token);
+    _token = 0; _typedInput = nil;
+}
+- (void)dealloc { [self stop]; }
+- (void)sendInput:(struct lr_kms_input)event {
+    if (_token && !lr_kms_display_input(_token, event)) {
+        [self stop];
+        if (self.statusHandler) self.statusHandler(@"Display error: Native input queue overflow; reconnect the desktop.");
+    }
+}
+- (void)key:(uint32_t)sym down:(BOOL)down {
+    struct lr_kms_input event={.type=2,.keysym=sym,.down=down};
+    if (_typedInput.length) [_typedInput appendBytes:&event length:sizeof event];
+    else [self sendInput:event];
+}
+- (void)drainTypedInput {
+    // Bound each paste burst so a long clipboard cannot overflow the guest queue.
+    NSUInteger n=MIN((NSUInteger)64,_typedInput.length/sizeof(struct lr_kms_input));
+    NSUInteger sent=0;
+    for (;sent<n && _token;sent++) {
+        struct lr_kms_input event; [_typedInput getBytes:&event range:NSMakeRange(sent*sizeof event,sizeof event)];
+        if (!lr_kms_display_input(_token,event)) break; // Backpressure: retry next tick.
+    }
+    if (sent) [_typedInput replaceBytesInRange:NSMakeRange(0,sent*sizeof(struct lr_kms_input)) withBytes:NULL length:0];
+}
+- (void)typeKeysyms:(const uint32_t *)symbols count:(size_t)count {
+    if (!_token) return;
+    if (!_typedInput) _typedInput=[NSMutableData new];
+    for (size_t i=0;i<count;i++) {
+        struct lr_kms_input pair[2]={{.type=2,.keysym=symbols[i],.down=1},{.type=2,.keysym=symbols[i]}};
+        [_typedInput appendBytes:pair length:sizeof pair];
+    }
+    [self drainTypedInput];
+}
+- (void)pointerX:(uint16_t)x y:(uint16_t)y buttons:(uint8_t)buttons {
+    [self sendInput:(struct lr_kms_input){.type=1,.x=x,.y=y,.buttons=buttons,.width=_width,.height=_height}];
+}
+@end
+
 // Locally drawn pointer. The RFB Cursor pseudo-encoding gives the guest's
 // real cursor image and hotspot; x11vnc then leaves it out of the
 // framebuffer, so moving the pointer needs no framebuffer update at all.
@@ -228,6 +312,8 @@ static id<LRCursorDisplay> LRExternalCursorDisplay(void);
 - (void)fitViewport;
 - (void)actualViewport;
 - (void)releaseInput;
+- (BOOL)hasExternalKeyboard;
+- (void)focusExternalKeyboard;
 - (void)focusKeyboard;
 - (void)relativeMoveX:(CGFloat)x y:(CGFloat)y;
 - (void)updateCursor;
@@ -552,6 +638,10 @@ static const NSInteger LRDockPortraitOnlyTag=7803;   // DeX, Settings, More, Pow
     [self finishTwoFingerRecognizer:g other:_twoFingerScroll];
 }
 
+- (BOOL)hasExternalKeyboard{return GCKeyboard.coalescedKeyboard != nil;}
+- (void)focusExternalKeyboard{
+    if([self hasExternalKeyboard]&&self.window.isKeyWindow&&!self.hidden&&!self.isFirstResponder)[self becomeFirstResponder];
+}
 - (BOOL)canBecomeFirstResponder{return YES;}
 - (UIView *)inputAccessoryView{return _softwareKeyboardRequested?_keyAccessory:nil;}
 - (UIView *)inputView{
@@ -1784,6 +1874,10 @@ static NSString *LRSessionGraphicsMode(void){
     if(_client){[self message:@"A display session is already running. Close it first."];return;}
     if(_desktopMode&&_sessionTerminal.sessionPid>0&&_sessionURL&&![NSFileManager.defaultManager fileExistsAtPath:[_sessionURL URLByAppendingPathComponent:@"stop"].path]){[self connectDesktopViewer];return;}
     if(![LRRuntimeBridge isRunning]){if(_desktopMode)[self desktopStartFailed:@"Linux is not running" detail:[NSString stringWithFormat:@"%@\n\nError: RUNTIME_NOT_RUNNING. Tap Retry once Linux has started.",LRRuntimeBridge.runtimeStatus]];else [self message:LRRuntimeBridge.runtimeStatus];return;}
+    NSString *desktopChoice=[NSUserDefaults.standardUserDefaults stringForKey:[@"LinuxRunnerDesktop.environment." stringByAppendingString:LRRuntimeBridge.activeRootName]];
+    if(_desktopMode&&desktopChoice.length&&[@[@"wayfire",@"hyprland"] containsObject:desktopChoice]&&[LRRuntimeBridge.defaultLinuxUser isEqual:@"root"]){
+        [self desktopStartFailed:@"Choose a Linux user" detail:@"Wayland desktops require a Linux user other than root. Close this screen, open Settings > Linux Users, then create or select your account and open the desktop again."];return;
+    }
     NSError *error=nil;_supportURL=PrepareSupport(&error);if(!_supportURL){if(_desktopMode)[self desktopStartFailed:@"Desktop files could not be prepared" detail:[error.localizedDescription stringByAppendingString:@"\n\nError: FILESYSTEM_ERROR"]];else [self message:error.localizedDescription];return;}
     if(_desktopMode&&(_startState==LRStartChecking||_startState==LRStartRepairing)){[self.view bringSubviewToFront:_startPanel];return;} // already working on it
     if(_desktopMode&&![self profileVerified]){[self beginDesktopCheck];return;}
@@ -1821,7 +1915,8 @@ static NSString *LRSessionGraphicsMode(void){
     NSString *desktopKey=[@"LinuxRunnerDesktop.environment." stringByAppendingString:LRRuntimeBridge.activeRootName];
     NSString *selectedDesktop=[NSUserDefaults.standardUserDefaults stringForKey:desktopKey];
     if(!selectedDesktop && LRRuntimeBridge.activeEnvironmentIsDebian && !LRRuntimeBridge.activeEnvironmentIsKali)selectedDesktop=[NSUserDefaults.standardUserDefaults stringForKey:@"LinuxRunnerDesktop.environment"];
-    NSDictionary *files=@{@"hyprland-effects":([NSUserDefaults.standardUserDefaults stringForKey:[@"LinuxRunnerDesktop.hyprland.effects." stringByAppendingString:LRRuntimeBridge.activeRootName]]?:@"visual"),@"desktop-environment":([selectedDesktop isEqual:@"plasma"]||[selectedDesktop isEqual:@"lxqt"]||[selectedDesktop isEqual:@"enlightenment"]||[selectedDesktop isEqual:@"wayfire"]||[selectedDesktop isEqual:@"hyprland"]||[selectedDesktop isEqual:@"xfce"])?selectedDesktop:@"linuxrunner",@"guest-user":_sessionGuestUser,@"geometry":geometry,@"glx-mode":glxMode,@"gpu-mode":LRSessionGraphicsMode(),@"input-mode":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUIEagerInput"]?@"eager":@"legacy",@"shm-mode":(_desktopMode?LRRuntimeBridge.desktopSharedImagesEnabled:[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUISharedImages"])?@"sysv":@"off",@"vnc-timing":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUILowLatencyInput"]?@"threads":@"default",@"password":password,@"cookie":cookie,@"port":[NSString stringWithFormat:@"%u",port],@"audio-port":_audioPort?[NSString stringWithFormat:@"%u",_audioPort]:@"",@"display":[NSString stringWithFormat:@"%u",display]};
+    BOOL directKMS=_desktopMode && ([selectedDesktop isEqual:@"hyprland"] || [selectedDesktop isEqual:@"wayfire"]) && [NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerDesktop.directKMS"];
+    NSDictionary *files=@{@"display-transport":directKMS?@"direct-kms":@"rfb",@"hyprland-effects":([NSUserDefaults.standardUserDefaults stringForKey:[@"LinuxRunnerDesktop.hyprland.effects." stringByAppendingString:LRRuntimeBridge.activeRootName]]?:@"visual"),@"desktop-environment":([selectedDesktop isEqual:@"plasma"]||[selectedDesktop isEqual:@"lxqt"]||[selectedDesktop isEqual:@"enlightenment"]||[selectedDesktop isEqual:@"wayfire"]||[selectedDesktop isEqual:@"hyprland"]||[selectedDesktop isEqual:@"xfce"])?selectedDesktop:@"linuxrunner",@"guest-user":_sessionGuestUser,@"geometry":geometry,@"glx-mode":glxMode,@"gpu-mode":LRSessionGraphicsMode(),@"input-mode":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUIEagerInput"]?@"eager":@"legacy",@"shm-mode":(_desktopMode?LRRuntimeBridge.desktopSharedImagesEnabled:[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUISharedImages"])?@"sysv":@"off",@"vnc-timing":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUILowLatencyInput"]?@"threads":@"default",@"password":password,@"cookie":cookie,@"port":[NSString stringWithFormat:@"%u",port],@"audio-port":_audioPort?[NSString stringWithFormat:@"%u",_audioPort]:@"",@"display":[NSString stringWithFormat:@"%u",display]};
     for(NSString *name in files){NSURL *url=[_sessionURL URLByAppendingPathComponent:name];if(![files[name] writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:&error]||![NSFileManager.defaultManager setAttributes:@{NSFilePosixPermissions:@0600} ofItemAtPath:url.path error:&error]){[self message:error.localizedDescription];return;}}
     NSString *xkb=[NSUserDefaults.standardUserDefaults stringForKey:@"LinuxRunnerGUIXKBMode"]?:@"xkb";
     [xkb writeToURL:[_sessionURL URLByAppendingPathComponent:@"xkb-mode"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -1959,9 +2054,13 @@ static NSString *DesktopDegradedNotice(NSString *state){
 - (void)attachViewerWithPort:(uint16_t)port password:(NSString *)password{
     if(_client)return;
     _desktopPainted=NO;_inputVerified=0;_inputChecks=0;_inputProbeAt=0;[_surface clearFrame];[_surface configurePresentation];_traceFirstUpdate=NO;
-    if(_desktopMode){[LRRuntimeBridge desktopTrace:@"11 viewer" result:@"ok" detail:[NSString stringWithFormat:@"RFB client created port=%u",port]];
+    if(_desktopMode){[LRRuntimeBridge desktopTrace:@"11 viewer" result:@"ok" detail:@"native viewer client created"];
         [LRRuntimeBridge desktopTrace:@"12 renderer" result:_surface?@"ok":@"fail" detail:[NSString stringWithFormat:@"surface=%d metal=%d hidden=%d in-window=%d size=%.0fx%.0f",_surface!=nil,_surface.metal!=nil,_surface.hidden,_surface.window!=nil,_surface.bounds.size.width,_surface.bounds.size.height]];}
-    _client=[[LRRFBClient alloc] initWithPort:port password:password];_surface.client=_client;_startedAt=NSDate.date;_frames=0;_bytes=0;_applicationWindowMapped=NO;
+    NSString *transport=[NSString stringWithContentsOfURL:[_sessionURL URLByAppendingPathComponent:@"display-transport"] encoding:NSUTF8StringEncoding error:nil];
+    BOOL direct=[transport isEqual:@"direct-kms"];
+    _client=[[(direct?LRKMSClient.class:LRRFBClient.class) alloc] initWithPort:port password:password];
+    if (direct) ((LRKMSClient *)_client).sessionURL=_sessionURL;
+    [LRRuntimeBridge logCategory:@"GUI_TRANSPORT" event:direct?@"native-kms (no RFB socket)":@"rfb"];_surface.client=_client;_startedAt=NSDate.date;_frames=0;_bytes=0;_applicationWindowMapped=NO;
     [self updateStorageActivity];
     __weak typeof(self) weak=self;
     __weak LRRFBClient *thisClient=_client;
@@ -2050,7 +2149,7 @@ static NSString *DesktopDegradedNotice(NSString *state){
     [self updateStartupStatus];
     [_frameLock lock];uint64_t frames=_frames,bytes=_bytes,patchBytes=_patchBytes,submittedPatchBytes=_presentationPatchBytes;[_frameLock unlock];
     [LRRuntimeBridge logCategory:@"GUI_TRANSPORT" event:[NSString stringWithFormat:@"decoder_patch_bytes=%llu presenter_patch_bytes=%llu frames=%llu",(unsigned long long)patchBytes,(unsigned long long)submittedPatchBytes,(unsigned long long)frames]];
-    [LRRuntimeBridge logCategory:@"GUI" event:[NSString stringWithFormat:@"frames=%llu wire-bytes=%llu elapsed=%.2fs resolution=%ux%u presenter=%@",(unsigned long long)frames,(unsigned long long)bytes,-[_startedAt timeIntervalSinceNow],_pendingWidth,_pendingHeight,_surface.metal?@"Metal":@"Core Graphics"]];
+    [LRRuntimeBridge logCategory:@"GUI" event:[NSString stringWithFormat:@"frames=%llu transport-bytes=%llu elapsed=%.2fs resolution=%ux%u presenter=%@",(unsigned long long)frames,(unsigned long long)bytes,-[_startedAt timeIntervalSinceNow],_pendingWidth,_pendingHeight,_surface.metal?@"Metal":@"Core Graphics"]];
     if(_desktopMode&&[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerDesktop.performanceDiagnostics"]){
         struct rusage usage={0};getrusage(RUSAGE_SELF,&usage);
         double cpu=(double)usage.ru_utime.tv_sec+usage.ru_utime.tv_usec*1e-6+usage.ru_stime.tv_sec+usage.ru_stime.tv_usec*1e-6;

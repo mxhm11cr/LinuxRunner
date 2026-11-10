@@ -174,6 +174,37 @@ import Darwin
             }
         }
     }
+    func removalBlockReason(_ environment: LinuxEnvironment) -> String? {
+        if !LRRuntimeBridge.canStartRuntime() && environment.rootfsName == LRRuntimeBridge.activeRootName() {
+            return "Use another environment and restart LinuxRunner before removing this one."
+        }
+        if environments.count < 2 { return "Install another environment before removing the last one." }
+        return nil
+    }
+    func remove(_ environment: LinuxEnvironment) {
+        guard !busy, catalogWritable, environments.contains(where: { $0.id == environment.id }) else { return }
+        let previous = environments
+        environments.removeAll { $0.id == environment.id }
+        do { try persist() } catch { environments = previous; self.error = error.localizedDescription; return }
+        busy = true
+        LRRuntimeBridge.removeEnvironment(environment.rootfsName) { [weak self] failure in
+            Task { @MainActor in
+            guard let self else { return }
+            if let failure {
+                if LRRuntimeBridge.rootNames().contains(environment.rootfsName) {
+                    self.environments = previous
+                    do { try self.persist() } catch { self.error = error.localizedDescription }
+                }
+                self.error = failure.localizedDescription
+            } else {
+                self.storage.removeValue(forKey: environment.id)
+            }
+            self.busy = false
+            self.lastStorageMeasurement = .distantPast
+            self.refresh()
+            }
+        }
+    }
     func add(application: LinuxApplication, to environment: LinuxEnvironment) {
         do {
             try application.validate()
@@ -412,6 +443,7 @@ struct ManagerView: View {
     @State private var share: ExportItem?
     @State private var importRoot: String?
     @State private var selectedEnvironment: LinuxEnvironment?
+    @State private var removeTarget: LinuxEnvironment?
     @State private var pendingDistributionDeletion: LinuxEnvironment?
     @State private var showDetail = false
     @State private var showFiles = false
@@ -482,6 +514,12 @@ struct ManagerView: View {
         .alert("LinuxRunner", isPresented: Binding(get: { manager.error != nil }, set: { if !$0 { DispatchQueue.main.async { manager.error = nil } } })) {
             Button("OK") { manager.error = nil }
         } message: { Text(manager.error ?? "") }
+        .alert("Remove \(removeTarget?.name ?? "Environment")?", isPresented: Binding(get: { removeTarget != nil }, set: { if !$0 { removeTarget = nil } }), presenting: removeTarget) { target in
+            Button("Remove Environment", role: .destructive) { manager.remove(target) }.accessibilityIdentifier("Confirm Remove Environment")
+            Button("Cancel", role: .cancel) { }
+        } message: { target in
+            Text("This deletes \(target.name), its Linux accounts, packages, files and shared files stored in this app. Files in external shared folders are kept. This cannot be undone.")
+        }
         .onChange(of: phase) { _ in manager.refresh() }
     }
     private var activeEnvironment: LinuxEnvironment? { manager.environments.first(where: manager.active) }
@@ -1894,6 +1932,7 @@ private struct DesktopPreferencesView: View {
     @State private var resolution = 3
     @AppStorage("LinuxRunnerDesktop.autoFullscreen") private var autoFullscreen = true
     @State private var metalPresentation = false
+    @AppStorage("LinuxRunnerDesktop.directKMS") private var directKMS = false
     private var key: String { "LinuxRunnerDesktop.resolution." + LRRuntimeBridge.activeRootName() }
     var body: some View { Form {
         Section("Next Desktop Start") {
@@ -1904,6 +1943,10 @@ private struct DesktopPreferencesView: View {
         Section("Interaction") {
             Text("Landscape uses the available display while preserving aspect ratio. Pinch to zoom; two fingers pan while zoomed, or scroll while fitted. Long press provides right click.")
             Text("Desktop Settings provides Fit, Actual Size and Full Screen. Use the restore button to bring controls back.")
+        }
+        Section("Desktop Transport") {
+            Toggle("Direct Wayland Display · Experimental", isOn: $directKMS)
+            Text("Bypasses VNC for Hyprland and Wayfire with software or Metal GPU rendering. Applies at the next desktop start. Turn off and restart the desktop to return to the standard viewer connection.").font(.caption)
         }
         Section("Framebuffer Presentation") {
             Toggle("Metal Presentation · Experimental", isOn: $metalPresentation)
@@ -2529,6 +2572,20 @@ enum SimulatorWorkflow {
     private static var started = false
     private static var reports = 0
     private static var installer: DebianInstaller?
+    private static func startClipboardFixture() {
+        guard let path = ProcessInfo.processInfo.environment["LR_SIM_CLIPBOARD_PATH"] else { return }
+        var modified: Date?
+        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+            guard UIApplication.shared.applicationState == .active,
+                  let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+                  let date = attributes[.modificationDate] as? Date, date != modified,
+                  let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+            UIPasteboard.general.string = text
+            guard UIPasteboard.general.string == text else { return }
+            modified = date
+            try? "READY".write(toFile: path + ".ready", atomically: true, encoding: .utf8)
+        }
+    }
     private static var fedoraInstaller: FedoraInstaller?
     @MainActor private static func packageDiscoveryContract(_ manager: EnvironmentManager) async {
         let fm = FileManager.default
@@ -2799,6 +2856,7 @@ enum SimulatorWorkflow {
                       terminal: @escaping () -> Void = {}, type: @escaping (String) -> Void = { _ in }, tab: @escaping (Int) -> Void = { _ in }) {
         guard !started, let script = ProcessInfo.processInfo.environment["LR_SIM_SCRIPT"] else { return }
         started = true
+        startClipboardFixture()
         var delay = 0.0
         for step in script.split(separator: ";").map(String.init) {
             if step.hasPrefix("wait:") { delay += Double(step.dropFirst(5)) ?? 0; continue }
@@ -2840,6 +2898,14 @@ enum SimulatorWorkflow {
                     LRRuntimeBridge.runDesktopFilesContract { result in
                         guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first, let data = try? JSONSerialization.data(withJSONObject: result, options: .prettyPrinted) else { return }
                         let url = documents.appendingPathComponent("Diagnostics/desktop-files-contract.json")
+                        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                        try? data.write(to: url, options: .atomic)
+                    }
+                case "environment-removal-contract":
+                    LRRuntimeBridge.runEnvironmentRemovalContract { result in
+                        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+                              let data = try? JSONSerialization.data(withJSONObject: result, options: .prettyPrinted) else { return }
+                        let url = documents.appendingPathComponent("Diagnostics/environment-removal-contract.json")
                         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
                         try? data.write(to: url, options: .atomic)
                     }

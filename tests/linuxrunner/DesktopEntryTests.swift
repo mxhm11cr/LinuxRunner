@@ -7,6 +7,10 @@ import Foundation
   precondition(parse("qt-test %i", "Icon=real\n")?["arguments"] as? [String] == ["--icon","real"])
   precondition(parse("\"/opt/Qt App/test\" \"one two\" 100%%")?["arguments"] as? [String] == ["one two","100%"])
   for invalid in ["qt %Z", "qt | echo", "qt 'bad'", "qt \"unclosed", "qt \"%U\"", "a=b", "qt foo%F", "qt $HOME"] { precondition(parse(invalid) == nil, invalid) }
+  let firefox = parse("/bin/sh \"/home/mobile/Downloads/.linuxrunner/gui/firefox-launch.sh\" /usr/lib/firefox-esr/firefox-esr %u", "DBusActivatable=false\n")!
+  precondition(firefox["executable"] as? String == "/bin/sh")
+  precondition(firefox["arguments"] as? [String] == ["/home/mobile/Downloads/.linuxrunner/gui/firefox-launch.sh", "/usr/lib/firefox-esr/firefox-esr"])
+  precondition(firefox["dbusActivatable"] as? Bool == false)
   precondition(parse("qt", "Hidden=true\n") == nil)
   precondition(parse("qt", "NoDisplay=true\n") == nil)
   precondition(parse("qt", "Terminal=true\n")?["terminal"] as? Bool == true)

@@ -40,15 +40,15 @@ if [ "$qt_desktop" = 1 ]; then
  export QT_FORCE_STDERR_LOGGING=${QT_FORCE_STDERR_LOGGING:-1}
  echo 'DESKTOP_STARTUP: environment=linuxrunner components=openbox,lxqt-panel,pcmanfm-qt (Qt X11 desktop)'
 fi
-export XDG_DATA_DIRS="$base/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 fi
+export XDG_DATA_DIRS="$base/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+case "$environment" in wayfire|hyprland)
+    /bin/sh ./firefox-desktop.sh "$base/share/applications" || echo 'DESKTOP_STARTUP: Firefox menu compatibility entries could not be updated';;
+esac
 # Programs started from LinuxRunner open inside a Wayland compositor: its
 # socket joins the desktop environment file (see desktop-env.sh).
 publish_wayland() {
- env_file="$HOME/.cache/linuxrunner/desktop.env"
- [ -f "$env_file" ] && grep -q '^DISPLAY=' "$env_file" || { echo "DESKTOP_STARTUP: wayland socket not published ($env_file missing)"; return 0; }
- { grep -v '^WAYLAND_DISPLAY=' "$env_file"; echo "WAYLAND_DISPLAY=$1"; } > "$env_file.new" && chmod 600 "$env_file.new" && mv "$env_file.new" "$env_file" &&
-  echo "DESKTOP_STARTUP: wayland socket published for launched programs ($1)"
+ /bin/sh ./publish-wayland-env.sh "$1"
 }
 component_name() { [ "$environment" != plasma ] || { echo "Plasma session (plasma.log)"; return; }; [ "$environment" != lxqt ] || { echo "LXQt session (lxqt.log)"; return; }; [ "$environment" != xfce ] || { echo "Xfce session (xfce.log)"; return; }; [ "$environment" != enlightenment ] || { echo "Enlightenment (enlightenment.log)"; return; }; [ "$environment" != wayfire ] || { echo "Wayfire (wayfire.log)"; return; }; [ "$environment" != hyprland ] || { case "$1" in "$panel") echo "KMS display bridge (kms-bridge.log)";; *) echo "Hyprland (hyprland.log)";; esac; return; }; case "$1" in "$wm") echo "window manager (wm.log)";; "$panel") echo "panel (panel.log)";; "$surface") echo "desktop surface (desktop.log)";; *) echo unknown;; esac; }
 cleanup() { trap - EXIT; for pid in "$surface" "$panel" "$wm" "$conf"; do [ -z "$pid" ] || kill "$pid" 2>/dev/null || true; done; }
@@ -222,16 +222,14 @@ elif [ "$environment" = enlightenment ]; then
  enlightenment_start > "$session/enlightenment.log" 2>&1 & wm=$!; panel=$wm; surface=$wm; limit=600
  echo "DESKTOP_STARTUP: environment=enlightenment session=$wm"
 elif [ "$environment" = wayfire ]; then
- # Wayfire (wlroots) nested in this session's X server: wlroots' X11 backend
- # draws with its software renderer (pixman) into one full-screen window, so
- # the viewer, input and external-display path are those of every desktop.
- # GLES-only plugins (cube, blur, fire/spin) switch themselves off.
+ # Wayfire requires a GLES renderer on KMS with either viewer.
  export XDG_CURRENT_DESKTOP=Wayfire XDG_SESSION_TYPE=wayland DESKTOP_SESSION=wayfire
- export WLR_BACKENDS=x11 WLR_RENDERER=pixman WLR_X11_OUTPUTS=1
+ export WLR_BACKENDS=drm WLR_RENDERER=gles2 LIBSEAT_BACKEND=seatd WLR_NO_HARDWARE_CURSORS=1
  # GTK 4 clients (wf-shell) draw in software: Mesa's EGL Wayland platform
  # currently crashes here (wl_proxy_create_wrapper), and the compositor has no
  # GPU to hand their buffers to anyway.
  export GSK_RENDERER=cairo
+ export GTK_THEME=${GTK_THEME:-Adwaita:dark}
  wf_config="${XDG_CONFIG_HOME:-$HOME/.config}"
  if mkdir -p "$wf_config" && [ ! -e "$wf_config/wayfire.ini" ] && [ ! -L "$wf_config/wayfire.ini" ]; then
   # First start of an account: dark borders, short fades (cheap in software),
@@ -271,50 +269,56 @@ WAYFIRE_INI
  if [ -S /run/dbus/system_bus_socket ] && command -v dbus-send >/dev/null &&
   dbus-send --system --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.NameHasOwner string:org.freedesktop.NetworkManager 2>/dev/null | grep -q 'boolean true'; then wf_network=network; fi
  sh ./wayfire-shell-configure.sh "$wf_config" "$wf_network"
- # GPU (Settings › Graphics, Metal): when the session prepared the virtio-gpu
- # card, wlroots drives it directly (DRM backend, GLES on virgl/Metal) and the
- # KMS bridge shows its output in this X server, as for Hyprland. Otherwise
- # Wayfire stays nested in the X server with the software renderer.
- output=X11-1
+ # Keep the compositor display available to app launcher requests.
+ awk -v command="/bin/sh $PWD/publish-wayland-env.sh" '
+  /^linuxrunner_session_environment[ \t]*=/{next}
+  /^\[autostart\]/{print; print "linuxrunner_session_environment = " command; found=1; next}
+  {print}
+  END {if(!found) print "\n[autostart]\nlinuxrunner_session_environment = " command}
+ ' "$wf_config/wayfire.ini" > "$wf_config/wayfire.ini.new" && mv "$wf_config/wayfire.ini.new" "$wf_config/wayfire.ini"
+ # Select the KMS device for the available renderer.
+ output=Virtual-1
  if [ -c /dev/dri/card1 ] && [ -S /run/seatd.sock ] && command -v gcc >/dev/null; then
-  export WLR_BACKENDS=drm WLR_DRM_DEVICES=/dev/dri/card1 WLR_RENDERER=gles2 LIBSEAT_BACKEND=seatd WLR_NO_HARDWARE_CURSORS=1
-  output=Virtual-1; wf_gpu=1
-  echo 'DESKTOP_STARTUP: wayfire renderer=virgl (GPU)'
+  unset LIBGL_ALWAYS_SOFTWARE GALLIUM_DRIVER MESA_LOADER_DRIVER_OVERRIDE
+  export WLR_DRM_DEVICES=/dev/dri/card1
+  wf_renderer=virgl
+ else
+  [ -c /dev/dri/card0 ] && [ -S /run/seatd.sock ] || { echo 'DESKTOP_STARTUP: Wayfire requires KMS and seatd'; exit 127; }
+  export WLR_DRM_DEVICES=/dev/dri/card0 MESA_LOADER_DRIVER_OVERRIDE=kms_swrast GALLIUM_DRIVER=softpipe LIBGL_ALWAYS_SOFTWARE=1
+  wf_renderer=softpipe
  fi
+ echo "DESKTOP_STARTUP: wayfire renderer=$wf_renderer"
  # The output always follows the session size (Settings › Display, the TV).
  geometry=$(xwininfo -root 2>/dev/null | awk '/-geometry/{split($2,g,"+"); print g[1]}')
  if [ -n "$geometry" ]; then
   awk '/^\[output:(X11-1|Virtual-1)\]/{skip=1;next} /^\[/{skip=0} !skip' "$wf_config/wayfire.ini" > "$wf_config/wayfire.ini.new" &&
-   printf '\n[output:%s]\n# Managed by LinuxRunner: the session display size.\nmode = %s%s\n' "$output" "$geometry" "$([ "$output" = Virtual-1 ] && echo @60000)" >> "$wf_config/wayfire.ini.new" &&
+   printf '\n[output:%s]\n# Managed by LinuxRunner: the session display size.\nmode = %s\n' "$output" "$geometry" >> "$wf_config/wayfire.ini.new" &&
    mv "$wf_config/wayfire.ini.new" "$wf_config/wayfire.ini"
  fi
  integrated=1
- if [ "${wf_gpu:-0}" = 1 ]; then
-  short_runtime="/tmp/lrw-$(id -u)"
-  if mkdir -p -m 700 "$short_runtime" 2>/dev/null && [ -O "$short_runtime" ] && [ ! -L "$short_runtime" ]; then
-   chmod 700 "$short_runtime"; rm -rf "$short_runtime"/wayland-*; export XDG_RUNTIME_DIR="$short_runtime"; fi
-  bridge_dir="${XDG_CACHE_HOME:-$HOME/.cache}/linuxrunner"
-  bridge="$bridge_dir/lr-kms-bridge-$(sha256sum lr-kms-bridge.c | cut -c1-16)"
-  if [ ! -x "$bridge" ]; then
-   lr_stage desktop_config; echo 'DESKTOP_STARTUP: building the KMS display bridge (once per bridge version)'
-   mkdir -p "$bridge_dir" && gcc -O2 lr-kms-bridge.c -lX11 -lXext -lwayland-client -lxkbcommon -o "$bridge.new" && mv "$bridge.new" "$bridge" ||
-    { echo 'DESKTOP_STARTUP: wayfire bridge build failed'; exit 127; }
-  fi
-  wayfire > "$session/wayfire.log" 2>&1 & wm=$!; surface=$wm
-  ( i=0
-    until socket=$(ls "$XDG_RUNTIME_DIR" 2>/dev/null | grep -m1 '^wayland-[0-9]*$') && [ -S "$XDG_RUNTIME_DIR/$socket" ]; do
-     i=$((i+1)); [ "$i" -lt 600 ] || exit 1; sleep .5; done
-    publish_wayland "$XDG_RUNTIME_DIR/$socket"
-    WAYLAND_DISPLAY=$socket exec "$bridge" /dev/dri/card1 ) >> "$session/kms-bridge.log" 2>&1 & panel=$!
- else
-  wayfire > "$session/wayfire.log" 2>&1 & wm=$!; panel=$wm; surface=$wm
-  ( i=0
-    until socket=$(ls "$XDG_RUNTIME_DIR" 2>/dev/null | grep -m1 '^wayland-[0-9]*$') && [ -S "$XDG_RUNTIME_DIR/$socket" ]; do
-     i=$((i+1)); [ "$i" -lt 600 ] || { echo "DESKTOP_STARTUP: no wayland socket in ${XDG_RUNTIME_DIR:-unset}"; exit 0; }; sleep .5; done
-    publish_wayland "$XDG_RUNTIME_DIR/$socket" ) >> "$session/application.log" 2>&1 &
+ short_runtime="/tmp/lrw-$(id -u)"
+ if mkdir -p -m 700 "$short_runtime" 2>/dev/null && [ -O "$short_runtime" ] && [ ! -L "$short_runtime" ]; then
+  chmod 700 "$short_runtime"; rm -rf "$short_runtime"/wayland-*; export XDG_RUNTIME_DIR="$short_runtime"; fi
+ bridge_dir="${XDG_CACHE_HOME:-$HOME/.cache}/linuxrunner"
+ bridge="$bridge_dir/lr-kms-bridge-$(sha256sum lr-kms-bridge.c | cut -c1-16)"
+ if [ ! -x "$bridge" ]; then
+  mkdir -p "$bridge_dir" && gcc -O2 lr-kms-bridge.c -lX11 -lXext -lwayland-client -lxkbcommon -o "$bridge.new" && mv "$bridge.new" "$bridge" ||
+   { echo 'DESKTOP_STARTUP: wayfire bridge build failed'; exit 127; }
  fi
+ wayfire > "$session/wayfire.log" 2>&1 & wm=$!; surface=$wm
+ start_panel() {
+  ( i=0
+   until socket=$(ls "$XDG_RUNTIME_DIR" 2>/dev/null | grep -m1 '^wayland-[0-9]*$') && [ -S "$XDG_RUNTIME_DIR/$socket" ]; do
+    i=$((i+1)); [ "$i" -lt 600 ] || exit 1; sleep .5; done
+   publish_wayland "$XDG_RUNTIME_DIR/$socket"
+   if [ "$(cat "$session/display-transport" 2>/dev/null)" = direct-kms ]; then
+    rm -f "$session/native-input-ready"
+    LR_NATIVE_INPUT_READY="$session/native-input-ready" WAYLAND_DISPLAY=$socket exec "$bridge" "$WLR_DRM_DEVICES" --native-input
+   else WAYLAND_DISPLAY=$socket exec "$bridge" "$WLR_DRM_DEVICES"; fi ) >> "$session/kms-bridge.log" 2>&1 & panel=$!
+ }
+ start_panel
  limit=600
- echo "DESKTOP_STARTUP: environment=wayfire session=$wm output=${geometry:-unknown} renderer=$([ "${wf_gpu:-0}" = 1 ] && echo virgl || echo pixman)"
+ echo "DESKTOP_STARTUP: environment=wayfire session=$wm output=${geometry:-unknown} renderer=$wf_renderer"
 elif [ "$environment" = hyprland ]; then
  # Hyprland draws (GLES on llvmpipe, no GPU) to LinuxRunner's software KMS
  # device through seatd; lr-kms-bridge shows that output in this X server's
@@ -326,6 +330,7 @@ elif [ "$environment" = hyprland ]; then
  export AQ_NO_ATOMIC=1 AQ_NO_MODIFIERS=1
  if [ -c /dev/dri/card1 ]; then
   # GPU acceleration: virtio-gpu (Mesa's virgl driver, executed on Metal).
+  unset LIBGL_ALWAYS_SOFTWARE GALLIUM_DRIVER MESA_LOADER_DRIVER_OVERRIDE
   export AQ_DRM_DEVICES=/dev/dri/card1
   echo 'DESKTOP_STARTUP: hyprland renderer=virgl (GPU)'
  else
@@ -347,7 +352,7 @@ elif [ "$environment" = hyprland ]; then
  preset_mark="$config/hypr/.linuxrunner-preset"
  mkdir -p "$config/hypr" "$config/waybar" "$HOME/.local/share/backgrounds"
  cp -f linuxrunner-wallpaper.png "$HOME/.local/share/backgrounds/linuxrunner-aurora.png" 2>/dev/null
- unmanaged_sum() { awk '/^-- LinuxRunner (display|effects) \(managed\) begin/{skip=1} !skip; /^-- LinuxRunner (display|effects) \(managed\) end/{skip=0}' "$1" | sha256sum | cut -c1-64; }
+ unmanaged_sum() { awk '/^-- LinuxRunner (display|effects|session) \(managed\) begin/{skip=1} !skip; /^-- LinuxRunner (display|effects|session) \(managed\) end/{skip=0}' "$1" | sha256sum | cut -c1-64; }
  install_preset() { # $1 source, $2 destination
   if [ -e "$2" ]; then cp -p "$2" "$2.linuxrunner-old"; fi
   cp "$1" "$2.new" && mv "$2.new" "$2"
@@ -360,14 +365,16 @@ elif [ "$environment" = hyprland ]; then
  else upgrade=0; fi
  if [ "$upgrade" = 1 ] && ! cmp -s hyprland-preset.lua "$lua"; then
   install_preset hyprland-preset.lua "$lua"
-  for f in config.jsonc style.css; do
-   src=waybar-$f; [ "$f" = style.css ] && src=waybar-style.css; [ "$f" = config.jsonc ] && src=waybar-config.jsonc
-   # Waybar preset 1 was short and generated here; keep any other file.
-   if [ ! -e "$config/waybar/$f" ] || grep -q '#custom-launcher { background: #5e81ac' "$config/waybar/$f" 2>/dev/null ||
-      grep -q '"format": "  Apps  "' "$config/waybar/$f" 2>/dev/null; then install_preset "$src" "$config/waybar/$f"; fi
-  done
   echo "DESKTOP_STARTUP: hyprland preset=2 installed"
  fi
+ # Install missing panel files even when the compositor file is customized.
+ for f in config.jsonc style.css; do
+   src=waybar-$f; [ "$f" = style.css ] && src=waybar-style.css; [ "$f" = config.jsonc ] && src=waybar-config.jsonc
+   # Waybar preset 1 was short and generated here; keep any other file.
+   if [ ! -e "$config/waybar/$f" ] || { [ "$upgrade" = 1 ] && {
+      grep -q '#custom-launcher { background: #5e81ac' "$config/waybar/$f" 2>/dev/null ||
+      grep -q '"format": "  Apps  "' "$config/waybar/$f" 2>/dev/null; }; }; then install_preset "$src" "$config/waybar/$f"; fi
+ done
  # foot and fuzzel in the LinuxRunner palette (Nord), first start only.
  if mkdir -p "$config/foot" && [ ! -e "$config/foot/foot.ini" ]; then
   printf '[main]\nfont=JetBrains Mono:size=11,monospace:size=11\npad=12x10\n\n[colors-dark]\nalpha=0.96\nbackground=1e232d\nforeground=d8dee9\ncursor=1e232d 88c0d0\nregular0=3b4252\nregular1=bf616a\nregular2=a3be8c\nregular3=ebcb8b\nregular4=81a1c1\nregular5=b48ead\nregular6=88c0d0\nregular7=e5e9f0\nbright0=4c566a\nbright1=d08770\nbright2=b1d196\nbright3=f0d399\nbright4=8fbcbb\nbright5=c895bf\nbright6=93ccdc\nbright7=eceff4\n' > "$config/foot/foot.ini"
@@ -391,9 +398,10 @@ elif [ "$environment" = hyprland ]; then
  effects=$(sh ./hyprland-effects.sh "$effects_profile" "${AQ_DRM_DEVICES:-}")
  echo "DESKTOP_STARTUP: hyprland effects=$effects_profile device=${AQ_DRM_DEVICES:-software}"
  if [ -e "$lua" ]; then
-  awk '/^-- LinuxRunner (display|effects) \(managed\) begin/{skip=1} !skip; /^-- LinuxRunner (display|effects) \(managed\) end/{skip=0}' "$lua" > "$lua.new" && {
+  awk '/^-- LinuxRunner (display|effects|session) \(managed\) begin/{skip=1} !skip; /^-- LinuxRunner (display|effects|session) \(managed\) end/{skip=0}' "$lua" > "$lua.new" && {
    if [ -n "$geometry" ]; then printf -- '-- LinuxRunner display (managed) begin\nhl.monitor({ output = "Virtual-1", mode = "%s@60", position = "0x0", scale = 1 })\n-- LinuxRunner display (managed) end\n' "$geometry"; fi
    printf -- '-- LinuxRunner effects (managed) begin\n%s\n-- LinuxRunner effects (managed) end\n' "$effects"
+   printf -- '-- LinuxRunner session (managed) begin\nhl.on("hyprland.start", function() hl.exec_cmd("/bin/sh %s/publish-wayland-env.sh") end)\n-- LinuxRunner session (managed) end\n' "$PWD"
   } >> "$lua.new" && mv "$lua.new" "$lua"
   # Remember the preset's own content so a later version can tell it was not edited.
   if [ "$upgrade" = 1 ]; then unmanaged_sum "$lua" > "$preset_mark"; fi
@@ -418,7 +426,10 @@ elif [ "$environment" = hyprland ]; then
      i=$((i+1)); [ "$i" -lt 600 ] || exit 1; sleep .5; done
     # The bridge shows the scanout of the card Hyprland drives (virtio-gpu or software KMS).
     publish_wayland "$XDG_RUNTIME_DIR/$socket"
-    WAYLAND_DISPLAY=$socket exec "$bridge" "${AQ_DRM_DEVICES%%:*}" ) >> "$session/kms-bridge.log" 2>&1 & panel=$!
+    if [ "$(cat "$session/display-transport" 2>/dev/null)" = direct-kms ]; then
+     rm -f "$session/native-input-ready"
+     LR_NATIVE_INPUT_READY="$session/native-input-ready" WAYLAND_DISPLAY=$socket exec "$bridge" "${AQ_DRM_DEVICES%%:*}" --native-input
+    else WAYLAND_DISPLAY=$socket exec "$bridge" "${AQ_DRM_DEVICES%%:*}"; fi ) >> "$session/kms-bridge.log" 2>&1 & panel=$!
  }
  start_panel
  integrated=1; limit=600
@@ -483,7 +494,7 @@ supervise() {
  # alone is restarted (a few times) while Hyprland runs.
  case "$environment" in plasma|lxqt|enlightenment|wayfire|hyprland)
   kill -0 "$wm" 2>/dev/null || { echo "$1: component_exited name=$(component_name "$wm") pid=$wm"; exit 1; }
-  if [ "$environment" = hyprland ] && [ -n "$panel" ] && ! kill -0 "$panel" 2>/dev/null; then
+  if { [ "$environment" = hyprland ] || [ "$environment" = wayfire ]; } && [ -n "$panel" ] && ! kill -0 "$panel" 2>/dev/null; then
    bridge_restarts=$((${bridge_restarts:-0} + 1))
    if [ "$bridge_restarts" -gt 5 ]; then echo "$1: component_failed name=$(component_name "$panel")"; panel=; failed="panel"; write_degraded
    else echo "$1: component_restarted name=$(component_name "$panel") attempt=$bridge_restarts/5"; sleep 1; start_panel; fi
@@ -513,6 +524,9 @@ supervise() {
 # Wayfire and Hyprland run no X window manager on this display: their mapped
 # full-screen output window (Wayfire's own, Hyprland's KMS bridge) makes them ready.
 nested_output_mapped() {
+ if [ "$(cat "$session/display-transport" 2>/dev/null)" = direct-kms ]; then
+  [ -n "$panel" ] && kill -0 "$panel" 2>/dev/null && [ -f "$session/native-input-ready" ]; return $?
+ fi
  root=$(xwininfo -root 2>/dev/null | awk '/-geometry/{split($2,g,"+"); print g[1]}')
  for w in $(xwininfo -root -children 2>/dev/null | awk -v g=" $root+0+0" 'index($0,g){print $1}'); do
   xwininfo -id "$w" 2>/dev/null | grep -q IsViewable && return 0

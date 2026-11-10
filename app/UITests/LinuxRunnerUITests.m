@@ -1,4 +1,5 @@
 #import <XCTest/XCTest.h>
+#import <UIKit/UIKit.h>
 #import <Vision/Vision.h>
 @interface LinuxRunnerUITests : XCTestCase
 @end
@@ -525,6 +526,351 @@
 - (void)shot:(XCUIApplication *)app name:(NSString *)name {
     XCTAttachment *a = [XCTAttachment attachmentWithScreenshot:app.screenshot]; a.name = name; a.lifetime = XCTAttachmentLifetimeKeepAlways; [self addAttachment:a];
 }
+- (BOOL)waitForWayfireLog:(NSString *)path marker:(NSString *)marker timeout:(NSTimeInterval)timeout {
+    NSPredicate *received = [NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary *bindings) {
+        (void)object; (void)bindings;
+        NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+        return [text containsString:marker];
+    }];
+    XCTNSPredicateExpectation *expectation = [[XCTNSPredicateExpectation alloc] initWithPredicate:received object:nil];
+    return [XCTWaiter waitForExpectations:@[expectation] timeout:timeout] == XCTWaiterResultCompleted;
+}
+- (void)verifyWayfireInputForRoot:(NSString *)root user:(NSString *)user log:(NSString *)log {
+    if ([NSFileManager.defaultManager fileExistsAtPath:log])
+        XCTAssertTrue([NSFileManager.defaultManager removeItemAtPath:log error:nil]);
+    XCUIApplication *app = [XCUIApplication new];
+    app.launchArguments = @[@"-Default Root", root, @"-LinuxRunnerRuntimeAutoStart", @"YES",
+        [@"-LinuxRunnerDesktop.environment." stringByAppendingString:root], @"wayfire",
+        [@"-LinuxRunnerDesktop.resolution." stringByAppendingString:root], @"0",
+        [@"-LinuxRunnerDefaultUser." stringByAppendingString:root], user,
+        @"-LinuxRunnerInput.mouseMode", @"touch", @"-LinuxRunnerDesktop.directKMS",
+        NSProcessInfo.processInfo.environment[@"LR_WAYFIRE_TEST_DIRECT"] ?: @"YES"];
+    [app launch];
+    XCUIElement *open = app.buttons[@"Open Desktop"];
+    XCTAssertTrue([open waitForExistenceWithTimeout:60]);
+    [open tap];
+    XCTAssertTrue([self waitForWayfireLog:log marker:@"WAYLAND_INPUT_READY" timeout:120]);
+    XCUIElement *status = app.staticTexts[@"GUI status"];
+    NSPredicate *ready = [NSPredicate predicateWithFormat:@"label CONTAINS %@", @"Desktop ready"];
+    XCTNSPredicateExpectation *display = [[XCTNSPredicateExpectation alloc] initWithPredicate:ready object:status];
+    XCTAssertEqual([XCTWaiter waitForExpectations:@[display] timeout:30], XCTWaiterResultCompleted);
+    [self shot:app name:@"Wayfire client in the iOS simulator"];
+    [app.navigationBars.buttons[@"Done"] tap];
+    XCTAssertTrue([open waitForExistenceWithTimeout:10]);
+    [open tap];
+    XCTNSPredicateExpectation *reconnected = [[XCTNSPredicateExpectation alloc] initWithPredicate:ready object:status];
+    XCTAssertEqual([XCTWaiter waitForExpectations:@[reconnected] timeout:30], XCTWaiterResultCompleted);
+    [XCUIDevice.sharedDevice pressButton:XCUIDeviceButtonHome];
+    [app activate];
+    XCUIElement *surface = [[app descendantsMatchingType:XCUIElementTypeAny] matchingIdentifier:@"Linux GUI surface"].firstMatch;
+    XCTAssertTrue([surface waitForExistenceWithTimeout:10]);
+    XCTAssertTrue([status.label containsString:@"Desktop ready"]);
+    [self tapLinuxX:320 y:240 app:app];
+    [app.buttons[@"GUI Keyboard"] tap];
+    XCTAssertTrue([app.keyboards.firstMatch waitForExistenceWithTimeout:10]);
+    [app typeText:@"a"];
+    [app.buttons[@"GUI Keyboard"] tap];
+    XCTAssertTrue([self waitForWayfireLog:log marker:@"WAYLAND_SHM_PASS" timeout:30]);
+    [self shot:app name:@"Wayfire received UIKit touch and keyboard input"];
+    NSString *events = [NSString stringWithContentsOfFile:log encoding:NSUTF8StringEncoding error:nil];
+    XCTAttachment *client = [XCTAttachment attachmentWithString:events];
+    client.name = @"Wayland client events";
+    client.lifetime = XCTAttachmentLifetimeKeepAlways;
+    [self addAttachment:client];
+}
+- (void)testWayfireSimulatorInput {
+    NSString *root = NSProcessInfo.processInfo.environment[@"LR_WAYFIRE_TEST_ROOT"];
+    NSString *log = NSProcessInfo.processInfo.environment[@"LR_WAYFIRE_TEST_LOG"];
+    NSString *user = NSProcessInfo.processInfo.environment[@"LR_WAYFIRE_TEST_USER"] ?: @"wayfiretest";
+    XCTSkipIf(root.length == 0 || log.length == 0, @"Set the Wayfire test root and client log paths.");
+    self.continueAfterFailure = NO;
+    for (int attempt = 0; attempt < 2; attempt++)
+        [self verifyWayfireInputForRoot:root user:user log:log];
+}
+
+- (XCUIApplication *)openWayfireAtResolution:(NSString *)resolution {
+    NSDictionary *environment = NSProcessInfo.processInfo.environment;
+    NSString *root = environment[@"LR_WAYFIRE_TEST_ROOT"];
+    XCUIApplication *app = [XCUIApplication new];
+    app.launchArguments = @[@"-Default Root", root, @"-LinuxRunnerRuntimeAutoStart", @"YES",
+        [@"-LinuxRunnerDesktop.environment." stringByAppendingString:root], environment[@"LR_WAYLAND_TEST_DESKTOP"] ?: @"wayfire",
+        [@"-LinuxRunnerDesktop.resolution." stringByAppendingString:root], resolution,
+        [@"-LinuxRunnerDefaultUser." stringByAppendingString:root], environment[@"LR_WAYFIRE_TEST_USER"] ?: @"wayfiretest",
+        @"-LinuxRunnerInput.mouseMode", @"touch", @"-LinuxRunnerDesktop.directKMS", @"YES",
+        @"-LinuxRunnerGraphics.gpuMode", environment[@"LR_WAYLAND_TEST_GPU"] ?: @"software",
+        @"-LinuxRunnerDesktop.metalPresentation", environment[@"LR_WAYLAND_TEST_PRESENTATION"] ?: @"NO"];
+    NSString *clipboard = environment[@"LR_WAYFIRE_TEST_CLIPBOARD"];
+    if (clipboard.length) app.launchEnvironment = @{@"LR_SIM_SCRIPT": @"wait:300", @"LR_SIM_CLIPBOARD_PATH": clipboard};
+    [app launch];
+    XCTAssertTrue([app.buttons[@"Open Desktop"] waitForExistenceWithTimeout:60]);
+    [app.buttons[@"Open Desktop"] tap];
+    [self waitForWayfireDesktop:app];
+    return app;
+}
+- (void)showWayfireControls:(XCUIApplication *)app {
+    XCUIElement *controls = app.buttons[@"Show Desktop Controls"];
+    if (controls.exists && controls.hittable) [controls tap];
+}
+- (void)waitForWayfireDesktop:(XCUIApplication *)app {
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:120];
+    do {
+        [self showWayfireControls:app];
+        XCUIElement *status = app.staticTexts[@"GUI status"];
+        if (status.exists && [status.label containsString:@"Desktop ready"]) return;
+        [NSThread sleepForTimeInterval:1];
+    } while (deadline.timeIntervalSinceNow > 0);
+    [self shot:app name:@"Wayfire readiness timeout"];
+    XCTFail(@"The desktop must report ready with its controls visible.");
+}
+- (void)pasteWayfireText:(NSString *)text app:(XCUIApplication *)app {
+    NSString *clipboard = NSProcessInfo.processInfo.environment[@"LR_WAYFIRE_TEST_CLIPBOARD"];
+    if (clipboard.length) {
+        NSString *ready = [clipboard stringByAppendingString:@".ready"];
+        [NSFileManager.defaultManager removeItemAtPath:ready error:nil];
+        XCTAssertTrue([text writeToFile:clipboard atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+        XCTAssertTrue([self waitForWayfireLog:ready marker:@"READY" timeout:30]);
+    } else {
+        UIPasteboard.generalPasteboard.string = text;
+        [NSThread sleepForTimeInterval:1];
+    }
+    [app.buttons[@"Desktop"] tap];
+    [app.buttons[@"Paste Clipboard Text"] tap];
+    XCUIElement *allow = app.buttons[@"Allow Paste"];
+    if ([allow waitForExistenceWithTimeout:2]) [allow tap];
+}
+- (void)testWayfireExtendedInput {
+    NSDictionary *environment = NSProcessInfo.processInfo.environment;
+    NSString *root = environment[@"LR_WAYFIRE_TEST_ROOT"], *log = environment[@"LR_WAYFIRE_TEST_LOG"];
+    XCTSkipIf(root.length == 0 || log.length == 0, @"Set the prepared Wayfire root and extended client log.");
+    self.continueAfterFailure = NO;
+    [NSFileManager.defaultManager removeItemAtPath:log error:nil];
+    XCUIApplication *app = [self openWayfireAtResolution:@"0"];
+    XCTAssertTrue([self waitForWayfireLog:log marker:@"WAYLAND_INPUT_READY" timeout:60]);
+    [self tapLinuxX:320 y:240 app:app];
+    [app.buttons[@"GUI Shift"] tap];
+    XCTAssertTrue([self waitForWayfireLog:log marker:@"sym=65505" timeout:10]);
+    [app.navigationBars.buttons[@"Done"] tap];
+    XCTAssertTrue([app.buttons[@"Open Desktop"] waitForExistenceWithTimeout:10]);
+    [app.buttons[@"Open Desktop"] tap];
+    [self waitForWayfireDesktop:app];
+    [app.buttons[@"GUI Keyboard"] tap];
+    XCTAssertTrue([app.keyboards.firstMatch waitForExistenceWithTimeout:10]);
+    [app typeText:@"a"];
+    XCTAssertTrue([self waitForWayfireLog:log marker:@"sym=97 utf32=97 down=1" timeout:10]);
+    [app typeText:@"A09!?"];
+    [app.buttons[@"GUI Keyboard"] tap];
+    XCTAssertTrue([self waitForWayfireLog:log marker:@"utf32=63 down=1" timeout:15]);
+    XCUIElement *surface = [[app descendantsMatchingType:XCUIElementTypeAny] matchingIdentifier:@"Linux GUI surface"].firstMatch;
+    [[surface coordinateWithNormalizedOffset:CGVectorMake(.5,.5)] pressForDuration:.1 thenDragToCoordinate:[surface coordinateWithNormalizedOffset:CGVectorMake(.55,.52)]];
+    NSString *before = [NSString stringWithContentsOfFile:log encoding:NSUTF8StringEncoding error:nil];
+    NSMutableString *text = [NSMutableString new];
+    for (unsigned i = 0; i < 1000; i++) [text appendString:@"aA0!λ😀\n"];
+    [text appendString:@"END"];
+    [self pasteWayfireText:text app:app];
+    XCTAssertTrue([self waitForWayfireLog:log marker:@"sym=68 utf32=68 down=1" timeout:120]);
+    NSString *events = [NSString stringWithContentsOfFile:log encoding:NSUTF8StringEncoding error:nil];
+    NSString *pasted = [events substringFromIndex:before.length];
+    NSMutableData *received = [NSMutableData new];
+    NSRegularExpression *keys = [NSRegularExpression regularExpressionWithPattern:@"utf32=([0-9]+) down=1" options:0 error:nil];
+    for (NSTextCheckingResult *match in [keys matchesInString:pasted options:0 range:NSMakeRange(0,pasted.length)]) {
+        uint32_t value = [[pasted substringWithRange:[match rangeAtIndex:1]] intValue];
+        if (value) [received appendBytes:&value length:sizeof value];
+    }
+    NSString *normalized = [text stringByReplacingOccurrencesOfString:@"\n" withString:@"\r"];
+    XCTAssertEqualObjects(received, [normalized dataUsingEncoding:NSUTF32LittleEndianStringEncoding]);
+    [self shot:app name:@"Direct Wayfire after Unicode clipboard input"];
+    XCTAttachment *client = [XCTAttachment attachmentWithString:events];
+    client.name = @"Extended Wayland client events"; client.lifetime = XCTAttachmentLifetimeKeepAlways;
+    [self addAttachment:client];
+    [self pasteWayfireText:[@"x" stringByPaddingToLength:16385 withString:@"x" startingAtIndex:0] app:app];
+    NSString *afterLimit = [NSString stringWithContentsOfFile:log encoding:NSUTF8StringEncoding error:nil];
+    XCTAssertEqual([keys numberOfMatchesInString:afterLimit options:0 range:NSMakeRange(0,afterLimit.length)],
+                   [keys numberOfMatchesInString:events options:0 range:NSMakeRange(0,events.length)]);
+    [app.buttons[@"GUI Close"] tap];
+}
+- (void)testWayfireResolutionMatrix {
+    NSString *root = NSProcessInfo.processInfo.environment[@"LR_WAYFIRE_TEST_ROOT"];
+    XCTSkipIf(root.length == 0, @"Set the prepared Wayfire root.");
+    self.continueAfterFailure = NO;
+    for (NSString *resolution in @[@"0", @"1", @"2", @"3", @"4"]) {
+        XCUIApplication *app = [self openWayfireAtResolution:resolution];
+        [self shot:app name:[@"Direct Wayfire resolution " stringByAppendingString:resolution]];
+        [app.buttons[@"GUI Close"] tap];
+    }
+}
+- (void)testWayfireXwayland {
+    NSDictionary *environment = NSProcessInfo.processInfo.environment;
+    NSString *exchange = environment[@"LR_WAYFIRE_TEST_EXCHANGE"], *log = environment[@"LR_XWAYLAND_TEST_LOG"];
+    XCTSkipIf(exchange.length == 0 || log.length == 0, @"Set the prepared Xwayland fixture paths.");
+    self.continueAfterFailure = NO;
+    [NSFileManager.defaultManager removeItemAtPath:log error:nil];
+    XCUIApplication *app = [self openWayfireAtResolution:@"0"];
+    NSArray<NSURL *> *items = [NSFileManager.defaultManager contentsOfDirectoryAtURL:[NSURL fileURLWithPath:exchange] includingPropertiesForKeys:@[NSURLContentModificationDateKey] options:0 error:nil];
+    NSURL *session = nil; NSDate *latest = NSDate.distantPast;
+    for (NSURL *item in items) if ([item.lastPathComponent hasPrefix:@"session-"]) {
+        NSDate *modified = nil; [item getResourceValue:&modified forKey:NSURLContentModificationDateKey error:nil];
+        if ([modified compare:latest] == NSOrderedDescending) { latest = modified; session = item; }
+    }
+    XCTAssertNotNil(session);
+    NSURL *request = [[session URLByAppendingPathComponent:@"requests"] URLByAppendingPathComponent:@"launch-xwayland-test.pending"];
+    NSString *command = @"export LR_GUI_GPU_MODE=mesa\nexec /bin/sh /home/mobile/Downloads/.linuxrunner/gui/launch.sh /tmp /home/mobile/Downloads/.linuxrunner/gui/gui-test > /tmp/xwayland-input.log 2>&1\n";
+    XCTAssertTrue([command writeToURL:request atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+    [NSFileManager.defaultManager setAttributes:@{NSFilePosixPermissions:@0644} ofItemAtPath:request.path error:nil];
+    XCTAssertTrue([NSFileManager.defaultManager moveItemAtURL:request toURL:[[request URLByDeletingPathExtension] URLByAppendingPathExtension:@"sh"] error:nil]);
+    XCTAssertTrue([self waitForWayfireLog:log marker:@"GUI_TEST: mapped real ARM64 Xlib window" timeout:30]);
+    XCTAssertTrue([self waitForRenderedText:@"Click counter" app:app timeout:30]);
+    NSString *events = [NSString stringWithContentsOfFile:log encoding:NSUTF8StringEncoding error:nil];
+    NSRegularExpression *geometry = [NSRegularExpression regularExpressionWithPattern:@"GUI_TEST: geometry=(-?[0-9]+),(-?[0-9]+),([0-9]+),([0-9]+)" options:0 error:nil];
+    NSTextCheckingResult *position = [geometry matchesInString:events options:0 range:NSMakeRange(0,events.length)].lastObject;
+    XCTAssertNotNil(position);
+    CGFloat x = [[events substringWithRange:[position rangeAtIndex:1]] doubleValue];
+    CGFloat y = [[events substringWithRange:[position rangeAtIndex:2]] doubleValue];
+    [self tapLinuxX:x+180 y:y+230 app:app];
+    [app.buttons[@"GUI Keyboard"] tap];
+    XCTAssertTrue([app.keyboards.firstMatch waitForExistenceWithTimeout:10]);
+    [app typeText:@"abc"];
+    XCTAssertTrue([self waitForWayfireLog:log marker:@"keyboard-count=3" timeout:15]);
+    XCTAssertTrue([self waitForWayfireLog:log marker:@"click=1 button=1" timeout:10]);
+    [app.buttons[@"GUI Keyboard"] tap];
+    [self pasteWayfireText:@"λ😀" app:app];
+    XCTAssertTrue([self waitForWayfireLog:log marker:@"keysym=0x010003bb down=1" timeout:15]);
+    XCTAssertTrue([self waitForWayfireLog:log marker:@"keysym=0x0101f600 down=1" timeout:15]);
+    [self shot:app name:@"Xwayland Xlib window receives touch and keyboard input"];
+    [app.buttons[@"GUI Close"] tap];
+}
+- (void)testRemoveEnvironment {
+    NSString *name = NSProcessInfo.processInfo.environment[@"LR_REMOVE_TEST_NAME"];
+    XCTSkipIf(name.length == 0, @"Create a disposable environment for removal.");
+    self.continueAfterFailure = NO;
+    XCUIApplication *app = [XCUIApplication new]; [app launch];
+    [app.buttons[@"Distributions"].firstMatch tap];
+    XCTAssertTrue([app.staticTexts[name].firstMatch waitForExistenceWithTimeout:15]);
+    [app.staticTexts[name].firstMatch tap];
+    [app.buttons[@"Remove Environment"] tap];
+    XCTAssertTrue([app.buttons[@"Confirm Remove Environment"].firstMatch waitForExistenceWithTimeout:5]);
+    [self shot:app name:@"Environment removal confirmation names the environment"];
+    [app.buttons[@"Cancel"] tap];
+    XCTAssertTrue(app.buttons[@"Remove Environment"].exists);
+    [app.buttons[@"Remove Environment"] tap];
+    [app.buttons[@"Confirm Remove Environment"].firstMatch tap];
+    NSPredicate *gone = [NSPredicate predicateWithFormat:@"exists == NO"];
+    XCTNSPredicateExpectation *removed = [[XCTNSPredicateExpectation alloc] initWithPredicate:gone object:app.staticTexts[name].firstMatch];
+    XCTAssertEqual([XCTWaiter waitForExpectations:@[removed] timeout:20], XCTWaiterResultCompleted);
+    [self shot:app name:@"Environment removed from Distributions"];
+}
+- (void)testNormalWayfireStartup {
+    NSString *bundle = NSProcessInfo.processInfo.environment[@"LR_DEVICE_APP_BUNDLE"];
+    XCTSkipIf(bundle.length == 0, @"Set the installed app bundle identifier.");
+    self.continueAfterFailure = NO;
+    XCUIApplication *app = [[XCUIApplication alloc] initWithBundleIdentifier:bundle];
+    [app launch];
+    XCTAssertTrue([app.buttons[@"Open Desktop"] waitForExistenceWithTimeout:60]);
+    [app.buttons[@"Open Desktop"] tap];
+    XCTAssertTrue([app.staticTexts[@"Choose a Linux user"] waitForExistenceWithTimeout:15]);
+    [self shot:app name:@"Default root account receives an immediate account prompt"];
+}
+- (void)testWayfireFirefoxRendering {
+    NSString *root = NSProcessInfo.processInfo.environment[@"LR_WAYFIRE_TEST_ROOT"];
+    XCTSkipIf(root.length == 0, @"Set the prepared Wayfire root.");
+    self.continueAfterFailure = NO;
+    XCUIApplication *app = [self openWayfireAtResolution:@"2"];
+    [self shot:app name:@"Wayfire before Firefox"];
+    [app.navigationBars.buttons[@"Done"] tap];
+    [app.buttons[@"Terminal"].firstMatch tap];
+    XCTAssertTrue([app.webViews.firstMatch waitForExistenceWithTimeout:30]);
+    [app.webViews.firstMatch tap];
+    XCTAssertTrue([app.keyboards.firstMatch waitForExistenceWithTimeout:30]);
+    NSString *profile = [@"/tmp/lr-firefox-render-" stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSString *command = [NSString stringWithFormat:
+        @"mkdir -p %@; (unset DISPLAY XAUTHORITY WAYLAND_DISPLAY; /bin/sh /home/mobile/Downloads/.linuxrunner/gui/launch.sh /tmp /usr/lib/firefox-esr/firefox-esr --no-remote --new-instance --profile %@ file:///home/mobile/Downloads/.linuxrunner/gui/firefox-test.html) > %@.log 2>&1 &\n", profile, profile, profile];
+    [app typeText:command];
+    [NSThread sleepForTimeInterval:2];
+    [self shot:app name:@"Firefox terminal launch"];
+    [app.buttons[@"Done"] tap];
+    [app.buttons[@"Open Desktop"] tap];
+    BOOL heading = [self waitForRenderedText:@"REAL LINUX ARM64" app:app timeout:180];
+    [self shot:app name:@"Firefox page rendering result"];
+    XCTAssertTrue(heading, @"The screenshot must contain the Firefox fixture heading.");
+    BOOL script = [self waitForRenderedText:@"JavaScript 3 storage-ok" app:app timeout:30];
+    [self shot:app name:@"Firefox JavaScript rendering result"];
+    XCTAssertTrue(script, @"The screenshot must contain the fixture script result.");
+    [self showWayfireControls:app];
+    [self tapLinuxX:320 y:280 app:app];
+    [app.buttons[@"GUI Keyboard"] tap];
+    [app.buttons[@"GUI Tab"] tap];
+    [app typeText:@"Firefox input checked"];
+    [app.buttons[@"GUI Tab"] tap];
+    [app typeText:@"\n"];
+    [app.buttons[@"GUI Keyboard"] tap];
+    BOOL clicked = [self waitForRenderedText:@"clicked 1 Firefox input checked" app:app timeout:30];
+    [self shot:app name:@"Firefox input and click result"];
+    XCTAssertTrue(clicked, @"The page must show the typed text and click count.");
+    for (unsigned sample = 0; sample < 18; sample++) {
+        [NSThread sleepForTimeInterval:10];
+        XCTAssertEqual(app.state, XCUIApplicationStateRunningForeground);
+        if ((sample + 1) % 6 == 0) {
+            BOOL retained = [self waitForRenderedText:@"clicked 1 Firefox input checked" app:app timeout:10];
+            [self shot:app name:[NSString stringWithFormat:@"Firefox stability %u seconds", (sample + 1) * 10]];
+            XCTAssertTrue(retained, @"The page must remain visible during the stability check.");
+        }
+    }
+}
+- (void)testInspectInstalledApp {
+    NSString *bundle = NSProcessInfo.processInfo.environment[@"LR_DEVICE_APP_BUNDLE"];
+    XCTSkipIf(bundle.length == 0, @"Set the installed app bundle identifier.");
+    XCUIApplication *app = [[XCUIApplication alloc] initWithBundleIdentifier:bundle];
+    [app activate];
+    for (NSString *label in [NSProcessInfo.processInfo.environment[@"LR_DEVICE_UI_TAPS"] componentsSeparatedByString:@"|"]) {
+        if (label.length == 0) continue;
+        if ([label hasPrefix:@"wait:"]) {
+            [NSThread sleepForTimeInterval:MIN(120, MAX(0, [label substringFromIndex:5].doubleValue))];
+            continue;
+        }
+        if ([label hasPrefix:@"linux:"]) {
+            NSArray<NSString *> *point = [[label substringFromIndex:6] componentsSeparatedByString:@","];
+            XCTAssertEqual(point.count, 2u);
+            [self tapLinuxX:point[0].doubleValue y:point[1].doubleValue app:app];
+            continue;
+        }
+        if ([label hasPrefix:@"type:"]) { [app typeText:[label substringFromIndex:5]]; continue; }
+        XCUIElement *target = app.buttons[label].firstMatch;
+        if (!target.exists) target = app.staticTexts[label].firstMatch;
+        XCTAssertTrue([target waitForExistenceWithTimeout:10]); [target tap];
+    }
+    [self shot:app name:@"Installed app current screen"];
+    XCTAttachment *hierarchy = [XCTAttachment attachmentWithString:app.debugDescription];
+    hierarchy.name = @"Installed app controls";
+    hierarchy.lifetime = XCTAttachmentLifetimeKeepAlways;
+    [self addAttachment:hierarchy];
+}
+- (void)testWayfireDeviceLifecycle {
+    NSString *root = NSProcessInfo.processInfo.environment[@"LR_WAYFIRE_TEST_ROOT"];
+    XCTSkipIf(root.length == 0, @"Copy the prepared guest into the device test app.");
+    self.continueAfterFailure = NO;
+    XCUIApplication *app = [self openWayfireAtResolution:@"0"];
+    [self tapLinuxX:320 y:240 app:app];
+    [app.buttons[@"GUI Keyboard"] tap];
+    XCTAssertTrue([app.keyboards.firstMatch waitForExistenceWithTimeout:10]);
+    [app.keys[@"a"] tap];
+    [app typeText:@"A09!?"];
+    [app.buttons[@"GUI Keyboard"] tap];
+    [self shot:app name:@"Native Wayland input"];
+    [app.navigationBars.buttons[@"Done"] tap];
+    XCTAssertTrue([app.buttons[@"Open Desktop"] waitForExistenceWithTimeout:10]);
+    [app.buttons[@"Open Desktop"] tap];
+    [self waitForWayfireDesktop:app];
+    XCUIDevice.sharedDevice.orientation = UIDeviceOrientationLandscapeLeft;
+    [self shot:app name:@"Native Wayland landscape"];
+    XCUIDevice.sharedDevice.orientation = UIDeviceOrientationPortrait;
+    [XCUIDevice.sharedDevice pressButton:XCUIDeviceButtonHome];
+    [app activate];
+    XCUIElement *surface = [[app descendantsMatchingType:XCUIElementTypeAny] matchingIdentifier:@"Linux GUI surface"].firstMatch;
+    XCTAssertTrue([surface waitForExistenceWithTimeout:15]);
+    [self waitForWayfireDesktop:app];
+    [self shot:app name:@"Native Wayland after app activation"];
+    [app.buttons[@"GUI Close"] tap];
+}
+
 - (void)testDesktopPointerInput {
     self.continueAfterFailure = NO;
     NSString *mode = NSProcessInfo.processInfo.environment[@"LR_TEST_MOUSE_MODE"] ?: @"pointer";

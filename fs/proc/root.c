@@ -21,10 +21,11 @@ static int proc_show_stat(struct proc_entry *UNUSED(entry), struct proc_data *bu
     // The first four are measured host timeshare counters. Guest IRQ, steal
     // and kernel guest-time counters do not exist in this userspace runtime.
     proc_printf(buf, "cpu  %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64" 0 0 0 0 0 0\n", usage.user_ticks, usage.nice_ticks, usage.system_ticks, usage.idle_ticks);
-    for (unsigned cpu = 0; cpu < PLATFORM_GUEST_CPU_COUNT; cpu++) {
+    unsigned cpus = platform_guest_cpu_count();
+    for (unsigned cpu = 0; cpu < cpus; cpu++) {
         // Project the aggregate over the synthetic guest CPU topology; these
         // are not individual physical CPU counters. Sum equals the aggregate.
-#define CPU_SHARE(v) ((v) / PLATFORM_GUEST_CPU_COUNT + (cpu < (v) % PLATFORM_GUEST_CPU_COUNT))
+#define CPU_SHARE(v) ((v) / cpus + (cpu < (v) % cpus))
         proc_printf(buf, "cpu%u %"PRIu64" %"PRIu64" %"PRIu64" %"PRIu64" 0 0 0 0 0 0\n", cpu,
             CPU_SHARE(usage.user_ticks), CPU_SHARE(usage.nice_ticks), CPU_SHARE(usage.system_ticks), CPU_SHARE(usage.idle_ticks));
 #undef CPU_SHARE
@@ -40,7 +41,7 @@ static int proc_show_stat(struct proc_entry *UNUSED(entry), struct proc_data *bu
 }
 
 static int proc_show_cpuinfo(struct proc_entry *UNUSED(entry), struct proc_data *buf) {
-    unsigned cpus = PLATFORM_GUEST_CPU_COUNT;
+    unsigned cpus = platform_guest_cpu_count();
     for (unsigned i = 0; i < cpus; i++) {
         proc_printf(buf, "processor\t: %u\n", i);
         proc_printf(buf, "BogoMIPS\t: 48.00\n");
@@ -65,8 +66,11 @@ static int proc_show_meminfo(struct proc_entry *UNUSED(entry), struct proc_data 
     // Cap reported memory to match sys_sysinfo limit.
     // Reporting full host RAM (e.g. 24GB) causes V8 to set heap_size_limit=4GB
     // which exhausts the emulator's limited address space.
-    #define MEMINFO_MAX_RAM (4ULL * 1024 * 1024 * 1024)
-    if (usage.total > MEMINFO_MAX_RAM)
+    #define MEMINFO_MAX_RAM PLATFORM_GUEST_MEMORY_DEFAULT_CAP
+    if (platform_guest_memory_choice()) {
+        usage.total = platform_guest_memory_choice();   // Settings › CPU & Memory
+        if (usage.free > usage.total) usage.free = usage.total;
+    } else if (usage.total > MEMINFO_MAX_RAM)
         usage.total = MEMINFO_MAX_RAM;
 #if ANON_MMAP_LIMIT_PAGES > 0
     extern _Atomic long anon_page_count;

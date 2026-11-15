@@ -45,7 +45,11 @@ static double LRTransportClock(void){struct timespec t;clock_gettime(CLOCK_MONOT
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{@autoreleasepool{
         [self status:@"Waiting for Linux display…"];
         BOOL connected=NO;
-        for(unsigned attempt=0;attempt<300&&!atomic_load(&self->_stopped);attempt++){
+        // Up to ~2 minutes: x11vnc starts alongside the window manager, panel
+        // and file manager, and on the GPU display server on a phone that can
+        // take well over the former 30 s. The session is alive meanwhile; a
+        // stopped session ends the wait at once (_stopped).
+        for(unsigned attempt=0;attempt<1200&&!atomic_load(&self->_stopped);attempt++){
             int fd=socket(AF_INET,SOCK_STREAM,0);if(fd<0)break;
             int yes=1;setsockopt(fd,SOL_SOCKET,SO_NOSIGPIPE,&yes,sizeof yes);
             setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&yes,sizeof yes);
@@ -129,11 +133,18 @@ static double LRTransportClock(void){struct timespec t;clock_gettime(CLOCK_MONOT
     // Hextile (bounded 16x16 tiles), Raw fallback, DesktopSize, Cursor and
     // PointerPos (the app draws the pointer: x11vnc does not repaint a cursor
     // drawn into the framebuffer when this viewer itself moves the pointer).
-    const uint8_t encodings[24]={2,0,0,5,0,0,0,5,0,0,0,0,255,255,255,33,255,255,255,17,255,255,255,24};
+    // Hextile, CopyRect, Raw, NewFBSize, RichCursor, PointerPos. CopyRect lets
+    // x11vnc move window contents and scroll with a few bytes instead of
+    // resending the pixels (it sends CopyRect on window moves and scrolls).
+    const uint8_t encodings[28]={2,0,0,6,0,0,0,5,0,0,0,1,0,0,0,0,255,255,255,33,255,255,255,17,255,255,255,24};
     return [self write:format count:sizeof format]&&[self write:encodings count:sizeof encodings];
 }
+- (uint64_t)receivedBytes {return __atomic_load_n(&_bytes,__ATOMIC_RELAXED);}
+- (BOOL)requestFullUpdate {return atomic_load(&_ready)&&!atomic_load(&_stopped)&&[self request:NO];}
 - (BOOL)request:(BOOL)incremental {
-    uint8_t packet[10]={3,incremental?1:0,0,0,0,0,(uint8_t)(_width>>8),(uint8_t)_width,(uint8_t)(_height>>8),(uint8_t)_height};
+    uint16_t w=_width,h=_height;
+    if(incremental&&self.minimalUpdates&&w&&h){w=1;h=1;}
+    uint8_t packet[10]={3,incremental?1:0,0,0,0,0,(uint8_t)(w>>8),(uint8_t)w,(uint8_t)(h>>8),(uint8_t)h};
     return [self write:packet count:sizeof packet];
 }
 - (BOOL)update {
@@ -163,17 +174,61 @@ static double LRTransportClock(void){struct timespec t;clock_gettime(CLOCK_MONOT
         if(encoding==0xffffff21){if(x||y||!lr_rfb_dimensions(w,h,&bytes))return NO;
             _width=w;_height=h;_pixels=[NSMutableData dataWithLength:bytes];changed=YES;damage=(LRFrameDamage){0,0,w,h};continue;}
         if(encoding==0xffffff11){size_t pb,mb;
-            if(!lr_rfb_cursor_sizes(w,h,&pb,&mb)||(w&&(x>=w||y>=h))){[self fail:@"Invalid cursor shape"];return NO;}
+            // A cursor is decoration: an unusual one must never end the
+            // display connection (that froze the desktop when GNOME hid the
+            // pointer while typing: x11vnc crops the empty cursor but keeps
+            // its hotspot, which then lies outside the image). Hotspots are
+            // clamped into the image; oversized shapes are read and skipped
+            // (bounded) and the pointer is hidden.
+            if(!lr_rfb_cursor_sizes(w,h,&pb,&mb)){
+                uint64_t skip=(uint64_t)w*h*4+(uint64_t)((w+7)/8)*h;
+                if(skip>64ull*1024*1024){[self fail:@"Invalid cursor shape"];return NO;}
+                uint8_t sink[4096];while(skip){size_t part=(size_t)MIN((uint64_t)sizeof sink,skip);if(![self read:sink count:part])return NO;skip-=part;}
+                void (^hide)(NSData *,uint16_t,uint16_t,uint16_t,uint16_t)=self.cursorHandler;if(hide)hide(nil,0,0,0,0);
+                continue;
+            }
+            if(w&&x>=w)x=w-1;
+            if(h&&y>=h)y=h-1;
             NSMutableData *shape=[NSMutableData dataWithLength:pb+mb],*bgra=nil;
             if(pb+mb&&![self read:shape.mutableBytes count:pb+mb])return NO;
             if(w&&h){bgra=[NSMutableData dataWithLength:pb];
-                if(!lr_rfb_cursor_bgra(shape.bytes,(const uint8_t *)shape.bytes+pb,w,h,bgra.mutableBytes)){[self fail:@"Invalid cursor shape"];return NO;}}
+                if(!lr_rfb_cursor_bgra(shape.bytes,(const uint8_t *)shape.bytes+pb,w,h,bgra.mutableBytes))bgra=nil;}
             void (^cursor)(NSData *,uint16_t,uint16_t,uint16_t,uint16_t)=self.cursorHandler;
             if(cursor)cursor(bgra,w,h,x,y);
             continue;}
         if(encoding==0xffffff18){void (^moved)(uint16_t,uint16_t)=self.pointerPositionHandler;
             if(moved&&x<_width&&y<_height)moved(x,y);
             continue;}
+        // CopyRect: copy a framebuffer area (source in the 4-byte payload) to
+        // this rectangle. Rows are copied in the order that keeps overlapping
+        // areas correct. Device report: x11vnc sent CopyRect on a window move
+        // and the client, which did not handle it, closed the display.
+        if(encoding==1){
+            uint8_t source[4];if(![self read:source count:4])return NO;
+            uint16_t sx,sy;memcpy(&sx,source,2);memcpy(&sy,source+2,2);sx=ntohs(sx);sy=ntohs(sy);
+            size_t destination,from;
+            if(!w||!h)continue;
+            if(!lr_rfb_rectangle(_width,_height,x,y,w,h,&destination)||!lr_rfb_rectangle(_width,_height,sx,sy,w,h,&from)){[self request:NO];continue;}   // stale geometry: ask for a full frame
+            uint8_t *pixels=_pixels.mutableBytes;size_t stride=(size_t)_width*4,row=(size_t)w*4;
+            if(sy<y)for(uint32_t r=h;r-->0;)memmove(pixels+(size_t)(y+r)*stride+(size_t)x*4,pixels+(size_t)(sy+r)*stride+(size_t)sx*4,row);
+            else for(uint32_t r=0;r<h;r++)memmove(pixels+(size_t)(y+r)*stride+(size_t)x*4,pixels+(size_t)(sy+r)*stride+(size_t)sx*4,row);
+            changed=YES;damage=lr_damage_union(damage,(LRFrameDamage){x,y,w,h});
+            continue;
+        }
+        // A rectangle beyond the current framebuffer: the X screen was resized
+        // (GNOME/Zorin applies its display configuration through RandR) and
+        // x11vnc sent pixels of the new size before its NewFBSize rectangle.
+        // Grow the framebuffer to cover it (bounded by lr_rfb_dimensions),
+        // keeping the existing pixels, instead of ending the connection; the
+        // following NewFBSize settles the final size.
+        if((encoding==0||encoding==5)&&_width&&_height&&!lr_rfb_rectangle(_width,_height,x,y,w,h,&bytes)){
+            uint32_t nw=MAX((uint32_t)_width,(uint32_t)x+w),nh=MAX((uint32_t)_height,(uint32_t)y+h);size_t nb;
+            if(nw<=UINT16_MAX&&nh<=UINT16_MAX&&lr_rfb_dimensions((uint16_t)nw,(uint16_t)nh,&nb)){
+                NSMutableData *grown=[NSMutableData dataWithLength:nb];
+                for(uint32_t row=0;row<_height;row++)memcpy((uint8_t *)grown.mutableBytes+(size_t)row*nw*4,(const uint8_t *)_pixels.bytes+(size_t)row*_width*4,(size_t)_width*4);
+                _pixels=grown;_width=(uint16_t)nw;_height=(uint16_t)nh;changed=YES;damage=(LRFrameDamage){0,0,_width,_height};
+            }
+        }
         if((encoding!=0&&encoding!=5)||!lr_rfb_rectangle(_width,_height,x,y,w,h,&bytes)){[self fail:@"Unsupported encoding or invalid rectangle"];return NO;}
         if(encoding==5){if(![self hextileX:x y:y width:w height:h]){[self fail:@"Invalid Hextile tile"];return NO;}}
         else if(!x&&w==_width){

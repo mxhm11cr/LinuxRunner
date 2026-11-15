@@ -20,18 +20,13 @@
 #include <virgl/virglrenderer.h>
 #include "graphics/virgl_backend.h"
 #include "graphics/virgl_caps.h"
+#include "graphics/virgl_zero_border.h"
 
 // Private bridge for the transparent-zero border used by desktop samplers.
 // ANGLE keeps the full GLES border-color extension unadvertised. virglrenderer
 // validates that the border is zero before calling the Metal operation.
-// Requires GPU dependencies rebuilt with scripts/gpu/angle-zero-border.py and
-// virglrenderer-angle-zero-border.patch (scripts/build-gpu-deps.sh), which
-// define LINUXRUNNER_ANGLE_ZERO_BORDER. Older dependency builds keep the
-// previous sampler behaviour.
-#ifdef LINUXRUNNER_ANGLE_ZERO_BORDER
-extern GLboolean LinuxRunnerANGLESetSamplerZeroBorder(GLuint sampler, GLenum pname);
-void lr_vrend_set_zero_border_sampler(GLboolean (*operation)(GLuint, GLenum));
-#endif
+// When both optional symbols are exported by a compatible GPU dependency
+// bundle, registration happens at startup. Older bundles remain unchanged.
 
 // virglrenderer's public header declares the transfer box opaquely; this is
 // its layout (src/virgl_hw.h), part of the transfer ABI.
@@ -79,9 +74,8 @@ const char *lr_virgl_host_status(void) { return status; }
 
 static void *gpu_main(void *unused) {
     (void) unused;
-#ifdef LINUXRUNNER_ANGLE_ZERO_BORDER
-    lr_vrend_set_zero_border_sampler(LinuxRunnerANGLESetSamplerZeroBorder);
-#endif
+    if (lr_register_zero_border_bridge())
+        fprintf(stderr, "VIRGL_HOST: optional zero-border sampler bridge registered\n");
     display = eglGetPlatformDisplayEXT(EGL_PLATFORM_ANGLE_ANGLE, (void *) EGL_DEFAULT_DISPLAY,
         (const EGLint[]) {EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE, EGL_NONE});
     EGLint major = 0, minor = 0, count = 0;
@@ -138,20 +132,62 @@ static void *gpu_main(void *unused) {
     }
     return NULL;
 }
-static void on_gpu(void (*run)(void *), void *arg) {
-    pthread_mutex_lock(&call_lock);
+// iOS must not receive GPU work from an app in the background: work submitted
+// then is aborted and ANGLE's Metal context is lost, after which every later
+// guest frame fails (a frozen or black desktop on return). While suspended,
+// guest GPU calls wait here (the guest's X server simply pauses) and nothing
+// reaches Metal. lr_virgl_host_set_suspended() drains in-flight work first.
+static bool gpu_suspended;
+static pthread_cond_t resume_cond = PTHREAD_COND_INITIALIZER;
+static void dispatch_locked(void (*run)(void *), void *arg) {   // call_lock held
     pthread_mutex_lock(&slot_lock);
     job = run; job_arg = arg; job_done = false;
     pthread_cond_broadcast(&slot_cond);
     while (!job_done) pthread_cond_wait(&slot_cond, &slot_lock);
     pthread_mutex_unlock(&slot_lock);
+}
+static void on_gpu(void (*run)(void *), void *arg) {
+    pthread_mutex_lock(&call_lock);
+    while (gpu_suspended) pthread_cond_wait(&resume_cond, &call_lock);
+    dispatch_locked(run, arg);
     pthread_mutex_unlock(&call_lock);
 }
 // Completion of all GPU work issued so far (virgl fence on context 0).
-static void finish(void) {
+static int finish(void) {
     uint32_t fence = ++fence_issued;
-    virgl_renderer_create_fence((int) fence, 0);
+    int error = virgl_renderer_create_fence((int) fence, 0);
+    // An allocation/GL failure creates no fence and will never issue a
+    // completion callback. Propagate it instead of trapping the GPU worker
+    // and every waiting guest ioctl in an endless poll loop.
+    if (error) {
+        fprintf(stderr, "VIRGL_HOST: completion fence creation failed: %d\n", error);
+        return error;
+    }
     while (fence_done < fence) { virgl_renderer_poll(); if (fence_done < fence) usleep(50); }
+    return 0;
+}
+
+// Command streams are pipelined: each submission issues a completion fence but
+// returns once at most LR_GPU_IN_FLIGHT earlier submissions are still running,
+// so the guest prepares the next frame while the GPU draws this one. Guest
+// memory is never written by the GPU behind the guest's back: results reach
+// guest pages only through TRANSFER_FROM_HOST, which still waits for all work
+// (finish), and uploads are copied when submitted. LR_GPU_SYNC=1 restores a
+// full wait after every submission (diagnostics).
+#define LR_GPU_IN_FLIGHT 2
+static int pipeline(void) {
+    static int synchronous = -1;
+    if (synchronous < 0) { const char *v = getenv("LR_GPU_SYNC"); synchronous = v && v[0] == '1'; }
+    if (synchronous) return finish();
+    uint32_t fence = ++fence_issued;
+    int error = virgl_renderer_create_fence((int) fence, 0);
+    if (error) {
+        fprintf(stderr, "VIRGL_HOST: completion fence creation failed: %d\n", error);
+        return error;
+    }
+    virgl_renderer_poll();
+    while (fence_issued - fence_done > LR_GPU_IN_FLIGHT) { usleep(50); virgl_renderer_poll(); }
+    return 0;
 }
 
 // ---- backend operations ------------------------------------------------------------
@@ -224,7 +260,8 @@ static void context_attach(uint32_t ctx, uint32_t handle) { struct op o = {.a = 
 static void do_submit(void *p) {
     struct op *o = p;
     o->result = virgl_renderer_submit_cmd((void *) o->data, (int) o->a, (int) o->b);
-    finish();
+    int completion_error = pipeline();
+    if (!o->result) o->result = completion_error;
     if (getenv("LR_VIRGL_TRACE")) {
         static unsigned submits;
         fprintf(stderr, "VIRGL_HOST: submit %u ctx %u dwords %u -> %d;", ++submits, o->a, o->b, o->result);
@@ -243,7 +280,8 @@ static void do_transfer(void *p) {
     struct op *o = p;
     struct virgl_box box = {o->box->x, o->box->y, o->box->z, o->box->w, o->box->h, o->box->d};
     if (o->c) o->result = virgl_renderer_transfer_write_iov(o->b, o->a, (int) o->d, o->e, (uint32_t) o->size, &box, o->offset, NULL, 0);
-    else { finish(); o->result = virgl_renderer_transfer_read_iov(o->b, o->a, o->d, o->e, (uint32_t) o->size, &box, o->offset, NULL, 0); }
+    else if (!(o->result = finish()))
+        o->result = virgl_renderer_transfer_read_iov(o->b, o->a, o->d, o->e, (uint32_t) o->size, &box, o->offset, NULL, 0);
     if (getenv("LR_VIRGL_TRACE"))
         fprintf(stderr, "VIRGL_HOST: transfer %s ctx %u res %u level %u stride %u layer %zu box %u,%u,%u %ux%ux%u offset %llu -> %d\n",
             o->c ? "to-host" : "from-host", o->a, o->b, o->d, o->e, o->size, box.x, box.y, box.z, box.w, box.h, box.d, (unsigned long long) o->offset, o->result);
@@ -269,6 +307,23 @@ static const struct lr_virgl_backend backend = {
 };
 
 // Starts the GPU thread; returns the backend once ANGLE and virglrenderer are up, NULL otherwise.
+static void do_drain(void *p) { (void) p; finish(); glFinish(); }
+static bool host_started;
+// Suspend before the app enters the background (waits until the GPU has
+// finished everything already submitted); resume when it returns.
+static void lr_virgl_host_set_suspended(bool suspended) {
+    if (!host_started) return;
+    pthread_mutex_lock(&call_lock);
+    if (suspended && !gpu_suspended) {
+        dispatch_locked(do_drain, NULL);
+        gpu_suspended = true;
+    } else if (!suspended && gpu_suspended) {
+        gpu_suspended = false;
+        pthread_cond_broadcast(&resume_cond);
+    }
+    pthread_mutex_unlock(&call_lock);
+}
+
 const struct lr_virgl_backend *lr_virgl_host_start(void) {
     pthread_t thread;
     if (pthread_create(&thread, NULL, gpu_main, NULL)) return NULL;
@@ -277,5 +332,6 @@ const struct lr_virgl_backend *lr_virgl_host_start(void) {
     while (!ready) pthread_cond_wait(&slot_cond, &slot_lock);
     bool ok = init_ok;
     pthread_mutex_unlock(&slot_lock);
+    host_started = ok;
     return ok ? &backend : NULL;
 }

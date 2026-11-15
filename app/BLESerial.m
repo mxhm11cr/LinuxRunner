@@ -18,7 +18,17 @@ static const LRBLEProfile LRProfiles[] = {
     {"Nordic UART", "6E400001-B5A3-F393-E0A9-E50E24DCCA9E", "6E400002-B5A3-F393-E0A9-E50E24DCCA9E", "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"},
     {"HM-10 / CC254x", "FFE0", "FFE1", "FFE1"},
     {"Microchip transparent UART", "49535343-FE7D-4AE5-8FA9-9FAFD205E455", "49535343-8841-43F4-A8D4-ECBE34729BB3", "49535343-1E4D-4BD9-BA61-23C647249616"},
+    {"u-blox Serial Port Service", "2456E1B9-26E2-8F83-E744-F34F01E9D701", "2456E1B9-26E2-8F83-E744-F34F01E9D703", "2456E1B9-26E2-8F83-E744-F34F01E9D703"},
+    {"Ezurio (Laird) Virtual Serial Port", "569A1101-B87F-490C-92CB-11BA5EA5167C", "569A2001-B87F-490C-92CB-11BA5EA5167C", "569A2000-B87F-490C-92CB-11BA5EA5167C"},
+    {"DFRobot Bluno", "DFB0", "DFB1", "DFB1"},
+    {"Telit Terminal I/O", "FEFB", "00000001-0000-1000-8000-008025000000", "00000002-0000-1000-8000-008025000000"},
 };
+// Services every BLE device has; never a serial port.
+static BOOL LRStandardService(CBUUID *u) {
+    for (NSString *s in @[@"1800", @"1801", @"180A", @"180F", @"1805", @"FE59"]) if ([u isEqual:[CBUUID UUIDWithString:s]]) return YES;
+    return NO;
+}
+static NSString *const LRSavedDevicesKey = @"LinuxRunnerBLE.savedDevices";
 
 // Read by the Linux tty driver, which runs with tty->lock held and must never
 // wait on the bridge queue (that queue takes tty->lock to deliver input).
@@ -34,6 +44,9 @@ static _Atomic uint32_t LRSlotModem[LR_BLE_SLOTS];
 @property uint64_t rxBytes, txBytes;
 @property NSMutableData *outgoing, *incoming;
 @property BOOL withoutResponse, writeInFlight;
+@property BOOL userClosed;            // disconnected by the user: no automatic reconnect
+@property NSInteger pendingServices;  // generic UART search: services still being examined
+@property BOOL notifyRequested;       // the serial line was chosen and subscribed once
 @end
 @implementation LRBLELink
 - (void)setState:(NSString *)state {
@@ -48,6 +61,7 @@ static _Atomic uint32_t LRSlotModem[LR_BLE_SLOTS];
 @property NSMutableDictionary<NSUUID *, NSMutableDictionary *> *seen;
 @property NSMutableDictionary<NSUUID *, CBPeripheral *> *peripherals;
 @property(readwrite) BOOL scanning;
+@property NSMutableSet<NSString *> *pendingConnects;   // requested before Bluetooth was on
 @end
 
 static LRBLELink *LRSlots[LR_BLE_SLOTS];   // guarded by the bridge queue
@@ -135,7 +149,7 @@ static void LRBLEHangup(int slot) {
 - (instancetype)init {
     if ((self = [super init])) {
         _queue = dispatch_queue_create("linuxrunner.ble-serial", DISPATCH_QUEUE_SERIAL);
-        _seen = [NSMutableDictionary new]; _peripherals = [NSMutableDictionary new];
+        _seen = [NSMutableDictionary new]; _peripherals = [NSMutableDictionary new]; _pendingConnects = [NSMutableSet new];
     }
     return self;
 }
@@ -187,14 +201,27 @@ static void LRBLEHangup(int slot) {
 }
 - (NSInteger)connect:(NSString *)identifier {
     __block NSInteger slot = -1;
-    dispatch_sync(_queue, ^{
-        CBPeripheral *p = self.peripherals[[[NSUUID alloc] initWithUUIDString:identifier]];
-        if (!p) return;
+    dispatch_sync(_queue, ^{ slot = [self connectAsync:identifier]; });
+    return slot;
+}
+/// Runs on the bridge queue.
+- (NSInteger)connectAsync:(NSString *)identifier {
+    __block NSInteger slot = -1;
+    ^{
+        [self ensureCentral];
+        NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:identifier];
+        CBPeripheral *p = uuid ? self.peripherals[uuid] : nil;
+        // A saved device not seen in this scan: iOS still knows it by identifier.
+        if (!p && uuid && self.central.state == CBManagerStatePoweredOn) {
+            p = [self.central retrievePeripheralsWithIdentifiers:@[uuid]].firstObject;
+            if (p) self.peripherals[uuid] = p;
+        }
+        if (!p) { if (uuid && self.central.state != CBManagerStatePoweredOn) [self.pendingConnects addObject:identifier]; return; }
         for (int i = 0; i < LR_BLE_SLOTS; i++) if (LRSlots[i] && [LRSlots[i].peripheral.identifier isEqual:p.identifier]) {
             slot = i;
             // Same /dev/ttyBLE path after a drop: reconnect in place.
             if (![@[@"connected", @"connecting", @"discovering"] containsObject:LRSlots[i].state]) {
-                LRSlots[i].state = @"connecting"; LRSlots[i].error = @""; p.delegate = self; [self.central connectPeripheral:p options:nil]; [self changed];
+                LRSlots[i].userClosed = NO; LRSlots[i].state = @"connecting"; LRSlots[i].error = @""; p.delegate = self; [self.central connectPeripheral:p options:nil]; [self changed];
             }
             return;
         }
@@ -205,13 +232,13 @@ static void LRBLEHangup(int slot) {
         LRSlots[slot] = link; p.delegate = self;
         [self.central connectPeripheral:p options:nil];
         [self changed];
-    });
+    }();
     return slot;
 }
 - (void)disconnectSlot:(NSInteger)slot {
     dispatch_async(_queue, ^{
         if (slot < 0 || slot >= LR_BLE_SLOTS || !LRSlots[slot]) return;
-        LRBLELink *link = LRSlots[slot]; link.state = @"disconnected"; LRSlots[slot] = nil;
+        LRBLELink *link = LRSlots[slot]; link.userClosed = YES; link.state = @"disconnected"; LRSlots[slot] = nil;
         [self.central cancelPeripheralConnection:link.peripheral];
         LRBLEHangup((int) slot);
         [self changed];
@@ -224,6 +251,12 @@ static void LRBLEHangup(int slot) {
 // CBCentralManagerDelegate
 - (void)centralManagerDidUpdateState:(CBCentralManager *)central {
     if (central.state == CBManagerStatePoweredOn && _scanning) [central scanForPeripheralsWithServices:nil options:@{CBCentralManagerScanOptionAllowDuplicatesKey: @NO}];
+    if (central.state == CBManagerStatePoweredOn) {
+        // Bluetooth back on: reconnect dropped links; connect saved devices requested earlier.
+        for (int i = 0; i < LR_BLE_SLOTS; i++) if (LRSlots[i]) [self scheduleReconnect:LRSlots[i]];
+        NSArray *pending = _pendingConnects.allObjects; [_pendingConnects removeAllObjects];
+        for (NSString *identifier in pending) dispatch_async(_queue, ^{ (void)[self connectAsync:identifier]; });
+    }
     if (central.state != CBManagerStatePoweredOn) {
         for (int i = 0; i < LR_BLE_SLOTS; i++) if (LRSlots[i]) { LRSlots[i].state = @"disconnected"; LRSlots[i].error = @"Bluetooth is off"; LRBLEHangup(i); }
     }
@@ -242,20 +275,33 @@ static void LRBLEHangup(int slot) {
 }
 - (void)centralManager:(CBCentralManager *)central didConnectPeripheral:(CBPeripheral *)p {
     LRBLELink *link = [self linkFor:p]; if (!link) { [central cancelPeripheralConnection:p]; return; }
-    link.state = @"discovering"; [self changed];
-    NSMutableArray *uuids = [NSMutableArray new];
-    for (size_t i = 0; i < sizeof LRProfiles / sizeof *LRProfiles; i++) [uuids addObject:[CBUUID UUIDWithString:@(LRProfiles[i].service)]];
-    [p discoverServices:uuids];
+    link.state = @"discovering"; link.rx = link.tx = nil; link.notifyRequested = NO; [self changed];
+    // All services: a known UART profile is preferred; otherwise any service
+    // with a writable and a notifying characteristic (custom ESP32/Arduino
+    // sketches) becomes the serial line.
+    [p discoverServices:nil];
 }
 - (void)centralManager:(CBCentralManager *)central didFailToConnectPeripheral:(CBPeripheral *)p error:(NSError *)error {
     LRBLELink *link = [self linkFor:p]; if (!link) return;
     link.state = @"failed"; link.error = error.localizedDescription ?: @"Connection failed"; [self changed];
+    [self scheduleReconnect:link];
+}
+/// Out of range, restarted or briefly off: keep the same /dev/ttyBLE slot and
+/// let iOS reconnect when the board is back (a pending connection does not time out).
+- (void)scheduleReconnect:(LRBLELink *)link {
+    if (link.userClosed || LRSlots[link.slot] != link || self.central.state != CBManagerStatePoweredOn) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), _queue, ^{
+        if (link.userClosed || LRSlots[link.slot] != link || [@[@"connected", @"connecting", @"discovering"] containsObject:link.state]) return;
+        link.state = @"connecting"; link.error = @"Reconnecting automatically";
+        link.peripheral.delegate = self; [self.central connectPeripheral:link.peripheral options:nil]; [self changed];
+    });
 }
 - (void)centralManager:(CBCentralManager *)central didDisconnectPeripheral:(CBPeripheral *)p error:(NSError *)error {
     LRBLELink *link = [self linkFor:p]; if (!link) return;
     link.state = @"disconnected"; link.error = error.localizedDescription ?: @"";
     LRBLEHangup((int) link.slot);
     [self changed];
+    [self scheduleReconnect:link];
 }
 // CBPeripheralDelegate
 - (void)peripheral:(CBPeripheral *)p didDiscoverServices:(NSError *)error {
@@ -263,30 +309,62 @@ static void LRBLEHangup(int slot) {
     for (CBService *service in p.services)
         for (size_t i = 0; i < sizeof LRProfiles / sizeof *LRProfiles; i++)
             if ([service.UUID isEqual:[CBUUID UUIDWithString:@(LRProfiles[i].service)]]) {
-                link.profile = @(LRProfiles[i].name);
+                link.profile = @(LRProfiles[i].name); link.pendingServices = 0;
                 [p discoverCharacteristics:@[[CBUUID UUIDWithString:@(LRProfiles[i].rx)], [CBUUID UUIDWithString:@(LRProfiles[i].tx)]] forService:service];
                 return;
             }
-    link.state = @"failed"; link.error = @"This device has no Bluetooth serial (UART) service LinuxRunner supports.";
-    [_central cancelPeripheralConnection:p]; [self changed];
+    // No known profile: examine every non-standard service's characteristics.
+    link.profile = @""; link.pendingServices = 0;
+    for (CBService *service in p.services) if (!LRStandardService(service.UUID)) { link.pendingServices++; [p discoverCharacteristics:nil forService:service]; }
+    if (!link.pendingServices) [self failLink:link message:@"This device offers no service LinuxRunner can use as a serial port."];
+}
+- (void)failLink:(LRBLELink *)link message:(NSString *)message {
+    link.state = @"failed"; link.error = message; link.userClosed = YES;   // not a dropout: do not retry
+    [_central cancelPeripheralConnection:link.peripheral]; [self changed];
 }
 - (void)peripheral:(CBPeripheral *)p didDiscoverCharacteristicsForService:(CBService *)service error:(NSError *)error {
-    LRBLELink *link = [self linkFor:p]; if (!link) return;
-    for (size_t i = 0; i < sizeof LRProfiles / sizeof *LRProfiles; i++) {
-        if (![service.UUID isEqual:[CBUUID UUIDWithString:@(LRProfiles[i].service)]]) continue;
-        for (CBCharacteristic *c in service.characteristics) {
-            if ([c.UUID isEqual:[CBUUID UUIDWithString:@(LRProfiles[i].rx)]]) link.rx = c;
-            if ([c.UUID isEqual:[CBUUID UUIDWithString:@(LRProfiles[i].tx)]]) link.tx = c;
+    LRBLELink *link = [self linkFor:p]; if (!link || link.notifyRequested) return;
+    if (link.profile.length && ![link.profile hasPrefix:@"Generic UART"]) {
+        for (size_t i = 0; i < sizeof LRProfiles / sizeof *LRProfiles; i++) {
+            if (![service.UUID isEqual:[CBUUID UUIDWithString:@(LRProfiles[i].service)]]) continue;
+            for (CBCharacteristic *c in service.characteristics) {
+                if ([c.UUID isEqual:[CBUUID UUIDWithString:@(LRProfiles[i].rx)]]) link.rx = c;
+                if ([c.UUID isEqual:[CBUUID UUIDWithString:@(LRProfiles[i].tx)]]) link.tx = c;
+            }
         }
+    } else if (!link.rx || !link.tx) {
+        // Generic UART: a characteristic Linux can write and one that notifies
+        // (or indicates), in the same service.
+        CBCharacteristic *rx = nil, *tx = nil;
+        for (CBCharacteristic *c in service.characteristics) {
+            if (!rx && (c.properties & (CBCharacteristicPropertyWrite | CBCharacteristicPropertyWriteWithoutResponse))) rx = c;
+            if (!tx && (c.properties & (CBCharacteristicPropertyNotify | CBCharacteristicPropertyIndicate))) tx = c;
+        }
+        if (rx && tx) { link.rx = rx; link.tx = tx; link.profile = [@"Generic UART · " stringByAppendingString:service.UUID.UUIDString]; }
+        if (--link.pendingServices > 0 && !(link.rx && link.tx)) return;
     }
-    if (!link.rx || !link.tx) { link.state = @"failed"; link.error = @"The serial service is missing its data characteristics."; [_central cancelPeripheralConnection:p]; [self changed]; return; }
+    if (!link.rx || !link.tx) { [self failLink:link message:@"The device has no writable and notifying characteristics to use as a serial line."]; return; }
     link.withoutResponse = (link.rx.properties & CBCharacteristicPropertyWriteWithoutResponse) != 0;
+    link.notifyRequested = YES;
     [p setNotifyValue:YES forCharacteristic:link.tx];
 }
 - (void)peripheral:(CBPeripheral *)p didUpdateNotificationStateForCharacteristic:(CBCharacteristic *)c error:(NSError *)error {
     LRBLELink *link = [self linkFor:p]; if (!link || c != link.tx) return;
     if (error) { link.state = @"failed"; link.error = error.localizedDescription; [self changed]; return; }
     link.state = @"connected"; link.error = @""; [self changed];
+    [self rememberLink:link];
+}
+// ---- Saved devices: one-tap reconnect after LinuxRunner restarts ---------------
+- (void)rememberLink:(LRBLELink *)link {
+    NSString *identifier = link.peripheral.identifier.UUIDString;
+    NSMutableArray *saved = [[[NSUserDefaults.standardUserDefaults arrayForKey:LRSavedDevicesKey] ?: @[] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"id != %@", identifier]] mutableCopy];
+    [saved insertObject:@{@"id": identifier, @"name": link.peripheral.name ?: @"Bluetooth device", @"profile": link.profile ?: @""} atIndex:0];
+    [NSUserDefaults.standardUserDefaults setObject:[saved subarrayWithRange:NSMakeRange(0, MIN((NSUInteger) 8, saved.count))] forKey:LRSavedDevicesKey];
+}
+- (NSArray *)saved { return [NSUserDefaults.standardUserDefaults arrayForKey:LRSavedDevicesKey] ?: @[]; }
+- (void)forgetDevice:(NSString *)identifier {
+    NSArray *saved = [self.saved filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"id != %@", identifier]];
+    [NSUserDefaults.standardUserDefaults setObject:saved forKey:LRSavedDevicesKey]; [self changed];
 }
 - (void)peripheral:(CBPeripheral *)p didUpdateValueForCharacteristic:(CBCharacteristic *)c error:(NSError *)error {
     LRBLELink *link = [self linkFor:p]; if (!link || c != link.tx || !c.value.length) return;

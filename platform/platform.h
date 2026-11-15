@@ -1,5 +1,7 @@
 #ifndef PLATFORM_H
 #define PLATFORM_H
+#include <stdint.h>
+#include <stdlib.h>
 #include <stddef.h>
 #include <sys/stat.h>
 #include "misc.h"
@@ -51,12 +53,36 @@ struct platform_thread_cpu_usage platform_get_thread_cpu_usage(void);
 // CPU time of another live host thread (guest process accounting).
 bool platform_get_thread_cpu_usage_of(pthread_t thread, struct platform_thread_cpu_usage *usage);
 
-// Guest-visible CPU topology. Keep this deterministic instead of mirroring the
-// host CPU count: exposing all host cores makes modern runtimes (Bun/JSC/V8) fan
-// out too aggressively for the emulator.
-#ifndef PLATFORM_GUEST_CPU_COUNT
-#define PLATFORM_GUEST_CPU_COUNT 4
-#endif
+// Guest-visible CPU topology. Deterministic rather than mirroring the host:
+// exposing every host core makes modern runtimes (Bun/JSC/V8) fan out too
+// aggressively. The app passes the user's choice (Settings › CPU & Memory) as
+// LINUXRUNNER_CPU_CORES before the runtime starts; default 4. Guest threads run
+// on separate host threads, so programs sized by nproc really use the cores.
+#define PLATFORM_GUEST_CPU_MAX 16
+#define PLATFORM_GUEST_CPU_DEFAULT 4
+static inline unsigned platform_guest_cpu_count(void) {
+    static unsigned count;
+    if (!count) {
+        const char *value = getenv("LINUXRUNNER_CPU_CORES");
+        unsigned long chosen = value ? strtoul(value, NULL, 10) : 0;
+        count = chosen >= 1 && chosen <= PLATFORM_GUEST_CPU_MAX ? (unsigned) chosen : PLATFORM_GUEST_CPU_DEFAULT;
+    }
+    return count;
+}
+// Memory reported to Linux programs (MemTotal, sysinfo). Without a choice the
+// existing policy applies (half of what iOS allows the app, at most 4 GiB).
+// LINUXRUNNER_MEMORY_MB (512 MiB - 8 GiB) reports the chosen amount instead.
+// Returns 0 when no choice was made.
+#define PLATFORM_GUEST_MEMORY_DEFAULT_CAP (4ULL << 30)
+static inline uint64_t platform_guest_memory_choice(void) {
+    static uint64_t bytes = 1;
+    if (bytes == 1) {
+        const char *value = getenv("LINUXRUNNER_MEMORY_MB");
+        unsigned long long mb = value ? strtoull(value, NULL, 10) : 0;
+        bytes = mb >= 512 && mb <= 8192 ? (uint64_t) mb << 20 : 0;
+    }
+    return bytes;
+}
 
 // Host OS shims. Keep Linux/macOS/iOS API differences behind platform/* so
 // emulator/kernel code can include one stable interface.

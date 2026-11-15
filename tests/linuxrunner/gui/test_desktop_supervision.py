@@ -59,5 +59,34 @@ class Supervision(unittest.TestCase):
                 self.assertIn('component_failed name=window manager (wm.log) restarts=3; ending the desktop session', out)
                 self.assertEqual(code, 1, out)
 
+    def test_i3_defaults_and_user_configuration(self):
+        root = pathlib.Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, root, True)
+        gui, stubs, home = (root / name for name in ('gui', 'bin', 'home'))
+        for path in (gui, stubs, home): path.mkdir()
+        for f in BUNDLE.iterdir():
+            if f.is_file(): shutil.copy(f, gui / f.name)
+        for path, body in ((stubs / 'i3', LIVE), (gui / 'desktop-probe', PROBE)):
+            path.write_text(body); path.chmod(0o755)
+        config = home / '.config/i3/config'
+        env = dict(os.environ, PATH=f'{stubs}:/usr/bin:/bin', HOME=str(home),
+                   XDG_CONFIG_HOME=str(home / '.config'), LR_DESKTOP_ENVIRONMENT='i3')
+        for run in range(2):
+            session = gui / f'session-{run}'; session.mkdir()
+            log = root / f'i3-{run}.log'
+            with log.open('w') as out:
+                p = subprocess.Popen(['/bin/sh', str(gui / 'desktop-components.sh'), str(session)], env=env, stdout=out, stderr=subprocess.STDOUT)
+                deadline = time.time() + 15
+                while time.time() < deadline and p.poll() is None and 'environment=i3' not in log.read_text(): time.sleep(.1)
+                self.assertIn('environment=i3', log.read_text())
+                (session / 'stop').touch()
+                try: p.wait(timeout=15)
+                except subprocess.TimeoutExpired: p.kill(); p.wait(); self.fail('i3 session did not stop')
+            if run == 0:
+                self.assertIn('bindsym $mod+Return exec xterm', config.read_text())
+                config.write_text('# user customization\n')
+            else:
+                self.assertEqual(config.read_text(), '# user customization\n')
+        subprocess.run(['pkill', '-f', str(stubs)], check=False)
+
 if __name__ == '__main__':
     unittest.main()

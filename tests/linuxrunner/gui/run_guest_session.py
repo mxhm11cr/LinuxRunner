@@ -2,7 +2,7 @@
 """Run production GUI helpers in a disposable fakefs host fixture (not device proof)."""
 import argparse,pathlib,subprocess,secrets,socket,uuid,os,json,fcntl,hashlib,shutil
 from fixture_identity import check_identity, load_profile, check_load_bases
-p=argparse.ArgumentParser();p.add_argument('--rootfs',required=True);p.add_argument('--probe',required=True);p.add_argument('--mode',choices=['test','xterm','qt','custom','desktop'],required=True);p.add_argument('--gpu-mode',choices=['mesa','mesa-metal-resident','mesa-metal-verify'],help='Settings › Graphics session default (session file gpu-mode)');p.add_argument('--output',required=True);p.add_argument('--xkb',choices=['xkb','noxkb'],default='xkb');p.add_argument('--script');p.add_argument('--baseline-display',action='store_true');p.add_argument('--baseline-input',action='store_true',help='Legacy input handling (default; comparison alias)');p.add_argument('--eager-input',action='store_true',help='Opt in to experimental x11vnc eager input handling');p.add_argument('--exchange');p.add_argument('--glx',choices=['off','software','distribution'],default=None);p.add_argument('--geometry',type=lambda g:g if __import__('re').fullmatch(r'[1-9][0-9]{2,3}x[1-9][0-9]{2,3}',g) else p.error('geometry WxH'),default='640x480',help='WxH, as the app passes (fixed sizes or Fit)');p.add_argument('--timeout',type=int,default=180);p.add_argument('--runtime',help='Test-only alternate host driver for bootstrap comparisons');p.add_argument('--prepare-support',action='store_true',help='Compile verified GUI fixture helpers without installing packages');p.add_argument('--shared-images',choices=['off','sysv'],default='off',help='Experimental guest X11 shared-image capture; default preserves socket-image rollback');p.add_argument('--guest-user',default='root',help='Test the selected guest identity through the production su/session path');p.add_argument('--application-bundles',help='Test-only read-only host directory mounted at /opt/linuxrunner-fixture-apps-874');p.add_argument('--vnc-timing',choices=['default','legacy','threads','fast','damage','fast-damage','adaptive','adaptive-slow','balanced','threads-balanced'],default='default',help='Experimental x11vnc update policy for latency comparisons');p.add_argument('--audio-port',type=int,help='Session sound: loopback port for the PulseAudio monitor stream (the app chooses one)');p.add_argument('--terminal-command',help='Desktop mode: once the desktop is ready, run this through su -l <guest user> from a separate process tree (as the iOS terminal does); output in terminal.log');p.add_argument('--terminal-root-command',help='Same, as root through a login shell');p.add_argument('--desktop-environment',choices=['linuxrunner','plasma','lxqt','enlightenment','wayfire','hyprland','xfce'],help='Desktop mode: Settings › Desktop Environment (session file desktop-environment)');p.add_argument('--black-screen-diagnostics',action='store_true',help='Explicit bounded root process/wait snapshots; slows diagnostic runs, not benchmarks');p.add_argument('--hyprland-effects',choices=['performance','balanced','visual']);a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--rootfs',required=True);p.add_argument('--probe',required=True);p.add_argument('--mode',choices=['test','xterm','qt','custom','desktop'],required=True);p.add_argument('--gpu-mode',choices=['mesa','mesa-metal-resident','mesa-metal-verify'],help='Settings › Graphics session default (session file gpu-mode)');p.add_argument('--output',required=True);p.add_argument('--xkb',choices=['xkb','noxkb'],default='xkb');p.add_argument('--script');p.add_argument('--baseline-display',action='store_true');p.add_argument('--baseline-input',action='store_true',help='Legacy input handling (default; comparison alias)');p.add_argument('--eager-input',action='store_true',help='Opt in to experimental x11vnc eager input handling');p.add_argument('--exchange');p.add_argument('--glx',choices=['off','software','distribution'],default=None);p.add_argument('--geometry',type=lambda g:g if __import__('re').fullmatch(r'[1-9][0-9]{2,3}x[1-9][0-9]{2,3}',g) else p.error('geometry WxH'),default='640x480',help='WxH, as the app passes (fixed sizes or Fit)');p.add_argument('--timeout',type=int,default=180);p.add_argument('--runtime',help='Test-only alternate host driver for bootstrap comparisons');p.add_argument('--prepare-support',action='store_true',help='Compile verified GUI fixture helpers without installing packages');p.add_argument('--shared-images',choices=['off','sysv'],default='off',help='Experimental guest X11 shared-image capture; default preserves socket-image rollback');p.add_argument('--guest-user',default='root',help='Test the selected guest identity through the production su/session path');p.add_argument('--application-bundles',help='Test-only read-only host directory mounted at /opt/linuxrunner-fixture-apps-874');p.add_argument('--vnc-timing',choices=['default','legacy','threads','fast','damage','fast-damage','adaptive','adaptive-slow','balanced','threads-balanced'],default='default',help='Experimental x11vnc update policy for latency comparisons');p.add_argument('--audio-port',type=int,help='Session sound: loopback port for the PulseAudio monitor stream (the app chooses one)');p.add_argument('--terminal-command',help='Desktop mode: once the desktop is ready, run this through su -l <guest user> from a separate process tree (as the iOS terminal does); output in terminal.log');p.add_argument('--terminal-root-command',help='Same, as root through a login shell');p.add_argument('--desktop-environment',choices=['linuxrunner','plasma','lxqt','enlightenment','wayfire','hyprland','xfce','i3','gnome','mate','cinnamon','budgie','cosmic'],help='Desktop mode: Settings › Desktop Environment (session file desktop-environment)');p.add_argument('--black-screen-diagnostics',action='store_true',help='Explicit bounded root process/wait snapshots; slows diagnostic runs, not benchmarks');p.add_argument('--hyprland-effects',choices=['performance','balanced','visual']);p.add_argument("--native-xorg",action="store_true",help="Exercise shared native Mesa/Xorg startup with a real virgl runtime");p.add_argument("--direct-scanout",action="store_true",help="Session file direct-scanout=enabled, as the app writes (viewer reads the GPU scanout in-process)");p.add_argument("--vnc-direct-legacy",action="store_true",help="Measurement: previous direct-scanout x11vnc options (A/B)");a=p.parse_args()
 if shutil.disk_usage(a.rootfs).free < 256*1024*1024:
  raise SystemExit('GUI_FIXTURE_STORAGE_LOW: preserve/relocate completed build artifacts before testing (minimum 256 MiB free)')
 root=pathlib.Path(__file__).resolve().parents[3];out=pathlib.Path(a.output).resolve()
@@ -24,6 +24,39 @@ for source in (root/'app/LinuxRunner/GUISupport.bundle').iterdir():
  if source.is_file():
   destination=support/source.name;destination.write_bytes(source.read_bytes())
   destination.chmod(0o755 if source.suffix=='.sh' else 0o644)
+if os.environ.get('LR_FIXTURE_GNOME_XORG_VIRGL') == '1':
+ if a.mode != 'desktop' or a.desktop_environment != 'gnome' or a.guest_user == 'root':
+  raise SystemExit('GNOME virgl fixture requires a non-root GNOME desktop')
+ # Test-only copy: never modify the packaged session or expose an unqualified
+ # driver as a user setting. The real guest Mesa and Xorg remain untouched.
+ path=support/'session.sh'; script=path.read_text()
+ def replace_once(old,new):
+  global script
+  if script.count(old)!=1: raise SystemExit('GNOME virgl fixture: session layout changed')
+  script=script.replace(old,new,1)
+ replace_once('    elif [ "$mode" = desktop ] && { [ "$kms_desktop" = hyprland ]', '''    elif [ "$mode" = desktop ] && [ "$kms_desktop" = gnome ]; then
+        mkdir -p /dev/dri
+        [ -c /dev/dri/card1 ] || mknod -m 660 /dev/dri/card1 c 226 1
+        [ -c /dev/dri/renderD129 ] || mknod -m 660 /dev/dri/renderD129 c 226 129
+        chown "$uid:$gid" /dev/dri/card1 /dev/dri/renderD129
+        chmod 660 /dev/dri/card1 /dev/dri/renderD129
+        echo 'GUI_FIXTURE: GNOME virgl nodes prepared'
+    elif [ "$mode" = desktop ] && { [ "$kms_desktop" = hyprland ]''')
+ replace_once('glx_mode=off\n', '''if [ "$distro" = ubuntu ] && [ "$mode" = desktop ] && [ "$desktop_environment" = gnome ] && [ -c /dev/dri/card1 ]; then
+    steamos_gpu=1; xorg_gpu=1; xorg_binary=$(lr_xorg_binary)
+    echo 'GUI_FIXTURE: testing native Ubuntu Mesa Xorg virgl'
+fi
+glx_mode=off
+''')
+ replace_once('if [ "$steamos_gpu" = 1 ] && ! /opt/linuxrunner/steamos-gpu/bin/graphics-check', 'if [ "$steamos_gpu" = 1 ] && [ "$desktop_environment" != gnome ] && ! /opt/linuxrunner/steamos-gpu/bin/graphics-check')
+ replace_once('xorg_binary=/usr/lib/Xorg', 'xorg_binary=$(lr_xorg_binary)')
+ path.write_text(script)
+ manifest_path=support/'support-manifest.json'; manifest=json.loads(manifest_path.read_text())
+ for resource in manifest['resources']:
+  if resource['name']=='session.sh':resource['sha256']=hashlib.sha256(path.read_bytes()).hexdigest()
+ manifest_path.write_text(json.dumps(manifest,indent=2)+'\n')
+ (support/'support.sha256').write_text(''.join(r['sha256']+'  '+r['name']+'\n' for r in manifest['resources']))
+ print('GUI_FIXTURE: experimental GNOME Xorg/virgl session; not production',flush=True)
 if a.baseline_display:
  script=(support/'session.sh').read_text().replace('-defer 16 -wait 25','-defer 80 -wait 80');(support/'session.sh').write_text(script)
 session=support/('session-'+str(uuid.uuid4()));session.mkdir(mode=0o700)
@@ -33,13 +66,16 @@ glx=a.glx or os.environ.get('LR_FIXTURE_GLX','off')
 if glx not in ('off','software','distribution'):raise SystemExit('invalid LR_FIXTURE_GLX')
 if glx!='distribution':(session/'glx-mode').write_text(glx);(session/'glx-mode').chmod(0o600)
 if a.gpu_mode:(session/'gpu-mode').write_text(a.gpu_mode);(session/'gpu-mode').chmod(0o600)
+if a.native_xorg:(session/'xorg-gpu').write_text('auto');(session/'xorg-gpu').chmod(0o600)
+if a.direct_scanout:(session/'direct-scanout').write_text('enabled');(session/'direct-scanout').chmod(0o600)
+if a.vnc_direct_legacy:(session/'vnc-direct-legacy').write_text('1');(session/'vnc-direct-legacy').chmod(0o600)
 if a.desktop_environment:(session/'desktop-environment').write_text(a.desktop_environment);(session/'desktop-environment').chmod(0o600)
 if a.hyprland_effects:(session/'hyprland-effects').write_text(a.hyprland_effects);(session/'hyprland-effects').chmod(0o600)
 (session/'shm-mode').write_text(a.shared_images);(session/'shm-mode').chmod(0o600)
 if a.script:(session/'command.sh').write_bytes(pathlib.Path(a.script).read_bytes());(session/'command.sh').chmod(0o600)
 (root/'build/qt-tests').mkdir(parents=True, exist_ok=True)
 (root/'build/qt-tests/current-session.json').write_text(json.dumps({'path':str(session),'port':port}))
-env=dict(os.environ,ISH_NETLINK_STUB='1',ISH_BIND_MOUNTS='/home/mobile/Downloads='+str(exchange))
+env=dict(os.environ,ISH_SOFTWARE_DRM_MODE=a.geometry,ISH_NETLINK_STUB='1',ISH_BIND_MOUNTS='/home/mobile/Downloads='+str(exchange))
 if a.application_bundles:
  bundles=pathlib.Path(a.application_bundles).resolve()
  if not bundles.is_dir() or ',' in str(bundles):raise SystemExit('Invalid application bundle directory')
@@ -130,7 +166,7 @@ with (out/'launch.log').open('w') as log:
   if guest.poll() is None:
    try:guest.wait(timeout=5)
    except subprocess.TimeoutExpired:guest.terminate();guest.wait(timeout=5)
-  for n in ('session.log','xvfb.log','display.log','application.log','focus.log','window.log','window-state','keymap.log','bus.log','wm.log','panel.log','desktop.log','plasma.log','desktop-state','xfconf.log','runtime-snapshots.log','process-snapshots.log','fd-trends.log','terminal.log','desktop-state.probe'):
+  for n in ('session.log','xvfb.log','display.log','application.log','focus.log','window.log','window-state','keymap.log','bus.log','wm.log','panel.log','desktop.log','plasma.log','desktop-state','xfconf.log','runtime-snapshots.log','process-snapshots.log','fd-trends.log','terminal.log','desktop-state.probe','graphics.log','xorg.log','display-backend'):
    if (session/n).exists():(out/n).write_bytes((session/n).read_bytes())
   if (session/'gpu-stats').is_dir():   # per-process bridge statistics (Metal vs Mesa draws)
    (out/'gpu-stats').mkdir(exist_ok=True)

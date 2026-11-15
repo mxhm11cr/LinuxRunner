@@ -22,7 +22,8 @@ static volatile sig_atomic_t usr1, usr2, nested_inner, chld;
 static void on_usr1(int s) { (void)s; usr1++; }
 static void on_usr2(int s) { (void)s; usr2++; if (usr2 == 1) { raise(SIGUSR1); nested_inner = usr1; } }
 static void on_chld(int s) { (void)s; chld++; }
-static void on_alrm(int s) { (void)s; }
+static volatile sig_atomic_t alarms;
+static void on_alrm(int s) { (void)s; alarms++; }
 static sigjmp_buf segv_jump;
 static void on_segv(int s) { (void)s; siglongjmp(segv_jump, 1); }
 
@@ -66,10 +67,19 @@ int main(void) {
     CHECK(n < 0 && errno == EINTR, "read interrupted by SIGALRM (n=%zd errno=%d)", n, errno);
 
     // 5. SA_RESTART: the same read restarts and completes when data arrives.
+    // The writer's exit also generates SIGCHLD. Its intentionally non-restart
+    // handler from test 3 may legally interrupt this read before it consumes
+    // the byte. Isolate the alarm restart test from that competing signal.
+    sigset_t blocked, previous_mask;
+    sigemptyset(&blocked); sigaddset(&blocked, SIGCHLD);
+    CHECK(sigprocmask(SIG_BLOCK, &blocked, &previous_mask) == 0, "block competing SIGCHLD");
     install(SIGALRM, on_alrm, SA_RESTART);
     if (fork() == 0) { usleep(1500000); if (write(p[1], "x", 1) != 1) _exit(1); _exit(0); }
+    int alarms_before = alarms;
     alarm(1); n = read(p[0], &c, 1);
     CHECK(n == 1 && c == 'x', "SA_RESTART read restarted (n=%zd)", n);
+    CHECK(alarms == alarms_before + 1, "SA_RESTART alarm handler ran");
+    CHECK(sigprocmask(SIG_SETMASK, &previous_mask, NULL) == 0, "restore signal mask");
     while (wait(NULL) > 0) {}
 
     // 6. vDSO mapping: readable and executable, never writable.

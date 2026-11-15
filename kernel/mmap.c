@@ -8,6 +8,7 @@
 #include "fs/fd.h"
 #include "kernel/memory.h"
 #include "kernel/mm.h"
+#include "platform/platform.h"
 #include "kernel/ipc.h"
 #include <errno.h>
 extern void (*runtime_memory_failure)(const char *, uint64_t, uint64_t, int, int, int);
@@ -15,13 +16,21 @@ extern void (*runtime_memory_failure)(const char *, uint64_t, uint64_t, int, int
 #if ANON_MMAP_LIMIT_PAGES > 0
 _Atomic long anon_page_count;
 
+// The committed-page budget follows a larger memory choice in Settings ›
+// CPU & Memory (platform_guest_memory_choice); it never drops below the
+// default, which existing workloads (Go's reservations) were tuned against.
+static long anon_limit_pages(void) {
+    uint64_t chosen = platform_guest_memory_choice() / PAGE_SIZE;
+    return chosen > ANON_MMAP_LIMIT_PAGES ? (long) chosen : ANON_MMAP_LIMIT_PAGES;
+}
+
 bool anon_pages_reserve(long pages) {
-    long count = atomic_load(&anon_page_count);
+    long count = atomic_load(&anon_page_count), limit = anon_limit_pages();
     do {
-        if (pages > ANON_MMAP_LIMIT_PAGES || count > ANON_MMAP_LIMIT_PAGES - pages) {
+        if (pages > limit || count > limit - pages) {
             if (runtime_memory_failure)
                 runtime_memory_failure("anonymous page budget", 0, (uint64_t)pages * PAGE_SIZE, 0, 0, ENOMEM);
-            printk("MEMORY_BUDGET: tid=%d requested-pages=%ld committed-pages=%ld limit-pages=%d\n", current->pid, pages, count, ANON_MMAP_LIMIT_PAGES);
+            printk("MEMORY_BUDGET: tid=%d requested-pages=%ld committed-pages=%ld limit-pages=%ld\n", current->pid, pages, count, limit);
             return false;
         }
     } while (!atomic_compare_exchange_weak(&anon_page_count, &count, count + pages));

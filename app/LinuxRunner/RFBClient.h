@@ -9,6 +9,10 @@ NS_ASSUME_NONNULL_BEGIN
 // Compact dirty pixels, rows tightly packed at damage.width*4 bytes.
 @property (copy,nullable) void (^patchFrameHandler)(NSData *patch,uint16_t width,uint16_t height,uint64_t frameCount,uint64_t receivedBytes,LRFrameDamage damage);
 @property (copy,nullable) void (^statusHandler)(NSString *status);
+/// The picture comes from the GPU scanout: incremental requests ask for a
+/// 1x1 area so the server stops encoding the screen; cursor shape, pointer
+/// position, resize and clipboard messages still arrive.
+@property (atomic) BOOL minimalUpdates;
 // Cursor pseudo-encoding: the server's current cursor as premultiplied BGRA
 // (nil when the cursor is hidden) and its hotspot; the view draws it at the
 // pointer it sends. PointerPos: the server moved the pointer (e.g. a warp).
@@ -29,5 +33,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)key:(uint32_t)keysym down:(BOOL)down;
 - (void)typeKeysyms:(const uint32_t *)symbols count:(size_t)count;
 - (void)pointerX:(uint16_t)x y:(uint16_t)y buttons:(uint8_t)buttons;
+// Liveness after the app returns from the background: bytes received so far,
+// and a non-incremental update request (the server must answer with a frame).
+- (uint64_t)receivedBytes;
+- (BOOL)requestFullUpdate;
 @end
 NS_ASSUME_NONNULL_END

@@ -42,6 +42,8 @@ struct LinuxEnvironment: Codable, Identifiable {
     var name: String
     var distribution = "Alpine Linux"
     var distributionID: String?
+    /// Ubuntu-based flavor ("pop", "zorin") installed on the Ubuntu base; nil otherwise.
+    var flavor: String?
     var packageManager: String?
     var environmentVariables: [String: String]?
     var guiConfiguration: LinuxGUIConfiguration?

@@ -159,6 +159,15 @@ package_system_ready() {
             return 1
         }
     fi
+    if [ "$(id -u)" = 0 ] && grep -qx -e 'ID=ubuntu' -e 'ID=pop' -e 'ID=zorin' /etc/os-release 2>/dev/null &&
+        [ ! -f /var/lib/linuxrunner/initialized ] && [ -r ./initialize-ubuntu.sh ]; then
+        echo 'PACKAGE_STAGE: Validating Ubuntu first-start package state'
+        /bin/sh ./initialize-ubuntu.sh >> /var/log/linuxrunner-initialize.log 2>&1 || {
+            echo 'PACKAGE_LOCK: category=PACKAGE_DATABASE_RECOVERY_REQUIRED Ubuntu first-start validation failed'
+            tail -n 8 /var/log/linuxrunner-initialize.log | sed 's/^/PACKAGE_DETAIL: /'
+            return 1
+        }
+    fi
     if [ -x /usr/lib/linuxrunner/initialize-arch.sh ] && [ "$(id -u)" = 0 ] && [ ! -f /var/lib/linuxrunner/initialized ]; then
         echo 'PACKAGE_STAGE: Finishing Arch Linux ARM setup (first start)'
         # The initializer has its own inherited flock, shared with boot init.

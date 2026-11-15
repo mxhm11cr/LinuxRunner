@@ -29,18 +29,7 @@
                                     <color key="textColor" systemColor="secondaryLabelColor"/>
                                     <nil key="highlightedColor"/>
                                 </label>
-                                <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" horizontalHuggingPriority="251" verticalHuggingPriority="251" image="Saddam Hussein" translatesAutoresizingMaskIntoConstraints="NO" id="7wB-HV-c14">
-                                    <rect key="frame" x="233" y="44" width="79" height="17"/>
-                                    <constraints>
-                                        <constraint firstAttribute="width" constant="79" id="pby-mm-KlE"/>
-                                        <constraint firstAttribute="height" constant="17" id="qax-kw-1lB"/>
-                                    </constraints>
-                                </imageView>
                             </subviews>
-                            <constraints>
-                                <constraint firstItem="7wB-HV-c14" firstAttribute="top" secondItem="vHu-FA-YnK" secondAttribute="bottom" id="bcR-YQ-PkC"/>
-                                <constraint firstAttribute="trailing" secondItem="7wB-HV-c14" secondAttribute="trailing" constant="8" id="f9L-RV-ToU"/>
-                            </constraints>
                         </view>
                         <sections>
                             <tableViewSection footerTitle="When this option is enabled, the screen will not dim when ios-linuxkit is in the foreground." id="tuR-Og-SE8">
@@ -322,7 +311,6 @@
                         <outlet property="mountsCell" destination="mnt-FS-cell" id="mnt-FS-out"/>
                         <outlet property="resetMountsCell" destination="Bqt-ud-CI0" id="2AS-2S-XCr"/>
                         <outlet property="resetRootfsCell" destination="rRf-K1-9aZ" id="rRf-ol-con"/>
-                        <outlet property="saddamHussein" destination="bcR-YQ-PkC" id="mUA-6I-CB9"/>
                         <outlet property="sendFeedback" destination="gMm-4C-5X3" id="nhX-ZH-zyP"/>
                         <outlet property="themeCell" destination="dqn-Cd-cNm" id="dfh-et-0o7"/>
                         <outlet property="versionLabel" destination="Xil-tm-WGD" id="ZzC-E6-VER"/>
@@ -943,7 +931,6 @@
     </scenes>
     <resources>
         <image name="Checkbox" width="117" height="119"/>
-        <image name="Saddam Hussein" width="79" height="17"/>
         <image name="icon.png" width="1024" height="1024"/>
         <systemColor name="groupTableViewBackgroundColor">
             <color red="0.94901960784313721" green="0.94901960784313721" blue="0.96862745098039216" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>

@@ -311,18 +311,26 @@ static int bootError;
     command = UserPreferences.shared.bootCommand;
 #ifdef LINUXRUNNER
     BOOL kali = [LRRuntimeBridge activeEnvironmentIsKali];
+    BOOL ubuntu = [LRRuntimeBridge activeEnvironmentIsUbuntu];
+    BOOL voidLinux = [LRRuntimeBridge activeEnvironmentIsVoid];
     if (!kali && ([LRRuntimeBridge activeEnvironmentIsDebian] || [LRRuntimeBridge activeEnvironmentIsArch] || [LRRuntimeBridge activeEnvironmentIsSteamOS])) command = @[@"/bin/sh", @"/usr/lib/linuxrunner/init.sh"];
-    if ([LRRuntimeBridge activeEnvironmentIsFedora] || kali) {
-        // The official Fedora and Kali userspace images expect systemd init. Run
+    if ([LRRuntimeBridge activeEnvironmentIsFedora] || kali || ubuntu || voidLinux) {
+        // The official Fedora, Kali and Ubuntu userspaces are not booted with
+        // their normal init system here. Run
         // only LinuxRunner's bundled first-start validator and a userspace PID 1.
         // Do not copy host files into fakefs behind its metadata database.
         NSURL *support = [NSBundle.mainBundle URLForResource:@"GUISupport" withExtension:@"bundle"];
-        NSString *initializer = support ? [NSString stringWithContentsOfURL:[support URLByAppendingPathComponent:kali ? @"initialize-kali.sh" : @"initialize-fedora.sh"] encoding:NSUTF8StringEncoding error:nil] : nil;
+        NSString *initializerName = kali ? @"initialize-kali.sh" : ubuntu ? @"initialize-ubuntu.sh" : voidLinux ? @"initialize-void.sh" : @"initialize-fedora.sh";
+        NSString *initializer = support ? [NSString stringWithContentsOfURL:[support URLByAppendingPathComponent:initializerName] encoding:NSUTF8StringEncoding error:nil] : nil;
         if (!initializer.length || initializer.length > 4000) {
             LRBootEvent("Distribution initializer resource missing or invalid");
             return _EINVAL;
         }
-        NSString *script = [NSString stringWithFormat:@"mkdir -p /var/log || exit 1\n(\n%@\n) >>/var/log/linuxrunner-initialize.log 2>&1\nwhile :; do sleep 3600; done\n", initializer];
+        // Ubuntu-based flavors (Pop!_OS, Zorin OS): record which one, so desktop
+        // setup layers its signed repository (GUISupport initialize-<flavor>.sh).
+        NSString *flavor = ubuntu ? [LRRuntimeBridge activeFlavor] : nil;
+        NSString *flavorMarker = ([flavor isEqual:@"pop"] || [flavor isEqual:@"zorin"]) ? [NSString stringWithFormat:@"mkdir -p /var/lib/linuxrunner && printf '%%s\\n' %@ > /var/lib/linuxrunner/flavor\n", flavor] : @"";
+        NSString *script = [NSString stringWithFormat:@"mkdir -p /var/log || exit 1\n%@(\n%@\n) >>/var/log/linuxrunner-initialize.log 2>&1\nwhile :; do sleep 3600; done\n", flavorMarker, initializer];
         command = @[@"/bin/sh", @"-c", script];
     }
 #endif
@@ -549,6 +557,12 @@ void NetworkReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReach
 
     if ([NSUserDefaults.standardUserDefaults boolForKey:@"FASTLANE_SNAPSHOT"])
         [UIView setAnimationsEnabled:NO];
+
+    // Settings > Keep Linux Running in Background (BackgroundRunner, Swift): resume if enabled.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        id runner = [NSClassFromString(@"LRBackgroundRunner") valueForKey:@"shared"];
+        if ([runner respondsToSelector:@selector(restore)]) [runner performSelector:@selector(restore)];
+    });
 
 #if !ISH_LINUX
     if (strcmp(getenv("ISH_MEMORY_DIAGNOSTICS") ?: "", "1") == 0) {

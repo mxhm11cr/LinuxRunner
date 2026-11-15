@@ -17,16 +17,46 @@ lr_stage() { lr_now=$(lr_ms); echo "DESKTOP_STARTUP: stage=$1 at_ms=$((lr_now - 
 # desktop starts instead, so Open Desktop keeps working.
 environment=${LR_DESKTOP_ENVIRONMENT:-}
 [ -n "$environment" ] && [ "$environment" != linuxrunner ] || environment=$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/linuxrunner/desktop-environment" 2>/dev/null || echo linuxrunner)
-case "$environment" in plasma|lxqt|enlightenment|wayfire|hyprland|xfce) ;; *) environment=linuxrunner;; esac
+case "$environment" in plasma|lxqt|enlightenment|wayfire|hyprland|xfce|i3|gnome|mate|cinnamon|budgie|cosmic) ;; *) environment=linuxrunner;; esac
 if [ "$environment" = xfce ] && ! command -v startxfce4 >/dev/null; then echo 'DESKTOP_STARTUP: xfce=not-installed; starting the LinuxRunner desktop (Settings › Desktop Environment › Install Xfce)'; environment=linuxrunner; fi
 if [ "$environment" = lxqt ] && ! command -v startlxqt >/dev/null; then echo 'DESKTOP_STARTUP: lxqt=not-installed; starting the LinuxRunner desktop (Settings › Desktop Environment › Install LXQt)'; environment=linuxrunner; fi
 if [ "$environment" = enlightenment ] && ! command -v enlightenment_start >/dev/null; then echo 'DESKTOP_STARTUP: enlightenment=not-installed; starting the LinuxRunner desktop (Settings › Desktop Environment › Install Enlightenment)'; environment=linuxrunner; fi
+if [ "$environment" = i3 ] && ! command -v i3 >/dev/null; then echo 'DESKTOP_STARTUP: i3=not-installed'; exit 127; fi
+if [ "$environment" = gnome ] && ! command -v gnome-shell >/dev/null; then echo 'DESKTOP_STARTUP: gnome=not-installed'; exit 127; fi
+for lr_de in mate:mate-session cinnamon:cinnamon-session budgie:budgie-desktop cosmic:cosmic-session; do
+ if [ "$environment" = "${lr_de%%:*}" ] && ! command -v "${lr_de#*:}" >/dev/null; then echo "DESKTOP_STARTUP: ${lr_de%%:*}=not-installed; starting the LinuxRunner desktop"; environment=linuxrunner; fi
+done
 if [ "$environment" = wayfire ] && ! command -v wayfire >/dev/null; then echo 'DESKTOP_STARTUP: wayfire=not-installed; starting the LinuxRunner desktop (Settings › Desktop Environment › Install Wayfire)'; environment=linuxrunner; fi
 if [ "$environment" = hyprland ] && { ! command -v Hyprland >/dev/null || ! [ -c /dev/dri/card0 ]; }; then echo 'DESKTOP_STARTUP: hyprland=unavailable (not installed or no software KMS device); starting the LinuxRunner desktop'; environment=linuxrunner; fi
 if [ "$environment" = enlightenment ] && [ "$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | tr -d '"')" = debian ]; then echo 'DESKTOP_STARTUP: enlightenment=not-available-on-debian (stops at its splash screen); starting the LinuxRunner desktop'; environment=linuxrunner; fi
 if [ "$environment" = plasma ] && ! command -v startplasma-x11 >/dev/null; then echo 'DESKTOP_STARTUP: plasma=not-installed; starting the LinuxRunner desktop (Settings › Desktop Environment › Install KDE Plasma)'; environment=linuxrunner; fi
 [ -x ./desktop-probe ] || { echo 'DESKTOP_STARTUP: missing=desktop-probe; run Install Desktop Support'; exit 127; }
 wm= panel= surface= conf= limit=120 integrated=0
+# Faster logins for session-managed desktops: their session managers start
+# every XDG autostart entry, and under the interpreter each extra process
+# costs real seconds. Skip, for this session only, entries that cannot work
+# here (no NetworkManager, modem, smartcard, tablet, USB guard, geolocation,
+# logind session for a polkit agent) or that only add login-time load (the
+# Tracker file indexer, a second PulseAudio when the session already runs
+# one). Required session components are never hidden. A session-private
+# directory searched first through XDG_CONFIG_DIRS holds Hidden=true copies;
+# the distribution's files and the user's ~/.config/autostart are untouched
+# (a user's own autostart entry still wins).
+case "$environment" in gnome|mate|cinnamon|budgie)
+ lr_skip="geoclue-demo-agent nm-applet org.buddiesofbudgie.BudgieDesktopNmApplet tracker-miner-fs-3 xdg-user-dirs-kde org.gnome.SettingsDaemon.UsbProtection org.gnome.SettingsDaemon.Wwan"
+ [ "$environment" != cinnamon ] || lr_skip="$lr_skip cinnamon-settings-daemon-smartcard cinnamon-settings-daemon-wacom cinnamon-settings-daemon-print-notifications cinnamon-settings-daemon-color cinnamon-settings-daemon-automount"
+ [ -n "${XDG_SESSION_ID:-}" ] || lr_skip="$lr_skip polkit-gnome-authentication-agent-1 polkit-mate-authentication-agent-1"
+ if command -v pactl >/dev/null && pactl info >/dev/null 2>&1; then lr_skip="$lr_skip pulseaudio"; fi
+ mkdir -p "$session/xdg-fast/autostart"
+ lr_skipped=
+ for entry in $lr_skip; do
+  [ -f "/etc/xdg/autostart/$entry.desktop" ] || continue
+  printf '[Desktop Entry]\nType=Application\nName=%s\nHidden=true\n' "$entry" > "$session/xdg-fast/autostart/$entry.desktop"
+  lr_skipped="$lr_skipped $entry"
+ done
+ export XDG_CONFIG_DIRS="$session/xdg-fast:${XDG_CONFIG_DIRS:-/etc/xdg}"
+ echo "DESKTOP_STARTUP: skipped autostart:${lr_skipped:- none}";;
+esac
 qt_desktop=0
 case "$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | tr -d '\"')" in arch|archarm) qt_desktop=1;; esac
 if [ "$environment" = linuxrunner ]; then
@@ -221,6 +251,120 @@ elif [ "$environment" = enlightenment ]; then
  integrated=1
  enlightenment_start > "$session/enlightenment.log" 2>&1 & wm=$!; panel=$wm; surface=$wm; limit=600
  echo "DESKTOP_STARTUP: environment=enlightenment session=$wm"
+elif [ "$environment" = gnome ]; then
+ # Real GNOME Shell/Mutter X11; its required system services are supervised
+ # before the regular-user session starts. The guest chooses its renderer.
+ export XDG_CURRENT_DESKTOP=ubuntu:GNOME XDG_SESSION_TYPE=x11 DESKTOP_SESSION=ubuntu GNOME_SHELL_SESSION_MODE=ubuntu
+ # Zorin OS: Zorin's own session mode; its GSettings overrides ([...:zorin])
+ # select the Zorin menu, taskbar, desktop icons, tiling and themes.
+ if [ "$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | tr -d '"')" = zorin ] && [ -f /usr/share/gnome-shell/modes/zorin.json ]; then
+  export XDG_CURRENT_DESKTOP=zorin:GNOME DESKTOP_SESSION=zorin GNOME_SHELL_SESSION_MODE=zorin
+  echo 'DESKTOP_STARTUP: gnome flavor=zorin (Zorin Desktop)'
+ fi
+ # GNOME's session sets this; the Zorin menu (and other menu-based
+ # launchers) read gnome-applications.menu through it.
+ [ ! -r /etc/xdg/menus/gnome-applications.menu ] || export XDG_MENU_PREFIX=gnome-
+ gnome-shell --x11 --replace > "$session/gnome.log" 2>&1 & wm=$!; panel=$wm; surface=$wm
+ integrated=1; limit=600
+ echo "DESKTOP_STARTUP: environment=gnome session=$wm"
+elif [ "$environment" = mate ]; then
+ # MATE (X11): mate-session starts Marco, the MATE panel and Caja's desktop.
+ export XDG_CURRENT_DESKTOP=MATE XDG_SESSION_TYPE=x11 DESKTOP_SESSION=mate
+ mate-session > "$session/mate.log" 2>&1 & wm=$!; panel=$wm; surface=$wm
+ integrated=1; limit=600
+ echo "DESKTOP_STARTUP: environment=mate session=$wm"
+elif [ "$environment" = cinnamon ]; then
+ # Cinnamon (X11). Its Muffin compositor draws with OpenGL: the full session on
+ # the GPU display server (virgl/ANGLE/Metal), the 2D session in software.
+ export XDG_CURRENT_DESKTOP=X-Cinnamon XDG_SESSION_TYPE=x11 DESKTOP_SESSION=cinnamon
+ # Cinnamon's 3D mode composites with OpenGL, and on the GPU X server its
+ # output never reached the scanout (black screen; Mac GPU-scanout snapshots,
+ # build 910). The 2D session draws without the GL compositor and is shown.
+ cinnamon_mode=cinnamon2d
+ cinnamon-session --session "$cinnamon_mode" > "$session/cinnamon.log" 2>&1 & wm=$!; panel=$wm; surface=$wm
+ integrated=1; limit=600
+ echo "DESKTOP_STARTUP: environment=cinnamon session=$wm mode=$cinnamon_mode"
+elif [ "$environment" = cosmic ]; then
+ # Pop!_OS's own desktop. cosmic-comp is a Wayland compositor; with DISPLAY
+ # set it runs nested in this X server (winit X11 backend) and renders with
+ # EGL on the same GPU (virgl/ANGLE/Metal). cosmic-session starts the panel,
+ # dock, launcher, app library, background and settings daemon inside it.
+ export XDG_CURRENT_DESKTOP=COSMIC XDG_SESSION_DESKTOP=COSMIC DCONF_PROFILE=/usr/share/dconf/profile/cosmic COSMIC_BACKEND=winit
+ export _JAVA_AWT_WM_NONREPARENTING=1 GDK_BACKEND=wayland,x11 QT_QPA_PLATFORM="wayland;xcb" MOZ_ENABLE_WAYLAND=1
+ unset WAYLAND_DISPLAY
+ case "${LANG:-}" in ''|C|POSIX) export LANG=C.UTF-8;; esac
+ # cosmic-greeter is the session's screen locker: started without logind it
+ # locks at once and asks for the Linux password. LinuxRunner sessions run
+ # behind the iPhone's own lock, so the session gets an idle stand-in.
+ mkdir -p "$session/cosmic-bin"
+ printf '#!/bin/sh\nexec sleep 2147483647\n' > "$session/cosmic-bin/cosmic-greeter"; chmod 755 "$session/cosmic-bin/cosmic-greeter"
+ export PATH="$session/cosmic-bin:$PATH"
+ # The nested output window opens at 1280x800; window-fit sizes it to the screen.
+ [ ! -x ./window-fit ] || ./window-fit cosmic-comp >> "$session/cosmic.log" 2>&1 &
+ cosmic-session > "$session/cosmic.log" 2>&1 & wm=$!; panel=$wm; surface=$wm
+ integrated=1; limit=600
+ echo "DESKTOP_STARTUP: environment=cosmic session=$wm (nested in X, GPU)"
+elif [ "$environment" = budgie ]; then
+ # Budgie (X11): budgie-desktop starts the Budgie window manager and panel.
+ export XDG_CURRENT_DESKTOP=Budgie:GNOME XDG_SESSION_TYPE=x11 DESKTOP_SESSION=budgie-desktop
+ # budgie-session requires its polkit agent, which exits ("No session for
+ # pid") when the user has no logind session, as here without systemd; two
+ # failures end the whole session. Without a logind session, give the session
+ # manager a private copy of the distribution's session file (searched in
+ # XDG_CONFIG_DIRS before /usr/share) with only that requirement removed.
+ budgie_session_file=/usr/share/gnome-session/sessions/org.buddiesofbudgie.BudgieDesktop.session
+ if [ -z "${XDG_SESSION_ID:-}" ] && [ -f "$budgie_session_file" ]; then
+  mkdir -p "$session/xdg-budgie/gnome-session/sessions"
+  sed 's/org\.buddiesofbudgie\.BudgiePolkit;//' "$budgie_session_file" > "$session/xdg-budgie/gnome-session/sessions/org.buddiesofbudgie.BudgieDesktop.session"
+  export XDG_CONFIG_DIRS="$session/xdg-budgie:${XDG_CONFIG_DIRS:-/etc/xdg}"
+  echo 'DESKTOP_STARTUP: budgie polkit agent optional (no logind session)'
+ fi
+ budgie-desktop > "$session/budgie.log" 2>&1 & wm=$!; panel=$wm; surface=$wm
+ integrated=1; limit=600
+ echo "DESKTOP_STARTUP: environment=budgie session=$wm"
+elif [ "$environment" = i3 ]; then
+ # i3 is an X11 window manager and uses the existing X server and input path.
+ export XDG_CURRENT_DESKTOP=i3 XDG_SESSION_TYPE=x11 DESKTOP_SESSION=i3
+ i3_config="${XDG_CONFIG_HOME:-$HOME/.config}/i3/config"
+ if [ ! -e "$i3_config" ] && [ ! -L "$i3_config" ] &&
+    [ ! -e "$HOME/.i3/config" ] && [ ! -L "$HOME/.i3/config" ]; then
+  mkdir -p "$(dirname "$i3_config")"
+  i3_temp=$(mktemp "$(dirname "$i3_config")/.linuxrunner-i3.XXXXXXXX")
+  cat > "$i3_temp" <<'I3_CONFIG'
+set $mod Mod4
+font pango:monospace 10
+floating_modifier $mod
+bindsym $mod+Return exec xterm
+bindsym $mod+d exec dmenu_run
+bindsym $mod+Shift+q kill
+bindsym $mod+h focus left
+bindsym $mod+j focus down
+bindsym $mod+k focus up
+bindsym $mod+l focus right
+bindsym $mod+Shift+h move left
+bindsym $mod+Shift+j move down
+bindsym $mod+Shift+k move up
+bindsym $mod+Shift+l move right
+bindsym $mod+f fullscreen toggle
+bindsym $mod+Shift+space floating toggle
+bindsym $mod+1 workspace number 1
+bindsym $mod+2 workspace number 2
+bindsym $mod+3 workspace number 3
+bindsym $mod+Shift+1 move container to workspace number 1
+bindsym $mod+Shift+2 move container to workspace number 2
+bindsym $mod+Shift+3 move container to workspace number 3
+bar {
+    position top
+}
+exec --no-startup-id xterm
+I3_CONFIG
+  # Publish only if no configuration appeared while the file was prepared.
+  ln "$i3_temp" "$i3_config" 2>/dev/null || true
+  rm -f "$i3_temp"
+ fi
+ i3 > "$session/wm.log" 2>&1 & wm=$!; panel=$wm; surface=$wm
+ integrated=1
+ echo "DESKTOP_STARTUP: environment=i3 session=$wm"
 elif [ "$environment" = wayfire ]; then
  # Wayfire (wlroots) nested in this session's X server: wlroots' X11 backend
  # draws with its software renderer (pixman) into one full-screen window, so
@@ -284,9 +428,8 @@ WAYFIRE_INI
  # The output always follows the session size (Settings › Display, the TV).
  geometry=$(xwininfo -root 2>/dev/null | awk '/-geometry/{split($2,g,"+"); print g[1]}')
  if [ -n "$geometry" ]; then
-  awk '/^\[output:(X11-1|Virtual-1)\]/{skip=1;next} /^\[/{skip=0} !skip' "$wf_config/wayfire.ini" > "$wf_config/wayfire.ini.new" &&
-   printf '\n[output:%s]\n# Managed by LinuxRunner: the session display size.\nmode = %s%s\n' "$output" "$geometry" "$([ "$output" = Virtual-1 ] && echo @60000)" >> "$wf_config/wayfire.ini.new" &&
-   mv "$wf_config/wayfire.ini.new" "$wf_config/wayfire.ini"
+  sh ./wayfire-output-configure.sh "$wf_config/wayfire.ini" "$output" "$geometry" ||
+   echo 'DESKTOP_STARTUP: wayfire output configuration could not be updated'
  fi
  integrated=1
  if [ "${wf_gpu:-0}" = 1 ]; then
@@ -481,7 +624,7 @@ write_degraded() {
 supervise() {
  # Desktops that are one process tree end with it; Hyprland's display bridge
  # alone is restarted (a few times) while Hyprland runs.
- case "$environment" in plasma|lxqt|enlightenment|wayfire|hyprland)
+ case "$environment" in plasma|lxqt|enlightenment|wayfire|hyprland|i3|gnome|mate|cinnamon|budgie|cosmic)
   kill -0 "$wm" 2>/dev/null || { echo "$1: component_exited name=$(component_name "$wm") pid=$wm"; exit 1; }
   if [ "$environment" = hyprland ] && [ -n "$panel" ] && ! kill -0 "$panel" 2>/dev/null; then
    bridge_restarts=$((${bridge_restarts:-0} + 1))
@@ -521,11 +664,16 @@ nested_output_mapped() {
 }
 desktop_ready() {
  ./desktop-probe > "$session/desktop-state.probe" || return 1
+ # Mutter can claim X11 window-manager ownership before GNOME Shell finishes
+ # initializing. Require the real shell startup milestone as well.
+ if [ "$environment" = gnome ] && ! grep -q 'GNOME Shell started at' "$session/gnome.log" 2>/dev/null; then return 1; fi
  # KMS compositors (Hyprland; Wayfire on the GPU) are ready when the bridge has
  # presented a real frame from them, not when its window is mapped; Wayfire
  # nested in X when its own output window is mapped.
  case "$environment" in
   hyprland) ! grep -q 'KMS_BRIDGE: first frame' "$session/kms-bridge.log" 2>/dev/null || echo wm=1 >> "$session/desktop-state.probe";;
+  # COSMIC: its output window fills the screen and the panel has started.
+  cosmic) if nested_output_mapped && grep -q 'starting process.*cosmic-panel' "$session/cosmic.log" 2>/dev/null; then echo wm=1 >> "$session/desktop-state.probe"; fi;;
   wayfire) if [ "${wf_gpu:-0}" = 1 ]; then ! grep -q 'KMS_BRIDGE: first frame' "$session/kms-bridge.log" 2>/dev/null || echo wm=1 >> "$session/desktop-state.probe"
            else ! nested_output_mapped || echo wm=1 >> "$session/desktop-state.probe"; fi;;
  esac

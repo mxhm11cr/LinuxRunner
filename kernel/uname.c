@@ -48,7 +48,9 @@ static void sysinfo_specific(struct sys_info *info) {
     // Go runtime needs ~1.1GB for page summaries; 4GB gives headroom.
 #define GUEST_MAX_RAM (4ULL * 1024 * 1024 * 1024)
     uint64_t total_bytes = host_info.totalram * host_mem_unit;
-    if (total_bytes > GUEST_MAX_RAM)
+    if (platform_guest_memory_choice())
+        total_bytes = platform_guest_memory_choice();   // Settings › CPU & Memory (as /proc/meminfo)
+    else if (total_bytes > GUEST_MAX_RAM)
         total_bytes = GUEST_MAX_RAM;
     info->totalram = total_bytes;
     info->sharedram = host_info.sharedram * host_mem_unit;

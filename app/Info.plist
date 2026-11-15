@@ -41,11 +41,11 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Allow Linux applications to connect to computers and services on your local network.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Programs running in ios-linuxkit will be allowed to track your location in the background.</string>
+	<string>Linux programs you run (/dev/location) can read your location, and "Keep Linux Running in Background" uses a coarse location session so Linux keeps running while you use other apps. Your location is not stored or sent by LinuxRunner.</string>
 	<key>NSLocationAlwaysUsageDescription</key>
-	<string>Programs running in ios-linuxkit will be allowed to track your location in the background.</string>
+	<string>Linux programs you run (/dev/location) can read your location, and "Keep Linux Running in Background" uses a coarse location session so Linux keeps running while you use other apps. Your location is not stored or sent by LinuxRunner.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Programs running in ios-linuxkit will be allowed to see your location.</string>
+	<string>Linux programs you run (/dev/location) can read your location, and "Keep Linux Running in Background" uses a coarse location session so Linux keeps running while you use other apps. Your location is not stored or sent by LinuxRunner.</string>
 	<key>NSUserActivityTypes</key>
 	<array>
 		<string>dev.linuxrunner.scene</string>

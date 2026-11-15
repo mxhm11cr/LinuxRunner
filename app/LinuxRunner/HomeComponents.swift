@@ -1,4 +1,5 @@
 import SwiftUI
+import os
 
 /// Compact desktop status for the Home header. "Ready" is reported only when
 /// the session says the desktop passed its readiness checks and painted a
@@ -59,7 +60,10 @@ struct HomeTile: View {
         } else if large {
             HStack(spacing: 12) {
                 icon(size: 46)
-                Text(title).font(.headline).foregroundColor(.primary).lineLimit(1).minimumScaleFactor(0.8)
+                // Short titles stay on one line ("App Store"); longer ones use
+                // two ("CPU & Memory", "Task Manager") instead of truncating.
+                Text(title).font(.headline).foregroundColor(.primary).lineLimit(title.count > 10 ? 2 : 1).minimumScaleFactor(0.85)
+                    .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
             .padding(14).frame(maxWidth: .infinity)
@@ -253,6 +257,10 @@ struct CatalogDistribution: Identifiable {
         .init(id: "debian", name: "Debian 13", summary: "Recommended", detail: "Stable, widest app support, all desktops", experimental: false),
         .init(id: "arch", name: "Arch Linux ARM", summary: "Rolling release", detail: "pacman, X11 and Wayland desktops, KDE Plasma", experimental: false),
         .init(id: "fedora", name: "Fedora 44", summary: "DNF userspace", detail: "Lightweight desktop and KDE Plasma", experimental: false),
+        .init(id: "ubuntu", name: "Ubuntu 24.04", summary: "Ubuntu Base · Experimental", detail: "APT, i3 and experimental Ubuntu GNOME", experimental: true),
+        .init(id: "pop", name: "Pop!_OS 24.04", summary: "By System76 · Experimental", detail: "Ubuntu base with Pop!_OS's repository and look", experimental: true),
+        .init(id: "zorin", name: "Zorin OS 18", summary: "Windows-like · Experimental", detail: "Ubuntu base with Zorin OS's repositories and look", experimental: true),
+        .init(id: "void", name: "Void Linux", summary: "Independent · Experimental", detail: "Independent rolling release with xbps; very light", experimental: true),
         .init(id: "kali", name: "Kali Linux", summary: "Security tools", detail: "Kali's Xfce desktop and tool sets", experimental: false),
         .init(id: "alpine", name: "Alpine 3.24", summary: "Small and fast", detail: "Mainly for the terminal", experimental: false),
         .init(id: "steamos", name: "SteamOS ARM64", summary: "Valve SteamFrame image", detail: "Downloads Valve's ARM64 recovery image; not official SteamOS support, no Steam games", experimental: true),
@@ -270,8 +278,13 @@ struct DistroBadge: View {
         case "debian": return "debian"
         case "arch", "archarm": return "arch"
         case "fedora": return "fedora"
+        case "ubuntu": return "ubuntu"
         case "kali": return "kali"
         case "steamos": return "steamos"
+        case "pop": return "pop"
+        case "zorin": return "zorin"
+        case "void": return "void"
+        case "opensuse", "opensuse-tumbleweed": return "opensuse"
         default: return "alpine"
         }
     }
@@ -291,6 +304,103 @@ struct DistroBadge: View {
                 else { Image(systemName: "shippingbox.fill").foregroundColor(.gray) }
             }
             .accessibilityHidden(true)
+    }
+}
+
+/// A desktop environment's mark, in the same rounded tile as DistroBadge:
+/// the icon theme's logo where one exists (DesktopLogos.bundle/SOURCES.md),
+/// otherwise a symbol tile drawn by the app.
+struct DesktopBadge: View {
+    let desktopID: String
+    var size: CGFloat = 46
+    private static var cache: [String: UIImage] = [:]
+    private var logo: UIImage? {
+        guard ["linuxrunner", "gnome", "plasma", "lxqt", "xfce"].contains(desktopID) else { return nil }
+        if let image = Self.cache[desktopID] { return image }
+        guard let bundle = Bundle.main.url(forResource: "DesktopLogos", withExtension: "bundle"),
+              let image = UIImage(contentsOfFile: bundle.appendingPathComponent(desktopID + ".png").path) else { return nil }
+        Self.cache[desktopID] = image
+        return image
+    }
+    private var tile: (symbol: String, colors: [Color]) {
+        switch desktopID {
+        case "i3": return ("square.grid.2x2.fill", [Color(red: 0.20, green: 0.24, blue: 0.30), Color(red: 0.36, green: 0.44, blue: 0.54)])
+        case "wayfire": return ("flame.fill", [Color(red: 1.00, green: 0.58, blue: 0.20), Color(red: 0.90, green: 0.25, blue: 0.20)])
+        case "hyprland": return ("square.grid.3x2.fill", [Color(red: 0.20, green: 0.80, blue: 0.90), Color(red: 0.25, green: 0.40, blue: 0.95)])
+        case "enlightenment": return ("sparkles", [Color(red: 0.62, green: 0.36, blue: 0.95), Color(red: 0.95, green: 0.35, blue: 0.62)])
+        case "mate": return ("leaf.fill", [Color(red: 0.45, green: 0.75, blue: 0.30), Color(red: 0.20, green: 0.55, blue: 0.25)])
+        case "cinnamon": return ("circle.grid.cross.fill", [Color(red: 0.85, green: 0.55, blue: 0.30), Color(red: 0.60, green: 0.35, blue: 0.20)])
+        case "cosmic": return ("sparkle", [Color(red: 0.28, green: 0.75, blue: 0.85), Color(red: 0.55, green: 0.40, blue: 0.95)])
+        case "budgie": return ("circle.hexagongrid.fill", [Color(red: 0.30, green: 0.60, blue: 0.95), Color(red: 0.55, green: 0.35, blue: 0.85)])
+        default: return ("macwindow.on.rectangle", [Color(red: 0.25, green: 0.50, blue: 1.00), Color(red: 0.36, green: 0.30, blue: 0.90)])
+        }
+    }
+    var body: some View {
+        Group {
+            if let logo, desktopID == "linuxrunner" {
+                // The app's own icon: full-bleed, like on the Home Screen.
+                Image(uiImage: logo).resizable().interpolation(.high).scaledToFill()
+                    .clipShape(RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
+            } else if let logo {
+                RoundedRectangle(cornerRadius: size * 0.28, style: .continuous).fill(Color(white: 0.96))
+                    .overlay(Image(uiImage: logo).resizable().interpolation(.high).scaledToFit().padding(size * 0.12))
+            } else {
+                RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
+                    .fill(LinearGradient(colors: tile.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .overlay(Image(systemName: tile.symbol).font(.system(size: size * 0.42, weight: .semibold)).foregroundColor(.white))
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+/// One desktop in the picker: mark, name, badges, what it is, and its state
+/// (selected, ready to use, install, or installing with live progress).
+struct DesktopChoiceCard: View {
+    let option: DesktopOption
+    let distro: String
+    let selected: Bool
+    let installed: Bool
+    let progress: String?
+    let enabled: Bool
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 14) {
+                DesktopBadge(desktopID: option.id, size: 52)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(option.title).font(.headline).foregroundColor(.primary).lineLimit(1).minimumScaleFactor(0.8)
+                    if !option.badges(distro).isEmpty {
+                        HStack(spacing: 6) {
+                            ForEach(option.badges(distro), id: \.self) { badge in
+                                StatusChip(text: badge, color: badge == "Recommended" ? .accentColor : badge == "Experimental" ? .orange : .green)
+                                    .fixedSize()
+                            }
+                        }
+                    }
+                    Text(option.detail).font(.footnote).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if let progress {
+                        HStack(spacing: 6) { ProgressView().scaleEffect(0.7); Text(progress).font(.caption).foregroundColor(.secondary).lineLimit(2) }
+                    } else if !installed {
+                        Label("Install", systemImage: "arrow.down.circle.fill").font(.caption.weight(.semibold)).foregroundColor(.accentColor)
+                    }
+                }
+                Spacer(minLength: 4)
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.title2).foregroundColor(selected ? .accentColor : Color(.tertiaryLabel))
+            }
+            .padding(14)
+            .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.secondarySystemGroupedBackground)))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 2))
+            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled || selected ? 1 : 0.55)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityHint(installed ? "Selects this desktop" : "Installs this desktop")
     }
 }
 
@@ -363,5 +473,237 @@ struct SettingsLabel: View {
                 .frame(width: 29, height: 29)
                 .overlay(Image(systemName: symbol).font(.system(size: 14, weight: .semibold)).foregroundColor(.white))
         }
+    }
+}
+
+// MARK: - CPU & Memory (Settings › Graphics & Performance)
+
+/// What Linux programs are told about CPU cores and memory. Programs size their
+/// worker threads (make -j, Blender, browsers, Java) and heaps from these, and
+/// guest threads run on separate CPU cores. Applied at the next launch.
+struct SystemResourcesView: View {
+    @AppStorage(LRSystemCPUCoresKey) private var cores = 0
+    @AppStorage(LRSystemMemoryMBKey) private var memoryMB = 0
+    private let hostCores = max(1, min(16, ProcessInfo.processInfo.activeProcessorCount))
+    /// Advertised RAM tier: iOS reports a little less than the marketed amount
+    /// (a 12 GB iPhone can report under 11.5 GiB), so classify instead of rounding.
+    private let deviceGB: Int = {
+        let gib = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
+        switch gib {
+        case 14...: return 16
+        case 10...: return 12
+        case 7...: return 8
+        case 5...: return 6
+        case 3.5...: return 4
+        default: return max(1, Int(gib.rounded()))
+        }
+    }()
+    private let appliedCores = ProcessInfo.processInfo.environment["LINUXRUNNER_CPU_CORES"].flatMap(Int.init) ?? 0
+    private let appliedMemoryMB = ProcessInfo.processInfo.environment["LINUXRUNNER_MEMORY_MB"].flatMap(Int.init) ?? 0
+
+    /// 12 GB → 8, 16 → 8 (runtime maximum), 8 → 4, 6 → 3, 4 → 2: the rest stays for iOS and the app.
+    private var maximumGB: Int {
+        let limit = deviceGB >= 12 ? deviceGB - 4 : deviceGB >= 8 ? deviceGB / 2 : deviceGB >= 6 ? 3 : max(1, deviceGB / 2)
+        return min(8, max(1, limit))
+    }
+    /// What iOS lets LinuxRunner use right now (footprint plus what is still
+    /// available); nil where iOS reports no app limit (Simulator, Mac).
+    private var iosAllowanceGB: Double? {
+        let available = os_proc_available_memory()
+        guard available > 0 else { return nil }
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let footprint = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) }
+        } == KERN_SUCCESS ? Double(info.phys_footprint) : 0
+        return (footprint + Double(available)) / 1_073_741_824
+    }
+    private var pendingRestart: Bool { cores != appliedCores || memoryMB != appliedMemoryMB }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                header
+                card(title: "CPU Cores", symbol: "cpu.fill", colors: [.indigo, .purple],
+                     value: cores == 0 ? "Automatic · 4" : "\(cores) of \(hostCores)",
+                     detail: "Linux programs start this many worker threads, and each runs on its own core. More cores speed up compiling, rendering and browsers; Automatic keeps 4, which suits most apps.") {
+                    chips(options: [0] + Array(1...hostCores), selection: $cores) { $0 == 0 ? "Auto" : "\($0)" }
+                }
+                card(title: "Linux Memory", symbol: "memorychip.fill", colors: [.teal, .blue],
+                     value: memoryMB == 0 ? "Automatic" : "\(memoryMB / 1024) GB",
+                     detail: "The memory Linux programs see. Java, browsers and games size their heaps from it. Up to \(maximumGB) GB on this \(deviceGB) GB device; the rest stays for iOS and LinuxRunner.") {
+                    chips(options: [0] + Array(1...maximumGB).map { $0 * 1024 }, selection: $memoryMB) { $0 == 0 ? "Auto" : "\($0 / 1024) GB" }
+                    if memoryMB > 0, let allowance = iosAllowanceGB, Double(memoryMB) / 1024 > allowance {
+                        Label(String(format: "iOS currently allows LinuxRunner about %.1f GB. Programs that use more than that can be closed by iOS.", allowance), systemImage: "exclamationmark.triangle.fill")
+                            .font(.footnote).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                if pendingRestart {
+                    Label("Applies the next time LinuxRunner starts. Close it from the app switcher and open it again.", systemImage: "arrow.clockwise.circle.fill")
+                        .font(.footnote.weight(.medium)).foregroundStyle(.blue)
+                        .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.blue.opacity(0.12)))
+                }
+            }
+            .padding(.horizontal, 20).padding(.vertical, 12).padding(.bottom, 96)
+        }
+        .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        .navigationTitle("CPU & Memory")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var header: some View {
+        HStack(spacing: 14) {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(LinearGradient(colors: [.indigo, .teal], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .frame(width: 54, height: 54)
+                .overlay(Image(systemName: "speedometer").font(.system(size: 24, weight: .semibold)).foregroundColor(.white))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(UIDevice.current.model).font(.headline)
+                Text("\(hostCores) CPU cores · \(deviceGB) GB memory").font(.subheadline).foregroundStyle(.secondary)
+                if let allowance = iosAllowanceGB {
+                    Text(String(format: "iOS allows LinuxRunner about %.1f GB now", allowance)).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color(.secondarySystemGroupedBackground)))
+    }
+
+    private func card<Content: View>(title: String, symbol: String, colors: [Color], value: String, detail: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 34, height: 34)
+                    .overlay(Image(systemName: symbol).font(.system(size: 16, weight: .semibold)).foregroundColor(.white))
+                Text(title).font(.headline)
+                Spacer()
+                Text(value).font(.subheadline.weight(.semibold).monospacedDigit()).foregroundStyle(.secondary)
+            }
+            content()
+            Text(detail).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color(.secondarySystemGroupedBackground)))
+    }
+
+    private func chips(options: [Int], selection: Binding<Int>, label: @escaping (Int) -> String) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 58), spacing: 8)], spacing: 8) {
+            ForEach(options, id: \.self) { option in
+                let selected = selection.wrappedValue == option
+                Button { withAnimation(.easeOut(duration: 0.2)) { selection.wrappedValue = option } } label: {
+                    Text(label(option))
+                        .font(.subheadline.weight(selected ? .semibold : .regular).monospacedDigit())
+                        .frame(maxWidth: .infinity, minHeight: 38)
+                        .foregroundColor(selected ? .white : .primary)
+                        .background(Capsule().fill(selected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(Color(.tertiarySystemGroupedBackground))))
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+        }
+    }
+}
+
+// MARK: - Shared settings design (GPU, Devices, File Sharing)
+// Cards in the style of CPU & Memory: gradient icon tile, headline, short
+// value, content, and long explanations folded into "More info".
+struct LRIconTile: View {
+    let symbol: String; let colors: [Color]; var size: CGFloat = 34
+    var body: some View {
+        RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
+            .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+            .frame(width: size, height: size)
+            .overlay(Image(systemName: symbol).font(.system(size: size * 0.47, weight: .semibold)).foregroundColor(.white))
+    }
+}
+struct LRCard<Content: View>: View {
+    let title: String; let symbol: String; let colors: [Color]; var value: String? = nil
+    @ViewBuilder let content: () -> Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                LRIconTile(symbol: symbol, colors: colors)
+                Text(title).font(.headline)
+                Spacer()
+                if let value { Text(value).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1) }
+            }
+            content()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color(.secondarySystemGroupedBackground)))
+    }
+}
+struct LRChoice: Identifiable { let id: String; let title: String; let subtitle: String; let symbol: String }
+struct LRChoiceList: View {
+    let choices: [LRChoice]; @Binding var selection: String
+    var body: some View {
+        VStack(spacing: 8) {
+            ForEach(choices) { choice in
+                let selected = selection == choice.id
+                Button { withAnimation(.easeOut(duration: 0.2)) { selection = choice.id } } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: choice.symbol).font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(selected ? .white : .accentColor)
+                            .frame(width: 34, height: 34)
+                            .background(Circle().fill(selected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(Color.accentColor.opacity(0.14))))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(choice.title).font(.subheadline.weight(.semibold)).foregroundColor(.primary)
+                            Text(choice.subtitle).font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 4)
+                        Image(systemName: selected ? "checkmark.circle.fill" : "circle").font(.title3)
+                            .foregroundColor(selected ? .accentColor : Color(.tertiaryLabel))
+                    }
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(.tertiarySystemGroupedBackground)))
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(selected ? Color.accentColor.opacity(0.6) : .clear, lineWidth: 1.5))
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+        }
+    }
+}
+struct LRStatusPill: View {
+    let text: String; let color: Color
+    var body: some View {
+        Text(text).font(.caption2.weight(.semibold)).lineLimit(1)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .foregroundColor(color).background(Capsule().fill(color.opacity(0.15)))
+    }
+}
+struct LRMoreInfo<Content: View>: View {
+    var title = "More info"
+    @ViewBuilder let content: () -> Content
+    @State private var open = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button { withAnimation(.easeOut(duration: 0.2)) { open.toggle() } } label: {
+                HStack(spacing: 4) {
+                    Text(title).font(.footnote.weight(.semibold))
+                    Image(systemName: "chevron.down").font(.caption2.weight(.bold)).rotationEffect(.degrees(open ? 180 : 0))
+                }.foregroundColor(.accentColor)
+            }.buttonStyle(.plain)
+            if open { content().font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+        }
+    }
+}
+struct LRNavRow: View {
+    let title: String; let subtitle: String?; let symbol: String; let colors: [Color]
+    var body: some View {
+        HStack(spacing: 12) {
+            LRIconTile(symbol: symbol, colors: colors, size: 32)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.subheadline.weight(.semibold)).foregroundColor(.primary)
+                if let subtitle { Text(subtitle).font(.caption).foregroundColor(.secondary).lineLimit(1) }
+            }
+            Spacer(minLength: 4)
+            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundColor(Color(.tertiaryLabel))
+        }
+        .padding(.vertical, 4).contentShape(Rectangle())
     }
 }

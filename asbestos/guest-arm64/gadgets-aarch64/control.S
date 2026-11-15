@@ -2051,3 +2051,81 @@ make_fused_subs_reg_bcond ge, ge
 make_fused_subs_reg_bcond lt, lt
 make_fused_subs_reg_bcond gt, gt
 make_fused_subs_reg_bcond le, le
+
+/*
+ * Fused CMP Wn, Wm + B.cond (32-bit, rd=31)
+ * Code stream: [gadget addr][rn | rm<<8][fake_target][fake_fallthrough]
+ */
+.macro make_fused_cmp32_reg_bcond name, cond
+.gadget fused_cmp32_reg_bcond_\name
+    ldr x8, [_pc]               // rn | rm<<8
+    add _pc, _pc, #8
+    ldr x9, [_pc]               // target
+    add _pc, _pc, #8
+    ldr x10, [_pc]              // fallthrough
+    and x11, x8, #0x1f          // rn
+    ubfx x12, x8, #8, #5        // rm
+    add x13, _cpu, #CPU_x0
+    ldr x14, [x13, x11, lsl #3]
+    ldr x15, [x13, x12, lsl #3]
+    subs wzr, w14, w15
+    mrs x16, nzcv
+    str w16, [_cpu, #CPU_nzcv]
+    b.\cond bcond_taken
+    b bcond_not_taken
+.endm
+
+make_fused_cmp32_reg_bcond eq, eq
+make_fused_cmp32_reg_bcond ne, ne
+make_fused_cmp32_reg_bcond cs, cs
+make_fused_cmp32_reg_bcond cc, cc
+make_fused_cmp32_reg_bcond mi, mi
+make_fused_cmp32_reg_bcond pl, pl
+make_fused_cmp32_reg_bcond vs, vs
+make_fused_cmp32_reg_bcond vc, vc
+make_fused_cmp32_reg_bcond hi, hi
+make_fused_cmp32_reg_bcond ls, ls
+make_fused_cmp32_reg_bcond ge, ge
+make_fused_cmp32_reg_bcond lt, lt
+make_fused_cmp32_reg_bcond gt, gt
+make_fused_cmp32_reg_bcond le, le
+
+/*
+ * Fused SUBS Wd, Wn, Wm + B.cond (32-bit, rd!=31, zero-extended result stored)
+ * Code stream: [gadget addr][rd | rn<<8 | rm<<16][fake_target][fake_fallthrough]
+ */
+.macro make_fused_subs32_reg_bcond name, cond
+.gadget fused_subs32_reg_bcond_\name
+    ldr x8, [_pc]               // rd | rn<<8 | rm<<16
+    add _pc, _pc, #8
+    ldr x9, [_pc]               // target
+    add _pc, _pc, #8
+    ldr x10, [_pc]              // fallthrough
+    and x11, x8, #0x1f          // rd
+    ubfx x12, x8, #8, #5        // rn
+    ubfx x13, x8, #16, #5       // rm
+    add x14, _cpu, #CPU_x0
+    ldr x15, [x14, x12, lsl #3]
+    ldr x16, [x14, x13, lsl #3]
+    subs w15, w15, w16          // writes w15, zero-extends x15
+    str x15, [x14, x11, lsl #3]
+    mrs x15, nzcv
+    str w15, [_cpu, #CPU_nzcv]
+    b.\cond bcond_taken
+    b bcond_not_taken
+.endm
+
+make_fused_subs32_reg_bcond eq, eq
+make_fused_subs32_reg_bcond ne, ne
+make_fused_subs32_reg_bcond cs, cs
+make_fused_subs32_reg_bcond cc, cc
+make_fused_subs32_reg_bcond mi, mi
+make_fused_subs32_reg_bcond pl, pl
+make_fused_subs32_reg_bcond vs, vs
+make_fused_subs32_reg_bcond vc, vc
+make_fused_subs32_reg_bcond hi, hi
+make_fused_subs32_reg_bcond ls, ls
+make_fused_subs32_reg_bcond ge, ge
+make_fused_subs32_reg_bcond lt, lt
+make_fused_subs32_reg_bcond gt, gt
+make_fused_subs32_reg_bcond le, le

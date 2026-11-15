@@ -6,6 +6,7 @@
 #endif
 
 #include <stddef.h>
+#include <errno.h>
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #include <dlfcn.h>
@@ -103,7 +104,9 @@ static _Atomic size_t region_used;
 static _Atomic bool region_exhausted;
 
 #ifndef ISH_JIT_NO_EMIT   // AOT-only builds never map executable memory
+static char dual_map_error[160];
 static bool map_dual(void) {
+    dual_map_error[0] = '\0';
 #ifdef __linux__
     // Separate shared RW/RX aliases; never create a writable executable view.
     int fd = memfd_create("ish-native-code", MFD_CLOEXEC);
@@ -123,17 +126,21 @@ static bool map_dual(void) {
     return true;
 #else
     void *rw = mmap(NULL, REGION_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (rw == MAP_FAILED)
+    if (rw == MAP_FAILED) {
+        snprintf(dual_map_error, sizeof dual_map_error, "writable mmap failed (errno=%d)", errno);
         return false;
+    }
     vm_address_t rx = 0;
     vm_prot_t cur, max;
     kern_return_t kr = vm_remap(mach_task_self(), &rx, REGION_SIZE, 0, VM_FLAGS_ANYWHERE, mach_task_self(),
                                 (vm_address_t) rw, false, &cur, &max, VM_INHERIT_NONE);
     if (kr != KERN_SUCCESS) {
+        snprintf(dual_map_error, sizeof dual_map_error, "executable alias vm_remap failed (Mach=%d)", kr);
         munmap(rw, REGION_SIZE);
         return false;
     }
     if (mprotect((void *) rx, REGION_SIZE, PROT_READ | PROT_EXEC) != 0) {
+        snprintf(dual_map_error, sizeof dual_map_error, "executable alias mprotect failed (errno=%d)", errno);
         munmap((void *) rx, REGION_SIZE);
         munmap(rw, REGION_SIZE);
         return false;
@@ -185,6 +192,39 @@ __attribute__((noinline, naked)) static void jit26_detach(void) {
     __asm__ volatile("mov x16, #0\n brk #0xf00d\n ret");
 }
 
+// A brk #0xf00d that no debugger script answers raises SIGTRAP in this
+// process, which would end it. While LinuxRunner asks for a prepared region,
+// a temporary handler turns that into a clean "no debugger" result: skip the
+// brk and return 0. Any other trap restores the previous action and recurs.
+#include <signal.h>
+static volatile sig_atomic_t jit26_unanswered;
+static struct sigaction jit26_previous_trap;
+static void jit26_trap_guard(int sig, siginfo_t *info, void *context) {
+    ucontext_t *uc = context;
+    uint64_t pc = (uint64_t) arm_thread_state64_get_pc(uc->uc_mcontext->__ss);
+    uint32_t insn = *(volatile uint32_t *) pc;
+    if ((insn & 0xffe0001fu) == 0xd4200000u && ((insn >> 5) & 0xffffu) == 0xf00du) {   // brk #0xf00d (0xd43e01a0)
+        uc->uc_mcontext->__ss.__x[0] = 0;
+        arm_thread_state64_set_pc_fptr(uc->uc_mcontext->__ss, (void *) (pc + 4));
+        jit26_unanswered = 1;
+        return;
+    }
+    sigaction(SIGTRAP, &jit26_previous_trap, NULL);
+    (void) sig; (void) info;
+}
+static void jit26_guard(bool on) {
+    if (on) {
+        struct sigaction guard = {0};
+        guard.sa_sigaction = jit26_trap_guard;
+        guard.sa_flags = SA_SIGINFO;
+        sigemptyset(&guard.sa_mask);
+        jit26_unanswered = 0;
+        sigaction(SIGTRAP, &guard, &jit26_previous_trap);
+    } else {
+        sigaction(SIGTRAP, &jit26_previous_trap, NULL);
+    }
+}
+
 // Write "mov w0, #42; ret" through the writable view and run it. Only called
 // after iOS granted the executable view, so a refusal shows up as a failed
 // mprotect/prepare before this point.
@@ -193,6 +233,7 @@ static bool ios_region_verify(void) {
     uint8_t *code = region_alloc(sizeof probe);
     if (!code) return false;
     memcpy(code + rw_delta, probe, sizeof probe);
+    sys_icache_invalidate(code + rw_delta, sizeof probe);
     sys_icache_invalidate(code, sizeof probe);
     return ((int (*)(void)) (void *) code)() == 42;
 }
@@ -203,15 +244,22 @@ int jit_ios_acquire(bool txm, char *detail, size_t size) {
     if (!txm) {
         // Without TXM, a debugged process may map an executable alias: the
         // mprotect below is iOS's own permission check.
-        if (!map_dual()) { snprintf(detail, size, "iOS refused executable memory (no debugger has attached to this process)"); return -1; }
+        if (!map_dual()) { snprintf(detail, size, "Classic memory acquisition failed: %s", dual_map_error[0] ? dual_map_error : "mapping unavailable"); return -1; }
     } else {
+        jit26_guard(true);
         uint8_t *rx = jit26_prepare_region(NULL, REGION_SIZE);
+        if (jit26_unanswered) {
+            jit26_guard(false);
+            snprintf(detail, size, "no debugger answered (StikDebug must stay attached with its universal.js script while LinuxRunner activates the JIT)");
+            return -1;
+        }
         vm_address_t rw = 0;
         vm_prot_t cur, max;
         bool ok = rx && vm_remap(mach_task_self(), &rw, REGION_SIZE, 0, VM_FLAGS_ANYWHERE, mach_task_self(),
                                  (vm_address_t) rx, false, &cur, &max, VM_INHERIT_NONE) == KERN_SUCCESS &&
                   mprotect((void *) rw, REGION_SIZE, PROT_READ | PROT_WRITE) == 0;
         jit26_detach();
+        jit26_guard(false);
         if (!ok) { snprintf(detail, size, rx ? "the prepared region could not get a writable alias" : "the debugger did not prepare a region"); return -1; }
         region = rx;
         rw_delta = (intptr_t) rw - (intptr_t) rx;

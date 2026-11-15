@@ -10,6 +10,8 @@
 #include "kernel/task.h"
 #include "kernel/errno.h"
 
+lock_t beneath_path_lock = LOCK_INITIALIZER;
+
 int mount_access_check(struct mount *mount, const char *path, struct statbuf *stat, int check) {
     return mount->fs->permission ? mount->fs->permission(mount, path, stat, check) :
         access_check(stat, check);
@@ -286,7 +288,7 @@ int generic_unlinkat(struct fd *at, const char *path_raw) {
     return err;
 }
 
-int generic_renameat(struct fd *src_at, const char *src_raw, struct fd *dst_at, const char *dst_raw) {
+static int generic_renameat_unlocked(struct fd *src_at, const char *src_raw, struct fd *dst_at, const char *dst_raw) {
     char src[MAX_PATH];
     /* Rename removes the src from its parent directory, so we also need
      * write permission on src's parent — not just dst's. */
@@ -310,6 +312,13 @@ int generic_renameat(struct fd *src_at, const char *src_raw, struct fd *dst_at, 
     mount_release(mount);
     mount_release(dst_mount);
     return err;
+}
+
+int generic_renameat(struct fd *src_at, const char *src_raw, struct fd *dst_at, const char *dst_raw) {
+    lock(&beneath_path_lock);
+    int result = generic_renameat_unlocked(src_at, src_raw, dst_at, dst_raw);
+    unlock(&beneath_path_lock);
+    return result;
 }
 
 int generic_symlinkat(const char *target, struct fd *at, const char *link_raw) {
@@ -439,9 +448,14 @@ int generic_mkdirat(struct fd *at, const char *path_raw, mode_t_ mode) {
     return err;
 }
 
-int generic_rmdirat(struct fd *at, const char *path_raw) {
+static int generic_rmdirat_unlocked(struct fd *at, const char *path_raw) {
     char path[MAX_PATH];
-    int err = path_normalize(at, path_raw, path, N_SYMLINK_FOLLOW | N_PARENT_DIR_WRITE);
+    // rmdir never follows the final component: a symlink is ENOTDIR (Linux
+    // do_rmdir uses LOOKUP_PARENT). Following it reported ENOENT for a
+    // dangling link, so dpkg's path_remove_tree() believed a stale
+    // "*.dpkg-new" symlink was gone and the unpack failed with EEXIST, and a
+    // link to an empty directory removed the target directory instead.
+    int err = path_normalize(at, path_raw, path, N_SYMLINK_NOFOLLOW | N_PARENT_DIR_WRITE);
     if (err < 0)
         return err;
     if (contains_mount_point(path))
@@ -452,6 +466,13 @@ int generic_rmdirat(struct fd *at, const char *path_raw) {
         err = mount->fs->rmdir(mount, path);
     mount_release(mount);
     return err;
+}
+
+int generic_rmdirat(struct fd *at, const char *path_raw) {
+    lock(&beneath_path_lock);
+    int result = generic_rmdirat_unlocked(at, path_raw);
+    unlock(&beneath_path_lock);
+    return result;
 }
 
 int generic_seek(struct fd *fd, off_t_ off, int whence, size_t size) {

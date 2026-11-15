@@ -13779,6 +13779,10 @@ elem_accum_op_store mls_elem, mls
 // FMUL by element
 elem_setup fmul_elem
 elem_fp_op_store fmul_elem, fmul
+// FMULX Vd.<T>, Vn.<T>, Vm.<Ts>[idx] (vector FP multiply extended by
+// element; OpenJDK C2 emits the 2D form). Same lanes as FMUL by element.
+elem_setup fmulx_elem
+elem_fp_op_store fmulx_elem, fmulx
 
 // FMLA by element
 elem_setup fmla_elem

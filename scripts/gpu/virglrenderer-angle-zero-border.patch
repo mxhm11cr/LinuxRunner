@@ -1,6 +1,6 @@
 --- a/src/vrend/vrend_renderer.c
 +++ b/src/vrend/vrend_renderer.c
-@@ -2586,6 +2586,38 @@
+@@ -2586,6 +2586,39 @@
     }
  }
  
@@ -8,8 +8,8 @@
 +/* Private ANGLE/Metal embedder operation. It does not advertise the full
 + * GLES border-color extension: only an all-zero border is representable. */
 +static GLboolean (*linuxrunner_zero_border)(GLuint sampler, GLenum pname);
-+void lr_vrend_set_zero_border_sampler(GLboolean (*operation)(GLuint, GLenum));
-+void lr_vrend_set_zero_border_sampler(GLboolean (*operation)(GLuint, GLenum))
++VIRGL_EXPORT void lr_vrend_set_zero_border_sampler(GLboolean (*operation)(GLuint, GLenum));
++VIRGL_EXPORT void lr_vrend_set_zero_border_sampler(GLboolean (*operation)(GLuint, GLenum))
 +{
 +   linuxrunner_zero_border = operation;
 +}
@@ -26,8 +26,9 @@
 +          linuxrunner_zero_border &&
 +          linuxrunner_zero_border(sampler, pname))
 +         return true;
-+      vrend_report_context_error(ctx, VIRGL_ERROR_CTX_UNSUPPORTED_TEX_WRAP, wrap);
-+      return false;
++      /* No bridge, or a non-zero border: convert_wrap() clamps to the edge
++       * (virglrenderer-gles-wrap-fallback.patch) instead of failing the
++       * whole context. */
 +   }
 +#else
 +   (void)border;
@@ -39,7 +40,7 @@
  int vrend_create_sampler_state(struct vrend_context *ctx,
                                 uint32_t handle,
                                 struct pipe_sampler_state *templ)
-@@ -2602,9 +2634,13 @@
+@@ -2602,9 +2635,13 @@
        glGenSamplers(2, state->ids);
  
        for (int i = 0; i < 2; ++i) {

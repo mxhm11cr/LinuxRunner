@@ -30,12 +30,15 @@
 		1C1100000000000000000A01 /* ArchInstaller.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000A01; };
 		1C1100000000000000000F01 /* FedoraInstaller.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000F01; };
 		1C1100000000000000000F02 /* KaliInstaller.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000F02; };
+		1C1100000000000000000F91 /* UbuntuInstaller.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000F91; };
 		1C1100000000000000000F06 /* BluetoothSerialView.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000F06; };
 		1C1100000000000000000F05 /* LongTaskCenter.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000F05; };
 		1C1100000000000000000F04 /* HomeComponents.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000F04; };
+		1C1100000000000000000F77 /* ModesView.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000F77; };
 		1C1100000000000000000F03 /* AppStoreView.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000F03; };
 		1C1100000000000000000B03 /* SteamOSSupport.bundle */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000B03; };
 		1C1100000000000000000B04 /* DistroLogos.bundle */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000B04; };
+		1C1100000000000000000B05 /* DesktopLogos.bundle */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000B05; };
 		1C1100000000000000000B02 /* SteamOSInstaller.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000B02; };
 		1C1100000000000000000B01 /* SteamOSManifest.swift */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000B01; };
 		1C1100000000000000000002 /* DebianBootstrap.c */ = {isa = PBXBuildFile; fileRef = 1C1200000000000000000002; };
@@ -579,12 +582,15 @@
 		1C1200000000000000000A01 /* ArchInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/ArchInstaller.swift; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000F01 /* FedoraInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/FedoraInstaller.swift; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000F02 /* KaliInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/KaliInstaller.swift; sourceTree = SOURCE_ROOT; };
+		1C1200000000000000000F91 /* UbuntuInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/UbuntuInstaller.swift; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000F06 /* BluetoothSerialView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/BluetoothSerialView.swift; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000F05 /* LongTaskCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/LongTaskCenter.swift; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000F04 /* HomeComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/HomeComponents.swift; sourceTree = SOURCE_ROOT; };
+		1C1200000000000000000F77 /* ModesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/ModesView.swift; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000F03 /* AppStoreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/AppStoreView.swift; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000B03 /* SteamOSSupport.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = app/LinuxRunner/SteamOSSupport.bundle; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000B04 /* DistroLogos.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = app/LinuxRunner/DistroLogos.bundle; sourceTree = SOURCE_ROOT; };
+		1C1200000000000000000B05 /* DesktopLogos.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = app/LinuxRunner/DesktopLogos.bundle; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000B02 /* SteamOSInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/SteamOSInstaller.swift; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000B01 /* SteamOSManifest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = app/LinuxRunner/SteamOSManifest.swift; sourceTree = SOURCE_ROOT; };
 		1C1200000000000000000002 /* DebianBootstrap.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = app/LinuxRunner/DebianBootstrap.c; sourceTree = SOURCE_ROOT; };
@@ -1257,12 +1263,15 @@
 				1C1200000000000000000A01 /* ArchInstaller.swift */,
 				1C1200000000000000000F01 /* FedoraInstaller.swift */,
 				1C1200000000000000000F02 /* KaliInstaller.swift */,
+				1C1200000000000000000F91 /* UbuntuInstaller.swift */,
 				1C1200000000000000000F06 /* BluetoothSerialView.swift */,
 				1C1200000000000000000F05 /* LongTaskCenter.swift */,
 				1C1200000000000000000F04 /* HomeComponents.swift */,
+				1C1200000000000000000F77 /* ModesView.swift */,
 				1C1200000000000000000F03 /* AppStoreView.swift */,
 				1C1200000000000000000B03 /* SteamOSSupport.bundle */,
 				1C1200000000000000000B04 /* DistroLogos.bundle */,
+				1C1200000000000000000B05 /* DesktopLogos.bundle */,
 				1C1200000000000000000B02 /* SteamOSInstaller.swift */,
 				1C1200000000000000000B01 /* SteamOSManifest.swift */,
 				1C1200000000000000000002 /* DebianBootstrap.c */,
@@ -2099,6 +2108,7 @@
 				1C1100000000000000000004 /* DebianSupport.bundle */,
 				1C1100000000000000000B03 /* SteamOSSupport.bundle */,
 				1C1100000000000000000B04 /* DistroLogos.bundle */,
+				1C1100000000000000000B05 /* DesktopLogos.bundle */,
 				CC000002AF96D90D00FFB7A4 /* RootfsPatch.bundle in Resources */,
 				JB000001AF96D90D00FFB7A4 /* JetBrainsMonoNerdFontMono-Regular.ttf in Resources */,
 				JB000002AF96D90D00FFB7A4 /* JetBrainsMonoNerdFontMono-Bold.ttf in Resources */,
@@ -2653,9 +2663,11 @@
 				1C1100000000000000000A01 /* ArchInstaller.swift */,
 				1C1100000000000000000F01 /* FedoraInstaller.swift */,
 				1C1100000000000000000F02 /* KaliInstaller.swift */,
+				1C1100000000000000000F91 /* UbuntuInstaller.swift */,
 				1C1100000000000000000F06 /* BluetoothSerialView.swift */,
 				1C1100000000000000000F05 /* LongTaskCenter.swift */,
 				1C1100000000000000000F04 /* HomeComponents.swift */,
+				1C1100000000000000000F77 /* ModesView.swift */,
 				1C1100000000000000000F03 /* AppStoreView.swift */,
 				1C1100000000000000000B02 /* SteamOSInstaller.swift */,
 				1C1100000000000000000B01 /* SteamOSManifest.swift */,

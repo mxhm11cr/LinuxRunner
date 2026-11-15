@@ -159,6 +159,7 @@ static id<LRCursorDisplay> LRExternalCursorDisplay(void);
 @property LRRFBClient *client;
 @property uint16_t pixelWidth,pixelHeight;
 @property uint16_t pointerX,pointerY;
+@property double lastLocalPointerTime;   // CACurrentMediaTime of the last pointer position sent from this device
 @property UIKeyModifierFlags stickyModifiers,hardwareModifiers,sentModifiers;
 @property BOOL secondaryTwoFinger,traceInput;
 @property(nonatomic) BOOL softwareKeyboardRequested;
@@ -751,6 +752,7 @@ static const NSInteger LRDockPortraitOnlyTag=7803;   // DeX, Settings, More, Pow
     for(unsigned bit=1;bit<=4;bit<<=1)if(changed&bit)[self countInput:[NSString stringWithFormat:@"x11.button%u.%@",bit,buttons&bit?@"down":@"up"]];
     _lastSentPointerButtons=buttons;
     _pointerEverSent=YES;
+    _lastLocalPointerTime=CACurrentMediaTime();
     [_client pointerX:_pointerX y:_pointerY buttons:buttons];[self countInput:@"x11.pointer-sent"];[self updateCursor];
     if(eventTime>0){double ms=(CACurrentMediaTime()-eventTime)*1000;if(ms>=0&&ms<5000){_latencySum+=ms;_latencyCount++;_latencyMax=MAX(_latencyMax,ms);}}
 }
@@ -864,7 +866,7 @@ static const NSInteger LRDockPortraitOnlyTag=7803;   // DeX, Settings, More, Pow
 - (void)tap:(UITapGestureRecognizer *)g{if([self mouseActive]&&!_relativeTouchpad)return;[self click:1 at:[g locationInView:self]];}
 - (void)drag:(UIPanGestureRecognizer *)g{
     if(_relativeTouchpad){CGPoint t=[g translationInView:self];[g setTranslation:CGPointZero inView:self];[self relativeMoveX:t.x y:t.y];return;}
-    if([self mouseActive])return;if([self position:[g locationInView:self]]){[_client pointerX:_pointerX y:_pointerY buttons:(g.state==UIGestureRecognizerStateBegan||g.state==UIGestureRecognizerStateChanged)?1:0];[self updateCursor];}
+    if([self mouseActive])return;if([self position:[g locationInView:self]]){_lastLocalPointerTime=CACurrentMediaTime();[_client pointerX:_pointerX y:_pointerY buttons:(g.state==UIGestureRecognizerStateBegan||g.state==UIGestureRecognizerStateChanged)?1:0];[self updateCursor];}
 }
 - (void)secondary:(UILongPressGestureRecognizer *)g{
     if(_relativeTouchpad){CGPoint p=[g locationInView:self];
@@ -892,6 +894,9 @@ static const NSInteger LRDockPortraitOnlyTag=7803;   // DeX, Settings, More, Pow
 - (void)rightMouse:(UITapGestureRecognizer *)g{[self countInput:@"uikit.secondary-click"];if(_pointerModeActive)return;[self click:4 at:[g locationInView:self]];}
 @end
 
+// Direct presentation of a GPU-rendered desktop (fs/drm.h).
+struct lr_scanout_frame { uint32_t width, height, damage_x, damage_y, damage_width, damage_height; uint64_t serial; };
+extern int lr_drm_scanout_copy(void *dst, size_t capacity, uint64_t serial, struct lr_scanout_frame *frame);
 @interface LRGUIViewController ()
 @property LRFramebufferView *surface;
 @property UILabel *status;
@@ -907,6 +912,13 @@ static const NSInteger LRDockPortraitOnlyTag=7803;   // DeX, Settings, More, Pow
 @property uint16_t pendingWidth,pendingHeight;
 @property BOOL presentationPending;
 @property double pendingFrameReceivedAt;
+// GPU desktops: frames are read from the virtual GPU's scanout in-process
+// instead of the RFB stream once the first one arrives (RFB stays for input
+// and as the fallback when no GPU scanout exists).
+@property dispatch_source_t directScanoutTimer;
+@property (atomic) BOOL directScanoutForceFull;   // next tick copies the whole scanout (return to the desktop)
+@property (atomic) BOOL appInBackground;          // set from notifications; readable off the main thread
+@property BOOL directScanoutActive;
 @property NSUInteger transportDiagnosticEvents;
 @property uint64_t frames,bytes;
 // Display updates per second over the last status refresh (RFB updates delivered
@@ -1031,8 +1043,11 @@ static id<LRCursorDisplay> LRExternalCursorDisplay(void){return LRCurrentExterna
     [_cursor placeInFrame:_image.frame pixelWidth:_pixelWidth pixelHeight:_pixelHeight x:x y:y hidden:!_placeholder.hidden||!LRExternalOutputEnabled()];
 }
 - (double)presentationDelayAt:(double)now {
-    // Retain the 30 Hz cap, but do not delay the first update after idle.
-    return _lastPresentationTime ? MAX(0, 1.0/30.0-(now-_lastPresentationTime)) : 0;
+    // Present at the display's own rate (60 Hz on most monitors and TVs, up to
+    // 120 Hz); the former 30 Hz cap made PC-mode output visibly laggy. The
+    // first update after idle is never delayed.
+    NSInteger rate=self.view.window.screen.maximumFramesPerSecond;double period=1.0/(double)(rate>=30?MIN(rate,(NSInteger)120):60);
+    return _lastPresentationTime ? MAX(0, period-(now-_lastPresentationTime)) : 0;
 }
 - (void)presentFrame:(NSData *)pixels width:(uint16_t)width height:(uint16_t)height damage:(LRFrameDamage)damage {
     if(!LRExternalOutputEnabled())return;
@@ -1165,7 +1180,7 @@ static NSString *DesktopDegradedNotice(NSString *state);
     [LRGraphicalActivity.shared setActive:YES forSource:_storageActivitySource];
 }
 - (void)viewDidAppear:(BOOL)animated{[super viewDidAppear:animated];
-    _viewerVisible=YES;_surface.presentationSuppressed=_surface.relativeTouchpad;
+    _viewerVisible=YES;_surface.presentationSuppressed=_surface.relativeTouchpad;self.directScanoutForceFull=YES;
     [_surface focusKeyboard];
     [self updateStorageActivity];
     if(_surface.latestPixels)[_surface presentPixels:_surface.latestPixels width:_surface.pixelWidth height:_surface.pixelHeight];
@@ -1208,7 +1223,7 @@ static NSString *DesktopDegradedNotice(NSString *state);
     [self updateStorageActivity];
 }
 - (void)viewDidLoad{
-    [super viewDidLoad];if(_desktopMode){[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(externalDisplayChanged:) name:LRExternalDisplayChangedNotification object:nil];[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(externalDisplayChanged:) name:NSUserDefaultsDidChangeNotification object:nil];}[LRRuntimeBridge desktopTrace:@"02 view" result:@"start" detail:[NSString stringWithFormat:@"viewDidLoad controller=%@",_desktopMode?@"desktop":_launchConfiguration?@"application":@"gui-test"]];self.view.backgroundColor=UIColor.systemBackgroundColor;self.title=[LRRuntimeBridge activeEnvironmentIsKali]?@"Kali Applications":[LRRuntimeBridge activeEnvironmentIsDebian]?@"Debian Applications":[LRRuntimeBridge activeEnvironmentIsArch]?@"Arch Applications":[LRRuntimeBridge activeEnvironmentIsFedora]?@"Fedora Applications":@"Alpine Applications";_frameLock=[NSLock new];_compactControls=[NSMutableArray new];if(_desktopMode)self.title=@"LinuxRunner Desktop";
+    [super viewDidLoad];if(_desktopMode){[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(externalDisplayChanged:) name:LRExternalDisplayChangedNotification object:nil];[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(externalDisplayChanged:) name:NSUserDefaultsDidChangeNotification object:nil];}[LRRuntimeBridge desktopTrace:@"02 view" result:@"start" detail:[NSString stringWithFormat:@"viewDidLoad controller=%@",_desktopMode?@"desktop":_launchConfiguration?@"application":@"gui-test"]];self.view.backgroundColor=UIColor.systemBackgroundColor;self.title=[LRRuntimeBridge activeEnvironmentIsKali]?@"Kali Applications":[LRRuntimeBridge activeEnvironmentIsUbuntu]?@"Ubuntu Applications":[LRRuntimeBridge activeEnvironmentIsDebian]?@"Debian Applications":[LRRuntimeBridge activeEnvironmentIsArch]?@"Arch Applications":[LRRuntimeBridge activeEnvironmentIsFedora]?@"Fedora Applications":@"Alpine Applications";_frameLock=[NSLock new];_compactControls=[NSMutableArray new];if(_desktopMode)self.title=@"LinuxRunner Desktop";
     self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"Done" style:UIBarButtonItemStyleDone target:self action:@selector(done)];
 #if TARGET_OS_SIMULATOR
     // Simulator workflow driver (ManagerView): taps Done on the visible screen.
@@ -1271,6 +1286,8 @@ static NSString *DesktopDegradedNotice(NSString *state);
         for(UIView *v in _launchControls)v.hidden=YES;for(UIView*v in _compactControls)v.hidden=YES;_status.text=@"Open Desktop starts a real Linux window manager. The first start in an environment installs desktop support automatically (network required).";}
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(background) name:UIApplicationWillResignActiveNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(foreground) name:UIApplicationDidBecomeActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(enteredBackground) name:UIApplicationDidEnterBackgroundNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(leavingBackground) name:UIApplicationWillEnterForegroundNotification object:nil];
     __weak typeof(self) weak=self;
     _exitObserver=[NSNotificationCenter.defaultCenter addObserverForName:@"ProcessExitedNotification" object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){typeof(self) self=weak;if(self&&self.sessionTerminal.sessionPid>0&&[n.userInfo[@"pid"] intValue]==self.sessionTerminal.sessionPid){BOOL starting=self.startState==LRStartSession;[self stop];NSString *detail=[NSString stringWithContentsOfURL:[self.sessionURL URLByAppendingPathComponent:@"session.log"] encoding:NSUTF8StringEncoding error:nil];
         NSString *last=@"GUI session exited",*exitLine=nil;for(NSString *line in [detail componentsSeparatedByString:@"\n"]){if([line hasPrefix:@"GUI_SESSION:"]&&![line containsString:@"cleaned up"])last=line;if([line hasPrefix:@"DESKTOP_EXIT:"])exitLine=line;}
@@ -1304,7 +1321,13 @@ static NSString *DesktopDegradedNotice(NSString *state);
 - (void)simulatorClose{if(self.viewIfLoaded.window)[self done];}
 - (void)simulatorRetry{if(self.viewIfLoaded.window&&_desktopMode&&_startState==LRStartFailed)[self retryDesktopStart];}
 #endif
-- (void)done{if(_desktopMode)[LRRuntimeBridge desktopTrace:@"lifecycle" result:@"info" detail:[NSString stringWithFormat:@"Done tapped start-state=%ld painted=%d",(long)_startState,_desktopPainted]];if(_desktopMode){if(![self externalOutputActive])[self detachViewer];_autoLaunchPending=YES;}else [self stop];[self dismissViewControllerAnimated:YES completion:nil];}
+- (void)done{if(_desktopMode)[LRRuntimeBridge desktopTrace:@"lifecycle" result:@"info" detail:[NSString stringWithFormat:@"Done tapped start-state=%ld painted=%d",(long)_startState,_desktopPainted]];if(_desktopMode){if(![self externalOutputActive])[self detachViewer];_autoLaunchPending=YES;}else [self stop];
+    // The desktop is shown by a SwiftUI full-screen cover. A UIKit-only dismissal
+    // left SwiftUI believing it was still presented, and the next Open Desktop
+    // came back to a black screen. Let SwiftUI close its cover (and keep its state
+    // in step); the UIKit dismissal stays as the fallback for UIKit presenters.
+    [NSNotificationCenter.defaultCenter postNotificationName:@"LinuxRunnerGraphicalDismissRequested" object:self];
+    [self dismissViewControllerAnimated:YES completion:nil];}
 - (void)secondaryMode:(UISegmentedControl *)c{_surface.secondaryTwoFinger=c.selectedSegmentIndex==1;}
 // ---- Desktop startup coordinator ------------------------------------------
 // Open Desktop → (unless already verified) desktop-profile.sh check inside
@@ -1820,8 +1843,8 @@ static NSString *LRSessionGraphicsMode(void){
     _sessionGuestUser=[LRRuntimeBridge.defaultLinuxUser copy];
     NSString *desktopKey=[@"LinuxRunnerDesktop.environment." stringByAppendingString:LRRuntimeBridge.activeRootName];
     NSString *selectedDesktop=[NSUserDefaults.standardUserDefaults stringForKey:desktopKey];
-    if(!selectedDesktop && LRRuntimeBridge.activeEnvironmentIsDebian && !LRRuntimeBridge.activeEnvironmentIsKali)selectedDesktop=[NSUserDefaults.standardUserDefaults stringForKey:@"LinuxRunnerDesktop.environment"];
-    NSDictionary *files=@{@"hyprland-effects":([NSUserDefaults.standardUserDefaults stringForKey:[@"LinuxRunnerDesktop.hyprland.effects." stringByAppendingString:LRRuntimeBridge.activeRootName]]?:@"visual"),@"desktop-environment":([selectedDesktop isEqual:@"plasma"]||[selectedDesktop isEqual:@"lxqt"]||[selectedDesktop isEqual:@"enlightenment"]||[selectedDesktop isEqual:@"wayfire"]||[selectedDesktop isEqual:@"hyprland"]||[selectedDesktop isEqual:@"xfce"])?selectedDesktop:@"linuxrunner",@"guest-user":_sessionGuestUser,@"geometry":geometry,@"glx-mode":glxMode,@"gpu-mode":LRSessionGraphicsMode(),@"input-mode":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUIEagerInput"]?@"eager":@"legacy",@"shm-mode":(_desktopMode?LRRuntimeBridge.desktopSharedImagesEnabled:[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUISharedImages"])?@"sysv":@"off",@"vnc-timing":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUILowLatencyInput"]?@"threads":@"default",@"password":password,@"cookie":cookie,@"port":[NSString stringWithFormat:@"%u",port],@"audio-port":_audioPort?[NSString stringWithFormat:@"%u",_audioPort]:@"",@"display":[NSString stringWithFormat:@"%u",display]};
+    if(!selectedDesktop && LRRuntimeBridge.activeEnvironmentIsDebian && !LRRuntimeBridge.activeEnvironmentIsKali && !LRRuntimeBridge.activeEnvironmentIsUbuntu)selectedDesktop=[NSUserDefaults.standardUserDefaults stringForKey:@"LinuxRunnerDesktop.environment"];
+    NSDictionary *files=@{@"hyprland-effects":([NSUserDefaults.standardUserDefaults stringForKey:[@"LinuxRunnerDesktop.hyprland.effects." stringByAppendingString:LRRuntimeBridge.activeRootName]]?:@"visual"),@"desktop-environment":([selectedDesktop isEqual:@"plasma"]||[selectedDesktop isEqual:@"lxqt"]||[selectedDesktop isEqual:@"enlightenment"]||[selectedDesktop isEqual:@"wayfire"]||[selectedDesktop isEqual:@"hyprland"]||[selectedDesktop isEqual:@"xfce"]||[selectedDesktop isEqual:@"i3"]||[selectedDesktop isEqual:@"gnome"]||[selectedDesktop isEqual:@"mate"]||[selectedDesktop isEqual:@"cinnamon"]||[selectedDesktop isEqual:@"budgie"]||[selectedDesktop isEqual:@"cosmic"])?selectedDesktop:@"linuxrunner",@"guest-user":_sessionGuestUser,@"geometry":geometry,@"glx-mode":glxMode,@"gpu-mode":LRSessionGraphicsMode(),@"xorg-gpu":@"auto",@"direct-scanout":@"enabled",@"input-mode":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUIEagerInput"]?@"eager":@"legacy",@"shm-mode":(_desktopMode?LRRuntimeBridge.desktopSharedImagesEnabled:[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUISharedImages"])?@"sysv":@"off",@"vnc-timing":[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUILowLatencyInput"]?@"threads":@"default",@"password":password,@"cookie":cookie,@"port":[NSString stringWithFormat:@"%u",port],@"audio-port":_audioPort?[NSString stringWithFormat:@"%u",_audioPort]:@"",@"display":[NSString stringWithFormat:@"%u",display]};
     for(NSString *name in files){NSURL *url=[_sessionURL URLByAppendingPathComponent:name];if(![files[name] writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:&error]||![NSFileManager.defaultManager setAttributes:@{NSFilePosixPermissions:@0600} ofItemAtPath:url.path error:&error]){[self message:error.localizedDescription];return;}}
     NSString *xkb=[NSUserDefaults.standardUserDefaults stringForKey:@"LinuxRunnerGUIXKBMode"]?:@"xkb";
     [xkb writeToURL:[_sessionURL URLByAppendingPathComponent:@"xkb-mode"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -1933,6 +1956,48 @@ static NSString *DesktopDegradedNotice(NSString *state){
     [self attachViewerWithPort:port password:password];
     if(_queuedDesktopApplication){NSDictionary *app=_queuedDesktopApplication;_queuedDesktopApplication=nil;[self launchDesktopApplication:app];}
 }
+- (void)stopDirectScanout{
+    if(_directScanoutTimer)dispatch_source_cancel(_directScanoutTimer);
+    _directScanoutTimer=nil;
+    [_frameLock lock];_directScanoutActive=NO;_client.minimalUpdates=NO;[_frameLock unlock];
+}
+- (void)startDirectScanoutForClient:(LRRFBClient *)client{
+    [self stopDirectScanout];
+    if(!_desktopMode||[NSUserDefaults.standardUserDefaults boolForKey:@"LinuxRunnerGUIDisableDirectScanout"])return;
+    dispatch_source_t timer=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,dispatch_queue_create("dev.linuxrunner.direct-scanout",DISPATCH_QUEUE_SERIAL));
+    // 120 Hz polling: a new frame costs one copy; an unchanged one costs a lock.
+    dispatch_source_set_timer(timer,DISPATCH_TIME_NOW,NSEC_PER_SEC/120,NSEC_PER_MSEC);
+    __weak typeof(self) weak=self;__weak LRRFBClient *thisClient=client;
+    __block NSMutableData *buffer=[NSMutableData dataWithLength:1920*1080*4];__block uint64_t serial=0;
+    dispatch_source_set_event_handler(timer,^{
+        typeof(self) self=weak;if(!self||self.client!=thisClient)return;
+        if(self.appInBackground)return;   // nothing is shown; the return refreshes the whole frame
+        struct lr_scanout_frame frame;
+        // A static desktop produces no new scanout frames. After the view was
+        // cleared (Home, background) re-read the whole frame once instead of
+        // waiting for the next change, which never comes on an idle desktop.
+        BOOL forceFull=self.directScanoutForceFull;
+        int result=lr_drm_scanout_copy(buffer.mutableBytes,buffer.length,forceFull?0:serial,&frame);
+        if(result==-28&&buffer.length<64*1024*1024){buffer.length=buffer.length*2;return;}   // ENOSPC: larger output
+        if(result!=1||frame.width>UINT16_MAX||frame.height>UINT16_MAX)return;
+        serial=frame.serial;
+        if(forceFull){self.directScanoutForceFull=NO;frame.damage_x=0;frame.damage_y=0;frame.damage_width=frame.width;frame.damage_height=frame.height;}
+        NSData *pixels=[NSData dataWithBytes:buffer.bytes length:(size_t)frame.width*frame.height*4];
+        LRFrameDamage damage={(uint16_t)frame.damage_x,(uint16_t)frame.damage_y,(uint16_t)frame.damage_width,(uint16_t)frame.damage_height};
+        [self.frameLock lock];
+        if(self.client!=thisClient){[self.frameLock unlock];return;}
+        if(!self.directScanoutActive){self.directScanoutActive=YES;thisClient.minimalUpdates=YES;
+            [LRRuntimeBridge logCategory:@"DESKTOP" event:[NSString stringWithFormat:@"direct GPU scanout presentation active %ux%u",frame.width,frame.height]];}
+        BOOL sameSize=self.pendingWidth==frame.width&&self.pendingHeight==frame.height;
+        if(!sameSize)damage=(LRFrameDamage){0,0,(uint16_t)frame.width,(uint16_t)frame.height};
+        else if(self.presentationPending)damage=lr_damage_union(self.pendingDamage,damage);
+        self.pendingFrame=pixels;self.pendingDamage=damage;self.pendingWidth=frame.width;self.pendingHeight=frame.height;
+        self.pendingFrameReceivedAt=0;self.frames++;
+        BOOL schedule=!self.presentationPending;self.presentationPending=YES;[self.frameLock unlock];
+        if(schedule)dispatch_async(dispatch_get_main_queue(),^{typeof(self) self=weak;if(self&&self.client==thisClient)[self drainFrameForClient:thisClient];});
+    });
+    _directScanoutTimer=timer;dispatch_resume(timer);
+}
 - (void)drainFrameForClient:(LRRFBClient *)client {
     if(!client||_client!=client)return;
     [_frameLock lock];_presentationPending=NO;
@@ -1967,7 +2032,7 @@ static NSString *DesktopDegradedNotice(NSString *state){
     __weak LRRFBClient *thisClient=_client;
     _client.patchFrameHandler=^(NSData *patch,uint16_t w,uint16_t h,uint64_t frames,uint64_t bytes,LRFrameDamage damage){
         typeof(self) self=weak;if(!self)return;[self.frameLock lock];
-        if(!self.client||self.client!=thisClient){[self.frameLock unlock];return;}
+        if(!self.client||self.client!=thisClient||self.directScanoutActive){[self.frameLock unlock];return;}
         size_t full;if(!lr_rfb_dimensions(w,h,&full)){[self.frameLock unlock];return;}
         if(!damage.x&&!damage.y&&damage.width==w&&damage.height==h) {
             if(patch.length!=full){[self.frameLock unlock];return;}
@@ -1988,10 +2053,15 @@ static NSString *DesktopDegradedNotice(NSString *state){
         BOOL schedule=!self.presentationPending;self.presentationPending=YES;[self.frameLock unlock];
         if(schedule)dispatch_async(dispatch_get_main_queue(),^{typeof(self) self=weak;if(self&&self.client==thisClient)[self drainFrameForClient:thisClient];});
     };
+    [self startDirectScanoutForClient:_client];
     _client.cursorHandler=^(NSData *bgra,uint16_t w,uint16_t h,uint16_t hx,uint16_t hy){dispatch_async(dispatch_get_main_queue(),^{typeof(self) self=weak;
         if(self&&self.client==thisClient)[self.surface setCursorShape:bgra width:w height:h hotX:hx hotY:hy];});};
     _client.pointerPositionHandler=^(uint16_t x,uint16_t y){dispatch_async(dispatch_get_main_queue(),^{typeof(self) self=weak;
-        if(self&&self.client==thisClient){self.surface.pointerX=x;self.surface.pointerY=y;self.surface.mouseX=x;self.surface.mouseY=y;[self.surface updateCursor];}});};
+        // The server's pointer reports arrive at x11vnc's polling rate and
+        // describe an earlier position: while this device is moving the
+        // pointer they would pull it back (lag and jitter on external
+        // displays). Apply them only when local movement has paused (warps).
+        if(self&&self.client==thisClient&&CACurrentMediaTime()-self.surface.lastLocalPointerTime>0.5){self.surface.pointerX=x;self.surface.pointerY=y;self.surface.mouseX=x;self.surface.mouseY=y;[self.surface updateCursor];}});};
     _client.cutTextHandler=^(NSString *text){dispatch_async(dispatch_get_main_queue(),^{typeof(self) self=weak;if(self&&self.client==thisClient)self.linuxClipboard=text;});};
     _client.statusHandler=^(NSString *status){dispatch_async(dispatch_get_main_queue(),^{typeof(self) self=weak;if(self.client&&self.client==thisClient){
         if(self.desktopMode)[LRRuntimeBridge desktopTrace:@"10 display-socket" result:[status hasPrefix:@"Connected"]?@"ok":[status hasPrefix:@"Display error:"]?@"fail":@"info" detail:status];
@@ -2068,6 +2138,7 @@ static NSString *DesktopDegradedNotice(NSString *state){
     for(UIView *control in _launchControls)control.hidden=_desktopMode;
     if(_client)[self metrics];
     if(_sessionURL)[[NSData data] writeToURL:[_sessionURL URLByAppendingPathComponent:@"stop"] atomically:YES];
+    [self stopDirectScanout];
     [_surface releaseInput];[self resetModifierButtons];[_client stop];_client.frameHandler=nil;_client.damageFrameHandler=nil;_client.patchFrameHandler=nil;_client.statusHandler=nil;_client.cutTextHandler=nil;_client.cursorHandler=nil;_client.pointerPositionHandler=nil;[_surface setCursorShape:nil width:0 height:0 hotX:0 hotY:0];_client=nil;_surface.client=nil;
     [self updateStorageActivity];
     [_metricsTimer invalidate];_metricsTimer=nil;
@@ -2221,7 +2292,26 @@ static UIButton *LRSquareButton(NSString *symbol,NSString *label,UIColor *tint){
     // Avoid retaining a screen containing guest data in iOS's app switcher.
     _surface.hidden=YES;
 }
-- (void)foreground{if(_desktopMode)[LRRuntimeBridge desktopTrace:@"lifecycle" result:@"info" detail:[NSString stringWithFormat:@"app active start-state=%ld client=%d session-pid=%d",(long)_startState,_client!=nil,_sessionTerminal.sessionPid]];_surface.hidden=NO;if(_viewerVisible)[_surface focusKeyboard];if(_client)[self drainFrameForClient:_client];if(_surface.metal)[_surface.metal setNeedsDisplay];if(_desktopMode&&!_client&&_sessionTerminal.sessionPid>0&&![NSFileManager.defaultManager fileExistsAtPath:[_sessionURL URLByAppendingPathComponent:@"stop"].path])[self connectDesktopViewer];}
+- (void)foreground{if(_desktopMode)[LRRuntimeBridge desktopTrace:@"lifecycle" result:@"info" detail:[NSString stringWithFormat:@"app active start-state=%ld client=%d session-pid=%d",(long)_startState,_client!=nil,_sessionTerminal.sessionPid]];_surface.hidden=NO;self.directScanoutForceFull=YES;if(_viewerVisible)[_surface focusKeyboard];if(_client)[self drainFrameForClient:_client];if(_surface.metal)[_surface.metal setNeedsDisplay];if(_desktopMode&&!_client&&_sessionTerminal.sessionPid>0&&![NSFileManager.defaultManager fileExistsAtPath:[_sessionURL URLByAppendingPathComponent:@"stop"].path])[self connectDesktopViewer];}
+- (void)enteredBackground{self.appInBackground=YES;}
+- (void)leavingBackground{self.appInBackground=NO;self.directScanoutForceFull=YES;[self checkViewerAfterReturn];}
+// iOS can tear down the loopback display socket while the app is suspended
+// without the blocking reader ever seeing an error: the picture and input then
+// stay frozen although the desktop runs. On return, ask the display server for
+// a full frame; if no bytes arrive within 4 s, drop that viewer connection and
+// reconnect. The guest desktop is not touched.
+- (void)checkViewerAfterReturn{
+    LRRFBClient *client=_client;if(!_desktopMode||!client)return;
+    uint64_t before=client.receivedBytes;BOOL sent=[client requestFullUpdate];
+    __weak typeof(self) weak=self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(4*NSEC_PER_SEC)),dispatch_get_main_queue(),^{typeof(self) self=weak;
+        if(!self||self.client!=client||self.appInBackground)return;
+        if(sent&&client.receivedBytes>before)return;   // the display answered
+        [LRRuntimeBridge desktopTrace:@"lifecycle" result:@"fail" detail:[NSString stringWithFormat:@"viewer stalled after return (request %@, no reply in 4 s); reconnecting",sent?@"sent":@"failed"]];
+        [self detachViewer];
+        if(self.sessionTerminal.sessionPid>0&&![NSFileManager.defaultManager fileExistsAtPath:[self.sessionURL URLByAppendingPathComponent:@"stop"].path])[self connectDesktopViewer];
+    });
+}
 - (void)tool:(UIButton *)button{
     NSString *title=[button.accessibilityIdentifier substringFromIndex:4];
         if([title isEqual:@"Keyboard"]){_surface.softwareKeyboardRequested=!_surface.softwareKeyboardRequested;[_surface focusKeyboard];return;}
@@ -2235,6 +2325,7 @@ static UIButton *LRSquareButton(NSString *symbol,NSString *label,UIColor *tint){
     NSDictionary *symbols=@{@"Esc":@0xff1b,@"Tab":@0xff09,@"←":@0xff51,@"↑":@0xff52,@"↓":@0xff54,@"→":@0xff53,@"Home":@0xff50,@"End":@0xff57,@"PgUp":@0xff55,@"PgDn":@0xff56,@"/":@0x2f,@"-":@0x2d};if(symbols[title])[_surface stroke:[symbols[title] unsignedIntValue]];
 }
 - (void)detachViewer{
+    [self stopDirectScanout];
     [_surface releaseInput];[self resetModifierButtons];[_surface resignFirstResponder];
     _client.frameHandler=nil;_client.damageFrameHandler=nil;_client.patchFrameHandler=nil;_client.statusHandler=nil;_client.cutTextHandler=nil;_client.cursorHandler=nil;_client.pointerPositionHandler=nil;[_surface setCursorShape:nil width:0 height:0 hotX:0 hotY:0];[_client stop];_client=nil;_surface.client=nil;
     [self updateStorageActivity];

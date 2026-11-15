@@ -570,6 +570,7 @@ extern void gadget_umlal_elem_vec(void);   // UMLAL Vd, Vn, Vm[idx] (unsigned mu
 extern void gadget_smlsl_elem_vec(void);   // SMLSL Vd, Vn, Vm[idx] (signed multiply-subtract long by element)
 extern void gadget_umlsl_elem_vec(void);   // UMLSL Vd, Vn, Vm[idx] (unsigned multiply-subtract long by element)
 extern void gadget_fmul_elem_vec(void);    // FMUL Vd, Vn, Vm[idx] (FP multiply by element)
+extern void gadget_fmulx_elem_vec(void);   // FMULX Vd, Vn, Vm[idx] (FP multiply extended by element)
 extern void gadget_fmla_elem_vec(void);    // FMLA Vd, Vn, Vm[idx] (FP multiply-accumulate by element)
 extern void gadget_fmls_elem_vec(void);    // FMLS Vd, Vn, Vm[idx] (FP multiply-subtract by element)
 extern void gadget_fmul_elem_scalar(void); // FMUL Sd/Dd, Sn/Dn, Vm[idx] (scalar FP mul by element)
@@ -1068,6 +1069,34 @@ extern void gadget_store32_sp_imm(void);
 // Fused ADRP+ADD gadget
 extern void gadget_fused_adrp_add(void);
 // Fused CMP_reg + B.cond gadgets (64-bit, rd=31)
+extern void gadget_fused_cmp32_reg_bcond_eq(void);
+extern void gadget_fused_subs32_reg_bcond_eq(void);
+extern void gadget_fused_cmp32_reg_bcond_ne(void);
+extern void gadget_fused_subs32_reg_bcond_ne(void);
+extern void gadget_fused_cmp32_reg_bcond_cs(void);
+extern void gadget_fused_subs32_reg_bcond_cs(void);
+extern void gadget_fused_cmp32_reg_bcond_cc(void);
+extern void gadget_fused_subs32_reg_bcond_cc(void);
+extern void gadget_fused_cmp32_reg_bcond_mi(void);
+extern void gadget_fused_subs32_reg_bcond_mi(void);
+extern void gadget_fused_cmp32_reg_bcond_pl(void);
+extern void gadget_fused_subs32_reg_bcond_pl(void);
+extern void gadget_fused_cmp32_reg_bcond_vs(void);
+extern void gadget_fused_subs32_reg_bcond_vs(void);
+extern void gadget_fused_cmp32_reg_bcond_vc(void);
+extern void gadget_fused_subs32_reg_bcond_vc(void);
+extern void gadget_fused_cmp32_reg_bcond_hi(void);
+extern void gadget_fused_subs32_reg_bcond_hi(void);
+extern void gadget_fused_cmp32_reg_bcond_ls(void);
+extern void gadget_fused_subs32_reg_bcond_ls(void);
+extern void gadget_fused_cmp32_reg_bcond_ge(void);
+extern void gadget_fused_subs32_reg_bcond_ge(void);
+extern void gadget_fused_cmp32_reg_bcond_lt(void);
+extern void gadget_fused_subs32_reg_bcond_lt(void);
+extern void gadget_fused_cmp32_reg_bcond_gt(void);
+extern void gadget_fused_subs32_reg_bcond_gt(void);
+extern void gadget_fused_cmp32_reg_bcond_le(void);
+extern void gadget_fused_subs32_reg_bcond_le(void);
 extern void gadget_fused_cmp_reg_bcond_eq(void);
 extern void gadget_fused_cmp_reg_bcond_ne(void);
 extern void gadget_fused_cmp_reg_bcond_cs(void);
@@ -1467,6 +1496,8 @@ static void *fused_subs_bcond_gadgets[14];
 static void *fused_cmp32_bcond_gadgets[14];
 static void *fused_subs32_bcond_gadgets[14];
 static void *fused_cmp_reg_bcond_gadgets[14];
+static void *fused_cmp32_reg_bcond_gadgets[14];
+static void *fused_subs32_reg_bcond_gadgets[14];
 static void *fused_subs_reg_bcond_gadgets[14];
 static bool fused_bcond_tables_init = false;
 
@@ -1558,6 +1589,34 @@ static void init_fused_bcond_tables(void) {
     fused_subs_reg_bcond_gadgets[11] = gadget_fused_subs_reg_bcond_lt;
     fused_subs_reg_bcond_gadgets[12] = gadget_fused_subs_reg_bcond_gt;
     fused_subs_reg_bcond_gadgets[13] = gadget_fused_subs_reg_bcond_le;
+    fused_cmp32_reg_bcond_gadgets[0] = gadget_fused_cmp32_reg_bcond_eq;
+    fused_subs32_reg_bcond_gadgets[0] = gadget_fused_subs32_reg_bcond_eq;
+    fused_cmp32_reg_bcond_gadgets[1] = gadget_fused_cmp32_reg_bcond_ne;
+    fused_subs32_reg_bcond_gadgets[1] = gadget_fused_subs32_reg_bcond_ne;
+    fused_cmp32_reg_bcond_gadgets[2] = gadget_fused_cmp32_reg_bcond_cs;
+    fused_subs32_reg_bcond_gadgets[2] = gadget_fused_subs32_reg_bcond_cs;
+    fused_cmp32_reg_bcond_gadgets[3] = gadget_fused_cmp32_reg_bcond_cc;
+    fused_subs32_reg_bcond_gadgets[3] = gadget_fused_subs32_reg_bcond_cc;
+    fused_cmp32_reg_bcond_gadgets[4] = gadget_fused_cmp32_reg_bcond_mi;
+    fused_subs32_reg_bcond_gadgets[4] = gadget_fused_subs32_reg_bcond_mi;
+    fused_cmp32_reg_bcond_gadgets[5] = gadget_fused_cmp32_reg_bcond_pl;
+    fused_subs32_reg_bcond_gadgets[5] = gadget_fused_subs32_reg_bcond_pl;
+    fused_cmp32_reg_bcond_gadgets[6] = gadget_fused_cmp32_reg_bcond_vs;
+    fused_subs32_reg_bcond_gadgets[6] = gadget_fused_subs32_reg_bcond_vs;
+    fused_cmp32_reg_bcond_gadgets[7] = gadget_fused_cmp32_reg_bcond_vc;
+    fused_subs32_reg_bcond_gadgets[7] = gadget_fused_subs32_reg_bcond_vc;
+    fused_cmp32_reg_bcond_gadgets[8] = gadget_fused_cmp32_reg_bcond_hi;
+    fused_subs32_reg_bcond_gadgets[8] = gadget_fused_subs32_reg_bcond_hi;
+    fused_cmp32_reg_bcond_gadgets[9] = gadget_fused_cmp32_reg_bcond_ls;
+    fused_subs32_reg_bcond_gadgets[9] = gadget_fused_subs32_reg_bcond_ls;
+    fused_cmp32_reg_bcond_gadgets[10] = gadget_fused_cmp32_reg_bcond_ge;
+    fused_subs32_reg_bcond_gadgets[10] = gadget_fused_subs32_reg_bcond_ge;
+    fused_cmp32_reg_bcond_gadgets[11] = gadget_fused_cmp32_reg_bcond_lt;
+    fused_subs32_reg_bcond_gadgets[11] = gadget_fused_subs32_reg_bcond_lt;
+    fused_cmp32_reg_bcond_gadgets[12] = gadget_fused_cmp32_reg_bcond_gt;
+    fused_subs32_reg_bcond_gadgets[12] = gadget_fused_subs32_reg_bcond_gt;
+    fused_cmp32_reg_bcond_gadgets[13] = gadget_fused_cmp32_reg_bcond_le;
+    fused_subs32_reg_bcond_gadgets[13] = gadget_fused_subs32_reg_bcond_le;
     fused_bcond_tables_init = true;
 }
 
@@ -1606,11 +1665,11 @@ static int try_fuse_subs_bcond(struct gen_state *state, uint32_t sf, uint32_t rd
 }
 
 /*
- * Try to fuse SUBS/CMP reg (64-bit, no shift) with a following B.cond.
+ * Try to fuse SUBS/CMP reg (32- or 64-bit, no shift) with a following B.cond.
  * Returns 0 (block ended) if fused, -1 if not fuseable.
- * Only for sf=1, imm6=0, rn!=31, rm!=31
+ * Only for imm6=0, rn!=31, rm!=31
  */
-static int try_fuse_subs_reg_bcond(struct gen_state *state, uint32_t rd, uint32_t rn, uint32_t rm) {
+static int try_fuse_subs_reg_bcond(struct gen_state *state, uint32_t sf, uint32_t rd, uint32_t rn, uint32_t rm) {
     uint32_t next_insn;
     if (!gen_peek_next_insn(state, &next_insn))
         return -1;
@@ -1632,12 +1691,12 @@ static int try_fuse_subs_reg_bcond(struct gen_state *state, uint32_t rd, uint32_
     if (rd == 31) {
         // CMP reg: no result, only flags
         ARM64_FUSION_STAT_INC(arm64_fusion_cmp_bcond_count);
-        gen(state, (unsigned long)fused_cmp_reg_bcond_gadgets[cond]);
+        gen(state, (unsigned long)(sf ? fused_cmp_reg_bcond_gadgets[cond] : fused_cmp32_reg_bcond_gadgets[cond]));
         gen(state, rn | (rm << 8));
     } else {
         // SUBS reg: result + flags
         ARM64_FUSION_STAT_INC(arm64_fusion_subs_bcond_count);
-        gen(state, (unsigned long)fused_subs_reg_bcond_gadgets[cond]);
+        gen(state, (unsigned long)(sf ? fused_subs_reg_bcond_gadgets[cond] : fused_subs32_reg_bcond_gadgets[cond]));
         gen(state, rd | (rn << 8) | (rm << 16));
     }
     gen(state, fake_target);
@@ -4562,9 +4621,9 @@ static int gen_dp_reg(struct gen_state *state, uint32_t insn) {
 
         // Try specialized 64-bit fast paths (no shift, no XZR operands)
         bool can_spec_reg = sf && imm6 == 0 && rn != 31 && rm != 31;
-        if (can_spec_reg && S && op == 1) {
-            // Try fused SUBS_reg + B.cond
-            int fused = try_fuse_subs_reg_bcond(state, rd, rn, rm);
+        if (S && op == 1 && imm6 == 0 && rn != 31 && rm != 31) {
+            // Try fused SUBS/CMP reg + B.cond (32- and 64-bit)
+            int fused = try_fuse_subs_reg_bcond(state, sf, rd, rn, rm);
             if (fused == 0) return 0;
         }
         if (can_spec_reg && S) {
@@ -7423,6 +7482,10 @@ skip_three_different:
             // FMUL by element (size=2:S, size=3:D; size<2 is FP16/invalid)
             if (size < 2) { gen_interrupt(state, INT_UNDEFINED); return 0; }
             gadget = gadget_fmul_elem_vec;
+        } else if (U == 1 && opcode_elem == 0x9) {
+            // FMULX by element (size=2:S, size=3:D)
+            if (size < 2) { gen_interrupt(state, INT_UNDEFINED); return 0; }
+            gadget = gadget_fmulx_elem_vec;
         } else if (U == 0 && opcode_elem == 0x1) {
             // FMLA by element (size=2:S, size=3:D)
             if (size < 2) { gen_interrupt(state, INT_UNDEFINED); return 0; }

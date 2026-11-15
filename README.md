@@ -5,14 +5,14 @@
 <h2 align="center">Your iPhone. A Real Linux PC.</h2>
 <p align="center">ARM64 Linux applications. Full desktop environments. A workspace on an external display.</p>
 <p align="center">
-  <img src="assets/branding/version-badge.svg" alt="Version 1.1.1 · Build 905">
+  <img src="assets/branding/version-badge.svg" alt="Version 1.1.2 · Build 910">
   <img src="assets/branding/platform-badge.svg" alt="iOS and iPadOS">
   <a href="LICENSE.md"><img src="assets/branding/license-badge.svg" alt="GPL-3.0-covered application"></a>
 </p>
 <p align="center">
   <a href="https://github.com/mxhm11cr/LinuxRunner/releases">Download</a> ·
   <a href="#getting-started">Get started</a> ·
-  <a href="docs/releases/v1.1.1.md">What's new in 1.1.1</a> ·
+  <a href="docs/releases/v1.1.2.md">What's new in 1.1.2</a> ·
   <a href="docs/TROUBLESHOOTING.md">Help</a>
 </p>
 
@@ -20,37 +20,66 @@ LinuxRunner brings ARM64 Linux userspace to iPhone and iPad through a custom ins
 
 **No jailbreak. JIT is optional.** LinuxRunner executes Linux userspace programs; it does not boot a Linux kernel or use a full-system virtual machine.
 
+**10–15× faster than UTM and usable on every newer iPhone.**
+
 [![Hyprland desktop running in LinuxRunner with Metal GPU acceleration](assets/screenshots/desktop/hyprland-metal.jpg)](assets/screenshots/desktop/hyprland-metal.jpg)
 
 **Hyprland · Experimental** — Metal GPU acceleration. Requires at least 8 GB RAM and Arch Linux ARM.
+
+[![Zorin Desktop running in LinuxRunner on the GPU](assets/screenshots/v1.1.2/zorin-desktop.jpg)](assets/screenshots/v1.1.2/zorin-desktop.jpg)
+
+**Zorin OS · Zorin Desktop · New** — Zorin OS's own desktop with the Zorin menu, taskbar and themes, on the GPU.
 
 ## See It Running
 
 <table>
 <tr>
-<td align="center" width="50%"><a href="assets/screenshots/v1.1.1/home-iphone.jpg"><img src="assets/screenshots/v1.1.1/home-iphone.jpg" alt="LinuxRunner Home screen on iPhone with desktop preview" width="260"></a><br><sub><b>Home</b></sub></td>
-<td align="center" width="50%"><a href="assets/screenshots/v1.1.1/distributions-iphone.jpg"><img src="assets/screenshots/v1.1.1/distributions-iphone.jpg" alt="Distributions tab with installed Linux environments on iPhone" width="260"></a><br><sub><b>Distributions</b></sub></td>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.2/home-iphone.jpg"><img src="assets/screenshots/v1.1.2/home-iphone.jpg" alt="LinuxRunner Home screen on iPhone" width="260"></a><br><sub><b>Home</b></sub></td>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.2/modes-iphone.jpg"><img src="assets/screenshots/v1.1.2/modes-iphone.jpg" alt="LinuxRunner Modes in Settings on iPhone" width="260"></a><br><sub><b>LinuxRunner Modes</b> · New</sub></td>
 </tr>
 <tr>
-<td align="center" width="50%"><a href="assets/screenshots/v1.1.1/kali-desktop-viewer-iphone.jpg"><img src="assets/screenshots/v1.1.1/kali-desktop-viewer-iphone.jpg" alt="Kali Linux desktop in the LinuxRunner viewer on iPhone" width="260"></a><br><sub><b>Desktop viewer</b> · Kali Linux</sub></td>
-<td align="center" width="50%"><a href="assets/screenshots/v1.1.1/terminal-iphone.jpg"><img src="assets/screenshots/v1.1.1/terminal-iphone.jpg" alt="LinuxRunner terminal on iPhone with a two-row key bar" width="260"></a><br><sub><b>Terminal</b> · Termux-like on iPhone</sub></td>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.2/distributions-iphone.jpg"><img src="assets/screenshots/v1.1.2/distributions-iphone.jpg" alt="Distributions with Pop!_OS, Zorin OS, Void Linux and Kali" width="260"></a><br><sub><b>Distributions</b> · Pop!_OS, Zorin OS, Void</sub></td>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.2/cpu-memory-iphone.jpg"><img src="assets/screenshots/v1.1.2/cpu-memory-iphone.jpg" alt="CPU and Memory settings on iPhone" width="260"></a><br><sub><b>CPU &amp; Memory</b></sub></td>
 </tr>
 </table>
-
-**A Termux-like terminal on iPhone.** Sharp text on true black, with a two-row key bar for ESC, TAB, CTRL, ALT, arrows, HOME, END, PGUP, PGDN and clipboard, right above the keyboard.
 
 ### Linux Desktops
 
 <table>
 <tr>
-<td align="center" width="50%"><a href="assets/screenshots/v1.1.1/kali-xfce-iphone.jpg"><img src="assets/screenshots/v1.1.1/kali-xfce-iphone.jpg" alt="Kali Linux Xfce desktop in LinuxRunner on iPhone" width="100%"></a><br><sub><b>Kali Linux · Xfce</b></sub></td>
-<td align="center" width="50%"><a href="assets/screenshots/v1.1.1/fedora-kde-plasma.png"><img src="assets/screenshots/v1.1.1/fedora-kde-plasma.png" alt="Fedora KDE Plasma application launcher in LinuxRunner" width="100%"></a><br><sub><b>Fedora · KDE Plasma</b></sub></td>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.2/ubuntu-gnome.jpg"><img src="assets/screenshots/v1.1.2/ubuntu-gnome.jpg" alt="Ubuntu GNOME in LinuxRunner" width="100%"></a><br><sub><b>Ubuntu · GNOME</b></sub></td>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.2/pop-xfce.jpg"><img src="assets/screenshots/v1.1.2/pop-xfce.jpg" alt="Pop!_OS with Xfce in LinuxRunner" width="100%"></a><br><sub><b>Pop!_OS · Xfce</b></sub></td>
 </tr>
 <tr>
-<td align="center" width="50%"><a href="assets/screenshots/v1.1.1/steamos-plasma.png"><img src="assets/screenshots/v1.1.1/steamos-plasma.png" alt="Experimental SteamOS ARM64 Plasma desktop with Konsole in LinuxRunner" width="100%"></a><br><sub><b>SteamOS ARM64 · Plasma · Experimental</b><br>Not official SteamOS support.</sub></td>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.2/debian-mate.jpg"><img src="assets/screenshots/v1.1.2/debian-mate.jpg" alt="MATE desktop on Debian in LinuxRunner" width="100%"></a><br><sub><b>Debian · MATE</b></sub></td>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.2/debian-xfce.jpg"><img src="assets/screenshots/v1.1.2/debian-xfce.jpg" alt="Xfce desktop on Debian in LinuxRunner" width="100%"></a><br><sub><b>Debian · Xfce</b></sub></td>
+</tr>
+<tr>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.2/debian-budgie.jpg"><img src="assets/screenshots/v1.1.2/debian-budgie.jpg" alt="Budgie desktop on Debian in LinuxRunner" width="100%"></a><br><sub><b>Debian · Budgie</b></sub></td>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.2/void-xfce.jpg"><img src="assets/screenshots/v1.1.2/void-xfce.jpg" alt="Void Linux with Xfce in LinuxRunner" width="100%"></a><br><sub><b>Void Linux · Xfce</b></sub></td>
+</tr>
+<tr>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.1/fedora-kde-plasma.png"><img src="assets/screenshots/v1.1.1/fedora-kde-plasma.png" alt="Fedora KDE Plasma application launcher in LinuxRunner" width="100%"></a><br><sub><b>Fedora · KDE Plasma</b></sub></td>
 <td align="center" width="50%"><a href="assets/screenshots/linuxrunner-dolphin.png"><img src="assets/screenshots/linuxrunner-dolphin.png" alt="KDE Plasma with Dolphin on Debian" width="100%"></a><br><sub><b>Debian · KDE Plasma</b></sub></td>
 </tr>
+<tr>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.1/kali-xfce-iphone.jpg"><img src="assets/screenshots/v1.1.1/kali-xfce-iphone.jpg" alt="Kali Linux Xfce desktop in LinuxRunner on iPhone" width="100%"></a><br><sub><b>Kali Linux · Xfce</b></sub></td>
+<td align="center" width="50%"><a href="assets/screenshots/v1.1.1/steamos-plasma.png"><img src="assets/screenshots/v1.1.1/steamos-plasma.png" alt="Experimental SteamOS ARM64 Plasma desktop with Konsole in LinuxRunner" width="100%"></a><br><sub><b>SteamOS ARM64 · Plasma · Experimental</b><br>Not official SteamOS support.</sub></td>
+</tr>
 </table>
+
+## LinuxRunner Modes
+
+Six optional ways to use the Linux on your iPhone, in **Settings → General → LinuxRunner Modes**. Each mode is off until you install and start it.
+
+| Mode | What it does |
+| --- | --- |
+| **Agent Mode** | Claude Code, Codex CLI and OpenCode in your Linux terminal, with Node.js, git and Python. Each agent signs in with your own account. |
+| **RDP Mode** | Use the desktop running on your iPhone from a PC or Mac with any Remote Desktop app. |
+| **SSH Mode** | An SSH server on port 2222 for terminals, VS Code Remote-SSH and file transfer. |
+| **Liftoff** | Build web apps and preview them in Safari, or share them on Wi-Fi with a QR code. |
+| **Pocket Cloud** | Your iPhone as a Wi-Fi file server, reachable from Finder, Files, Windows and any browser. |
+| **Arcadia** | A retro game lab with RetroArch. No games are included. |
 
 ## Your iPhone. Your Desktop.
 
@@ -68,18 +97,18 @@ Use **Desktop → Desktop Settings… → Display** for scaling and **Resolution
 
 AirPlay receiver behavior varies. Plain screen mirroring shows the same image and cannot provide an independent phone control surface. This is one Linux desktop output, not multiple extended guest monitors. Miracast-only receivers are unsupported. [Display and input guide](docs/NETWORKING_AND_DISPLAYS.md)
 
-## Inside 1.1.1
+## Inside 1.1.2
 
 | Capability | What it brings |
 | --- | --- |
-| **Redesigned app** | New Home, Distributions and Settings, a Termux-like native terminal and an install screensaver for OLED screens. |
-| **Six distributions** | Debian, Arch Linux ARM, Fedora, Kali, Alpine and experimental SteamOS ARM64, each with its own packages and Linux accounts. |
-| **Linux desktops** | LinuxRunner Desktop, Xfce on Kali, LXQt, Enlightenment and KDE Plasma, plus experimental Wayland compositors. |
+| **LinuxRunner Modes** | Agent Mode, RDP, SSH, Liftoff, Pocket Cloud and Arcadia, all optional. |
+| **Ten distributions** | Debian, Ubuntu, Pop!_OS, Zorin OS, Void Linux, Arch Linux ARM, Fedora, Kali, Alpine and experimental SteamOS ARM64. |
+| **Real desktops** | Zorin Desktop, Xfce, MATE, Cinnamon, Budgie, LXQt and KDE Plasma, plus experimental COSMIC and Wayland compositors. |
+| **Lighter window dragging** | The display bridge only forwards input while you drag; GPU readback once per displayed frame. |
 | **Metal graphics** | A virtual Linux GPU connects compatible Mesa workloads to Apple's GPU. |
+| **PC mode** | External displays refresh at the screen's own rate, up to 120 Hz. |
 | **Optional ARM64 JIT** | An additional execution path when the device permits it; the interpreter remains available. |
-| **Interpreter and memory** | Instruction correctness fixes, a bounded translation cache on devices and a guest memory budget. |
-| **Linux applications** | Package managers, developer tools, office software, communication apps and more. Compatibility varies. |
-| **Files and networking** | Import/export, per-environment shared folders, sockets, interface and route reporting. |
+| **Files and networking** | Import/export, shared folders, a Wi-Fi file server and remote access. |
 
 ## Supported Devices and Requirements
 
@@ -100,7 +129,11 @@ LinuxRunner supports ARM64 iPhone and iPad layouts, touch input, hardware keyboa
 
 | Distribution | Packages | Desktop experience | Status |
 | --- | --- | --- | --- |
-| **Debian GNU/Linux 13 ARM64** | `apt`, `dpkg` | LinuxRunner Desktop, LXQt; experimental KDE Plasma and Wayfire | Recommended, widest application support |
+| **Debian GNU/Linux 13 ARM64** | `apt`, `dpkg` | LinuxRunner Desktop, Xfce, MATE, Cinnamon, Budgie, LXQt; experimental KDE Plasma and Wayfire | Recommended, widest application support |
+| **Ubuntu 24.04 ARM64 · Experimental** | `apt`, `dpkg` | Ubuntu GNOME, Xfce, MATE, Cinnamon, Budgie, i3 | Ubuntu Base |
+| **Zorin OS 18 · Experimental** | `apt`, `dpkg` | Zorin Desktop (default), Xfce | Ubuntu base with Zorin OS's repositories, themes and wallpaper |
+| **Pop!_OS 24.04 · Experimental** | `apt`, `dpkg` | Xfce (default); experimental COSMIC | Ubuntu base with System76's repository and look |
+| **Void Linux · Experimental** | `xbps` | Xfce | Independent, very light rolling release |
 | **Arch Linux ARM** | `pacman` | LinuxRunner Desktop, LXQt, Enlightenment, KDE Plasma, Wayfire; experimental Hyprland | Recommended for newer packages |
 | **Fedora Linux 44 ARM64** | `dnf`, `rpm` | Lightweight GTK/X11 desktop, KDE Plasma | Official userspace image. Sound is not yet qualified |
 | **Kali Linux 2026.3 ARM64** | `apt`, `dpkg` | Xfce, optional standard tool sets | Official root filesystem; large tool sets are slow to install |
@@ -139,6 +172,26 @@ Try `cat /etc/os-release` and `uname -m` in the terminal. Install Linux applicat
 
 [Full setup walkthrough, account options and package commands](docs/GETTING_STARTED.md)
 
+## CPU & Memory
+
+Open **Home → CPU & Memory** (also in **Settings → Graphics & Performance**) to choose how much of your iPhone or iPad Linux may use.
+
+| Setting | Options | What it does |
+| --- | --- | --- |
+| **CPU Cores** | Automatic (4), or 1 up to your device's core count | Linux programs start this many worker threads, each on its own core. More cores speed up compiling, rendering and browsers; Automatic suits most apps. |
+| **Linux Memory** | Automatic, or 1 GB up to your device's limit | The memory Linux programs see. Java, browsers and games size their heaps from it. |
+
+The memory limit leaves room for iOS and LinuxRunner itself:
+
+| Device memory | Linux memory up to |
+| --- | --- |
+| 4 GB | 2 GB |
+| 6 GB | 3 GB |
+| 8 GB | 4 GB |
+| 12 GB or more | 8 GB |
+
+Changes apply the next time LinuxRunner starts: close it from the app switcher and open it again. If apps run out of memory, raise **Linux Memory**; if iOS closes LinuxRunner in the background, lower it. **Home → Task Manager** shows which Linux processes use the CPU and memory.
+
 ## Choose Your Desktop
 
 Open **Settings → Desktop Environment**. Select the relevant **Install…** button, wait for completion, then choose the installed environment in the **Desktop** picker under **Open Desktop Starts**. Save your work and stop any running desktop before switching. Return to Home and select **Open Desktop**.
@@ -146,6 +199,10 @@ Open **Settings → Desktop Environment**. Select the relevant **Install…** bu
 | Desktop | Availability and status |
 | --- | --- |
 | **LinuxRunner Desktop** | Lightweight Openbox-based default and fallback; panel and file manager. |
+| **Xfce** | Debian, Ubuntu, Pop!_OS, Zorin OS, Void and Kali (Kali's own desktop). |
+| **Zorin Desktop** | Zorin OS's own GNOME-based desktop with the Zorin menu, taskbar and themes. Needs substantial memory. |
+| **MATE, Cinnamon, Budgie** | Debian and Ubuntu, from the distribution's own packages. |
+| **COSMIC** | **Experimental, Pop!_OS only.** The desktop and apps run on the GPU; the panel and dock are not shown yet. |
 | **LXQt** | X11 desktop with LXQt panel, PCManFM-Qt, QTerminal and Openbox; prefer Debian or Arch. |
 | **Enlightenment** | Available on Arch. Disabled on Debian because startup currently stops at the splash screen. |
 | **Wayfire** | Experimental Wayland compositor on Debian/Arch; GPU integration is available on Arch. |

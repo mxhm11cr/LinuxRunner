@@ -23,6 +23,10 @@ extern NSNotificationName const LRBLESerialChangedNotification;
 /// Connects into the first free /dev/ttyBLE slot; returns the slot or -1.
 - (NSInteger)connect:(NSString *)identifier;
 - (void)disconnectSlot:(NSInteger)slot;
+/// Devices that connected before (newest first): id, name, profile. Connecting
+/// to one works without a new scan while it is in range.
+@property (readonly) NSArray<NSDictionary<NSString *, id> *> *saved;
+- (void)forgetDevice:(NSString *)identifier;
 @end
 
 /// Registers the tty driver and creates /dev/ttyBLE0-3 in the active root.

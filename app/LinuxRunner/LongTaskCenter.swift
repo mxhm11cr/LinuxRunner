@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import UIKit
 import UserNotifications
+import CoreLocation
 #if canImport(BackgroundTasks)
 import BackgroundTasks
 #endif
@@ -304,4 +305,66 @@ struct InstallScreensaverView: View {
         .accessibilityHint("Double-tap to return to LinuxRunner")
         .statusBarHidden(true)
     }
+}
+
+
+/// Opt-in "Keep Linux Running in Background" (Settings > General).
+///
+/// iOS suspends an app shortly after it leaves the screen, which freezes every
+/// Linux process (terminal sessions, servers, downloads). The one public way
+/// to keep running indefinitely that this app already declares is the
+/// `location` background mode (it backs /dev/location; iSH users get the same
+/// effect with `cat /dev/location > /dev/null &`). While enabled, this runs a
+/// coarse location session: kCLLocationAccuracyThreeKilometers (cell/Wi-Fi,
+/// no GPS), updates discarded, never stored or sent anywhere. iOS shows its
+/// location indicator so the user can always see it is active. Off by default.
+@objc(LRBackgroundRunner) @MainActor final class BackgroundRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
+    @objc static let shared = BackgroundRunner()
+    static let defaultsKey = "LinuxRunner.keepRunningInBackground"
+    @Published private(set) var status = "Off"
+    private let manager = CLLocationManager()
+
+    private override init() {
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyThreeKilometers
+        manager.distanceFilter = CLLocationDistanceMax
+        manager.pausesLocationUpdatesAutomatically = false
+    }
+
+    var enabled: Bool { UserDefaults.standard.bool(forKey: Self.defaultsKey) }
+    /// Settings writes the flag (AppStorage) and then calls apply.
+    func apply(_ on: Bool) { on ? start() : stop() }
+
+    /// Call at launch: resumes the session when the user left it enabled.
+    @objc func restore() { if enabled { start() } }
+
+    private func start() {
+        switch manager.authorizationStatus {
+        case .notDetermined:
+            status = "Waiting for location permission"
+            manager.requestWhenInUseAuthorization()
+        case .denied, .restricted:
+            status = "Location permission denied: allow it in iOS Settings > LinuxRunner > Location"
+        default:
+            manager.allowsBackgroundLocationUpdates = true
+            manager.showsBackgroundLocationIndicator = true
+            manager.startUpdatingLocation()
+            status = "On: Linux keeps running when you leave LinuxRunner"
+            LRRuntimeBridge.logCategory("BACKGROUND", event: "keep-running session started (coarse location, indicator shown)")
+        }
+    }
+
+    private func stop() {
+        manager.stopUpdatingLocation()
+        manager.allowsBackgroundLocationUpdates = false
+        status = "Off"
+        LRRuntimeBridge.logCategory("BACKGROUND", event: "keep-running session stopped")
+    }
+
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        Task { @MainActor in if self.enabled { self.start() } }
+    }
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {}   // discarded
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {}
 }

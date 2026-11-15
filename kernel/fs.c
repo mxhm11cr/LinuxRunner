@@ -1,5 +1,7 @@
 #include "debug.h"
 #include <string.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include "kernel/calls.h"
@@ -10,6 +12,8 @@
 #include "fs/path.h"
 #include "fs/dev.h"
 #include "fs/real.h"
+#define ISH_INTERNAL
+#include "fs/fake.h"
 #include "fs/inode.h"
 #include "platform/platform.h"
 
@@ -123,6 +127,107 @@ struct open_how_ {
     uint64_t resolve;
 };
 
+// RESOLVE_BENEATH is security-sensitive. Support the read-only directory
+// walk used by current GNU tar without allowing a path to escape its dirfd.
+// The host walk pins each directory without following symlinks. The guest VFS
+// independently checks guest permissions and metadata; comparing the actual
+// opened inodes makes a concurrent rename fail closed rather than escape.
+static fd_t openat2_beneath_directory(fd_t at_f, addr_t path_addr, uint64_t flags) {
+    const uint64_t required = O_PATH_ | O_DIRECTORY_ | O_NOFOLLOW_;
+    const uint64_t allowed = required | O_CLOEXEC_;
+    if ((flags & required) != required || (flags & ~allowed))
+        return _EOPNOTSUPP;
+
+    char path[MAX_PATH];
+    if (user_read_string(path_addr, path, sizeof(path))) return _EFAULT;
+    if (!path[0]) return _ENOENT;
+    if (path[0] == '/') return _EXDEV;
+
+    struct fd *base;
+    if (at_f == AT_FDCWD_) {
+        lock(&current->fs->lock);
+        base = current->fs->pwd ? fd_retain(current->fs->pwd) : NULL;
+        unlock(&current->fs->lock);
+    } else {
+        base = f_get_retain(at_f);
+    }
+    if (!base) return _EBADF;
+    if (!base->mount || (base->mount->fs != &fakefs && base->mount->fs != &realfs)) {
+        fd_close(base);
+        return _EOPNOTSUPP;
+    }
+
+    struct stat parent_stat;
+    if (fstat(base->real_fd, &parent_stat) < 0) {
+        int error = errno_map();
+        fd_close(base);
+        return error;
+    }
+    if (!S_ISDIR(parent_stat.st_mode)) {
+        fd_close(base);
+        return _ENOTDIR;
+    }
+
+    // Shared folders can be changed outside the guest VFS lock. Do not
+    // advertise a confinement guarantee for those host-controlled paths.
+    lock(&beneath_path_lock);
+    char base_path[MAX_PATH], host_path[PATH_MAX];
+    if (base->mount->fs != &fakefs || generic_getpath(base, base_path) < 0 ||
+            fakefs_bind_mount_translate_path(base_path, host_path, sizeof(host_path))) {
+        unlock(&beneath_path_lock);
+        fd_close(base);
+        return _EOPNOTSUPP;
+    }
+
+    int host_dir = dup(base->real_fd);
+    if (host_dir < 0) {
+        int error = errno_map();
+        unlock(&beneath_path_lock);
+        fd_close(base);
+        return error;
+    }
+    char components[MAX_PATH];
+    strcpy(components, path);
+    char *save = NULL;
+    int error = 0;
+    for (char *part = strtok_r(components, "/", &save); part; part = strtok_r(NULL, "/", &save)) {
+        if (!strcmp(part, ".")) continue;
+        // Reject all parent traversals for this restricted implementation.
+        if (!strcmp(part, "..")) { error = _EXDEV; break; }
+        int next = openat(host_dir, part, O_RDONLY | O_NOFOLLOW);
+        if (next < 0) { error = errno_map(); break; }
+        struct stat entry;
+        if (fstat(next, &entry) < 0) error = errno_map();
+        else if (!S_ISDIR(entry.st_mode)) error = _ENOTDIR;
+        close(host_dir);
+        host_dir = next;
+        if (error) break;
+    }
+
+    struct fd *guest = NULL;
+    if (!error) {
+        guest = generic_openat(base, path, (int)flags, 0);
+        if (IS_ERR(guest)) { error = PTR_ERR(guest); guest = NULL; }
+    }
+    if (!error && (!guest->mount || (guest->mount->fs != &fakefs && guest->mount->fs != &realfs)))
+        error = _EOPNOTSUPP;
+    if (!error) {
+        struct stat expected, actual;
+        if (fstat(host_dir, &expected) < 0 || fstat(guest->real_fd, &actual) < 0)
+            error = errno_map();
+        else if (expected.st_dev != actual.st_dev || expected.st_ino != actual.st_ino)
+            error = _EAGAIN;
+    }
+    close(host_dir);
+    unlock(&beneath_path_lock);
+    fd_close(base);
+    if (error) {
+        if (guest) fd_close(guest);
+        return error;
+    }
+    return f_install(guest, (int)flags);
+}
+
 fd_t sys_openat2(fd_t at_f, addr_t path_addr, addr_t how_addr, size_t size) {
     STRACE("openat2(%d, %#x, %#x, %#zx)", at_f, path_addr, how_addr, size);
     if (size < sizeof(struct open_how_))
@@ -130,8 +235,9 @@ fd_t sys_openat2(fd_t at_f, addr_t path_addr, addr_t how_addr, size_t size) {
     struct open_how_ how;
     if (user_read(how_addr, &how, sizeof(how)))
         return _EFAULT;
-    // Resolve flags are stricter path-walk constraints. Treat unsupported
-    // constraints as EINVAL rather than silently ignoring security semantics.
+    if (how.resolve == 0x08 && how.mode == 0)
+        return openat2_beneath_directory(at_f, path_addr, how.flags);
+    // Other resolution constraints still fail closed.
     if (how.resolve != 0)
         return _EINVAL;
     return sys_openat(at_f, path_addr, (dword_t)how.flags, (mode_t_)how.mode);

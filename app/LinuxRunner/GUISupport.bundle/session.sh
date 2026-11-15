@@ -4,6 +4,7 @@ set -eu
 cd "$(dirname "$0")"
 session=$1
 mode=$2
+. ./xorg-native.sh
 case "$session" in session-????????-????-????-????-????????????|/home/mobile/Downloads/.linuxrunner/gui/session-????????-????-????-????-????????????) ;; *) echo 'Invalid session'; exit 2;; esac
 case "$mode" in test|xterm|qt|custom|desktop) ;; *) exit 2;; esac
 case "$session" in /*) ;; *) session="$PWD/$session";; esac
@@ -20,6 +21,12 @@ else echo 'GUI_SESSION: support missing: setsid (busybox or util-linux); run Ins
 guest_user=root
 [ ! -f "$session/guest-user" ] || guest_user=$(cat "$session/guest-user")
 case "$guest_user" in ''|*[!a-z0-9_-]*|[0-9-]*) echo 'GUI_SESSION: invalid guest account'; exit 2;; esac
+# GNOME and Budgie (budgie-session is a gnome-session fork) need a real
+# system bus and logind, provided by the root supervisor for a regular user.
+case "$mode:$(cat "$session/desktop-environment" 2>/dev/null || true):$guest_user" in
+    desktop:gnome:root) echo 'GUI_SESSION: GNOME requires a regular Linux user'; exit 10;;
+    desktop:budgie:root) echo 'GUI_SESSION: Budgie requires a regular Linux user'; exit 10;;
+esac
 # Terminal login shells find the running desktop through this root-owned
 # profile hook (desktop-env.sh parses and validates; it never evaluates).
 if [ "$(id -u)" = 0 ] && [ -d /etc/profile.d ] && ! cmp -s ./desktop-env.sh /etc/profile.d/linuxrunner-desktop.sh; then
@@ -111,6 +118,19 @@ if [ "$(id -u)" = 0 ] && [ "$guest_user" != root ]; then
             echo 'GUI_SESSION: plasma virtual-output devices prepared';;
         esac
     fi
+    if lr_native_xorg_requested "$session" "$mode" "$kms_desktop"; then
+        mkdir -p /dev/dri
+        [ -c /dev/dri/card1 ] || mknod -m 660 /dev/dri/card1 c 226 1
+        [ -c /dev/dri/renderD129 ] || mknod -m 660 /dev/dri/renderD129 c 226 129
+        if (exec 3<>/dev/dri/renderD129) 2>/dev/null; then
+            chown "$uid:$gid" /dev/dri/card1 /dev/dri/renderD129
+            chmod 660 /dev/dri/card1 /dev/dri/renderD129
+            echo enabled > "$session/native-xorg"
+            echo 'GUI_SESSION: native distribution Mesa/Xorg candidate prepared'
+        else
+            echo 'GUI_SESSION: native Xorg GPU unavailable; retaining Xvfb'
+        fi
+    fi
     # Native-created exchange files are imported with ordinary guest modes.
     # Establish guest credential privacy before either X11 or Plasma starts;
     # Plasma dispatches before the later X11 xauth setup/chmod path.
@@ -123,12 +143,29 @@ if [ "$(id -u)" = 0 ] && [ "$guest_user" != root ]; then
     absolute_session="$session"
     case "$PWD" in /home/mobile/Downloads/.linuxrunner/gui) ;; *) echo 'GUI_SESSION: unexpected support path'; exit 10;; esac
     echo "GUI_SESSION: login user=$guest_user uid=$uid gid=$gid"
+    if [ "$mode" = desktop ] && { [ "$kms_desktop" = gnome ] || [ "$kms_desktop" = budgie ]; }; then
+        exec /bin/sh ./gnome-root-session.sh "$absolute_session" "$guest_user" "$PWD" "$mode"
+    fi
     exec su -l -s /bin/sh -c "exec /bin/sh '$PWD/session.sh' '$absolute_session' '$mode'" "$guest_user"
 fi
 if [ "$guest_user" != root ] && [ "$(id -un)" != "$guest_user" ]; then
     echo 'GUI_SESSION: selected identity mismatch'; exit 10
 fi
 echo "GUI_SESSION: effective_uid=$(id -u) effective_gid=$(id -g) user=$(id -un) home=$HOME"
+# Root sessions do not pass through the account switch above, which prepares
+# the virtual GPU's nodes for native Xorg. Prepare them here too, or a root
+# desktop would always fall back to the software display.
+if [ "$(id -u)" = 0 ] && [ "$guest_user" = root ] && lr_native_xorg_requested "$session" "$mode" "$(cat "$session/desktop-environment" 2>/dev/null || printf linuxrunner)"; then
+    mkdir -p /dev/dri
+    [ -c /dev/dri/card1 ] || mknod -m 660 /dev/dri/card1 c 226 1
+    [ -c /dev/dri/renderD129 ] || mknod -m 660 /dev/dri/renderD129 c 226 129
+    if (exec 3<>/dev/dri/renderD129) 2>/dev/null; then
+        echo enabled > "$session/native-xorg"
+        echo 'GUI_SESSION: native distribution Mesa/Xorg candidate prepared (root session)'
+    else
+        echo 'GUI_SESSION: native Xorg GPU unavailable; retaining Xvfb'
+    fi
+fi
 # Read-only metadata evidence for packaged Chromium/Electron sandbox helpers.
 # Never grant set-ID privileges or disable sandboxing from a launcher.
 helper_count=0
@@ -222,6 +259,7 @@ export DISPLAY=:$display
 # software rendering, independent of optional Metal framebuffer presentation.
 distro=$(sed -n 's/^ID=//p' /etc/os-release | tr -d '"')
 [ "$distro" != kali ] || distro=debian # Debian-based: same Mesa/GLX packages
+case "$distro" in pop|zorin) distro=ubuntu;; esac # Ubuntu-based flavors behave exactly as Ubuntu
 if [ "$distro" = steamos ]; then
     # Breeze's QWidget painter crashed in the supplied image. Fusion keeps
     # both direct children and D-Bus-activated Qt applications on one style.
@@ -236,7 +274,7 @@ export LR_GUI_GPU_MODE="$gpu_mode" LR_GUI_SESSION_DIR="$session"
 # Desktop environment chosen in Settings › Desktop (desktop mode): linuxrunner or plasma (experimental).
 desktop_environment=linuxrunner
 [ ! -f "$session/desktop-environment" ] || desktop_environment=$(cat "$session/desktop-environment")
-case "$desktop_environment" in linuxrunner|plasma|lxqt|enlightenment|wayfire|hyprland|xfce) ;; *) desktop_environment=linuxrunner;; esac
+case "$desktop_environment" in linuxrunner|plasma|lxqt|enlightenment|wayfire|hyprland|xfce|i3|gnome|mate|cinnamon|budgie|cosmic) ;; *) desktop_environment=linuxrunner;; esac
 export LR_DESKTOP_ENVIRONMENT="$desktop_environment"
 steamos_gpu=0
 if [ "$distro" = steamos ] && [ "$mode" = desktop ] && [ "$desktop_environment" = plasma ] &&
@@ -247,6 +285,16 @@ if [ "$distro" = steamos ] && [ "$mode" = desktop ] && [ "$desktop_environment" 
     export __EGL_VENDOR_LIBRARY_FILENAMES=/opt/linuxrunner/steamos-gpu/share/glvnd/egl_vendor.d/50_mesa.json
     export MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu GALLIUM_DRIVER=virgl LR_STEAMOS_GPU=1
 fi
+native_xorg=0
+xorg_binary=
+if lr_native_xorg_requested "$session" "$mode" "$desktop_environment" &&
+    [ "$(cat "$session/native-xorg" 2>/dev/null || true)" = enabled ]; then
+    xorg_binary=$(lr_xorg_binary)
+    native_xorg=1
+fi
+xorg_gpu=$steamos_gpu
+[ "$native_xorg" != 1 ] || xorg_gpu=1
+[ "$steamos_gpu" != 1 ] || xorg_binary=/usr/lib/Xorg
 glx_mode=off
 case "$distro" in debian|arch|archarm) glx_mode=software;; esac
 [ ! -f "$session/glx-mode" ] || glx_mode=$(cat "$session/glx-mode")
@@ -255,6 +303,7 @@ case "$glx_mode" in
  software) glx_switch=+extension;;
  *) echo 'GUI_SESSION: invalid GLX mode (off or software required)'; exit 2;;
 esac
+[ "$native_xorg" != 1 ] || glx_mode=virgl
 echo "GUI_GRAPHICS: GLX=$glx_mode application-renderer=selected-by-guest-library final-presentation=host"
 # Keep the established socket-image path as rollback. Shared images are a
 # session-scoped experiment until real client and IPC lifetime tests pass.
@@ -287,8 +336,12 @@ if [ "$steamos_gpu" = 1 ]; then
     unset LIBGL_ALWAYS_SOFTWARE QT_QUICK_BACKEND QT_OPENGL
     export QT_XCB_GL_INTEGRATION=xcb_egl QSG_RHI_BACKEND=opengl QSG_RHI_GL_USE_GLES=1 QSG_INFO=1
 fi
+if [ "$native_xorg" = 1 ]; then
+    unset LIBGL_ALWAYS_SOFTWARE GALLIUM_DRIVER MESA_LOADER_DRIVER_OVERRIDE
+    export LR_GUI_NATIVE_VIRGL=1
+fi
 steamos_software_fallback() {
-    steamos_gpu=0
+    steamos_gpu=0; xorg_gpu=0
     unset LD_LIBRARY_PATH LIBGL_DRIVERS_PATH __EGL_VENDOR_LIBRARY_FILENAMES MESA_LOADER_DRIVER_OVERRIDE GALLIUM_DRIVER LR_STEAMOS_GPU
     unset QSG_RHI_BACKEND QSG_RHI_GL_USE_GLES QSG_INFO
     export QT_QUICK_BACKEND=software QT_OPENGL=software LIBGL_ALWAYS_SOFTWARE=1 QT_XCB_GL_INTEGRATION=none
@@ -309,26 +362,88 @@ fi
 export XAUTHORITY="$session/authority"
 umask 077
 xauth -f "$XAUTHORITY" add "$DISPLAY" . "$(cat "$session/cookie")"
-echo "GUI_SESSION: root=${LINUXRUNNER_ENVIRONMENT:-current} distribution=$distro DISPLAY=$DISPLAY geometry=${width}x${height} backend=$([ "$steamos_gpu" = 1 ] && echo xorg-virgl-rfb || echo xvfb-rfb) interpreter-baseline"
-if [ "$steamos_gpu" = 1 ]; then
-    cp ./steamos-xorg.conf "$session/xorg.conf"
-    echo 'xorg-virgl' > "$session/display-backend"
-    echo "GUI_SESSION: starting Xorg modesetting/glamor on virgl/Metal, ${width}x${height}, no JIT"
-    /usr/lib/Xorg "$DISPLAY" -config "$session/xorg.conf" -logfile "$session/xorg.log" -noreset -nolisten tcp \
-        -novtswitch -sharevts -auth "$XAUTHORITY" > "$session/xvfb.log" 2>&1 & xpid=$!
-else
-    echo 'xvfb-software' > "$session/display-backend"
-    echo "GUI_SESSION: starting X.Org software display, ${width}x${height}, no JIT"
-    Xvfb "$DISPLAY" -screen 0 "${width}x${height}x24" -nolisten tcp -auth "$XAUTHORITY" "$shm_switch" MIT-SHM "$glx_switch" GLX > "$session/xvfb.log" 2>&1 & xpid=$!
+start_x_display() {
+    if [ "$xorg_gpu" = 1 ]; then
+        cp ./steamos-xorg.conf "$session/xorg.conf"
+        echo xorg-virgl > "$session/display-backend"
+        echo "GUI_SESSION: starting Xorg/glamor with distribution Mesa, ${width}x${height}"
+        "$xorg_binary" "$DISPLAY" -config "$session/xorg.conf" -logfile "$session/xorg.log" -noreset -nolisten tcp \
+            -novtswitch -sharevts -auth "$XAUTHORITY" > "$session/xvfb.log" 2>&1 & xpid=$!
+    else
+        echo xvfb-software > "$session/display-backend"
+        echo "GUI_SESSION: starting X.Org software display, ${width}x${height}, no JIT"
+        Xvfb "$DISPLAY" -screen 0 "${width}x${height}x24" -nolisten tcp -auth "$XAUTHORITY" "$shm_switch" MIT-SHM "$glx_switch" GLX > "$session/xvfb.log" 2>&1 & xpid=$!
+    fi
+}
+wait_x_display() {
+    # Time based: native Xorg loads the distribution's whole Mesa/LLVM before
+    # it listens (Void Linux: ~46 s on the Mac under the interpreter), so it
+    # gets 150 s; Xvfb 10 s. A dead server still ends the wait at once.
+    lr_x_limit=10; [ "${native_xorg:-0}" != 1 ] || lr_x_limit=150
+    lr_x_deadline=$(( $(date +%s) + lr_x_limit ))
+    while [ ! -S "/tmp/.X11-unix/X$display" ]; do
+        [ ! -f "$session/stop" ] || return 1
+        kill -0 "$xpid" 2>/dev/null || return 1
+        [ "$(date +%s)" -lt "$lr_x_deadline" ] || return 1
+        sleep .1
+    done
+}
+start_x_display
+x_ready=0
+if wait_x_display; then x_ready=1; fi
+# The client-side GL qualification (glxinfo) loads the whole Mesa driver a
+# second time, seconds under the interpreter. Once it has passed for this exact
+# Mesa driver, Xorg binary and runtime, later starts verify the server side
+# only: Xorg's own log must report glamor on virgl/ANGLE/Metal (waits for it).
+# Any change to those files or to the runtime runs the full check again.
+xorg_qualification_key() {
+    {
+        cat /proc/version 2>/dev/null
+        stat -L -c '%n %s %Y' "$xorg_binary" /usr/lib/*/dri/virtio_gpu_dri.so /usr/lib/dri/virtio_gpu_dri.so \
+            /usr/lib/*/libgallium*.so /usr/lib/libgallium*.so 2>/dev/null
+    } | cksum | cut -d' ' -f1
+}
+xorg_qualified_marker="${XDG_CACHE_HOME:-$HOME/.cache}/linuxrunner/native-xorg-qualified"
+xorg_glamor_ready() {
+    i=0
+    until grep -qi 'glamor X acceleration enabled on.*virgl.*ANGLE.*Metal' "$session/xorg.log" 2>/dev/null &&
+        grep -q 'AIGLX: Loaded and initialized' "$session/xorg.log" 2>/dev/null; do
+        kill -0 "$xpid" 2>/dev/null || return 1
+        i=$((i+1)); [ "$i" -lt 150 ] || return 1
+        sleep .1
+    done
+}
+if [ "$native_xorg" = 1 ]; then
+    xorg_key=$(xorg_qualification_key)
+    xorg_qualified=0
+    if [ "$x_ready" = 1 ] && [ -n "$xorg_key" ] && [ "$(cat "$xorg_qualified_marker" 2>/dev/null)" = "$xorg_key" ]; then
+        if xorg_glamor_ready; then xorg_qualified=1; { echo 'Client GL check cached for this Mesa/Xorg/runtime; server evidence:'; grep -i 'glamor X acceleration enabled\|AIGLX: Loaded' "$session/xorg.log"; } > "$session/graphics.log" 2>&1; echo 'GUI_GRAPHICS: native Mesa GLX on virgl/ANGLE/Metal initialized (server verified; client check cached)'
+        else rm -f "$xorg_qualified_marker"; fi
+    fi
+    if [ "$xorg_qualified" = 0 ] && [ "$x_ready" = 1 ] && timeout 90 glxinfo -B > "$session/graphics.log" 2>&1 &&
+        grep -qi 'renderer.*virgl.*ANGLE.*Metal' "$session/graphics.log" &&
+        grep -qi 'glamor X acceleration enabled on.*virgl.*ANGLE.*Metal' "$session/xorg.log"; then
+        xorg_qualified=1
+        mkdir -p "${xorg_qualified_marker%/*}" 2>/dev/null && printf '%s\n' "$xorg_key" > "$xorg_qualified_marker" 2>/dev/null || true
+        echo 'GUI_GRAPHICS: native Mesa GLX on virgl/ANGLE/Metal initialized'
+    fi
+    if [ "$xorg_qualified" = 1 ]; then :
+    else
+        rm -f "$xorg_qualified_marker"
+        echo 'GUI_GRAPHICS: native Xorg failed qualification; retaining logs and falling back once to Xvfb'
+        kill "$xpid" 2>/dev/null || true; wait "$xpid" 2>/dev/null || true
+        native_xorg=0; xorg_gpu=0
+        unset LR_GUI_NATIVE_VIRGL
+        export LIBGL_ALWAYS_SOFTWARE=1
+        start_x_display
+        x_ready=0
+        if wait_x_display; then x_ready=1; fi
+    fi
 fi
-i=0
-while [ ! -S "/tmp/.X11-unix/X$display" ]; do
-    [ ! -f "$session/stop" ] || exit 0
-    kill -0 "$xpid" 2>/dev/null || { echo 'GUI_SESSION: X server exited'; cat "$session/xvfb.log"; exit 4; }
-    i=$((i+1)); [ "$i" -lt 100 ] || { echo 'GUI_SESSION: X server timeout'; exit 5; }; sleep .1
-done
+[ "$x_ready" = 1 ] || { echo 'GUI_SESSION: X server failed or timed out'; cat "$session/xvfb.log"; exit 4; }
+echo "GUI_SESSION: root=${LINUXRUNNER_ENVIRONMENT:-current} distribution=$distro DISPLAY=$DISPLAY geometry=${width}x${height} backend=$(cat "$session/display-backend") interpreter-baseline"
 echo "GUI_SESSION: stage=x11-ready socket=/tmp/.X11-unix/X$display polls=$i"
-lr_stage display_init "server=Xvfb"
+lr_stage display_init "server=$(cat "$session/display-backend")"
 if [ "$mode" != desktop ]; then
 # Session-wide focus policy for all X11 clients; no app-name/key special cases.
 ./focus-manager "$session/stop" > "$session/focus.log" 2>&1 & wpid=$!
@@ -343,12 +458,14 @@ fi
 if [ "$observer_ready" = yes ]; then
     ./window-observer 86400 "$session/window-state" "$session/stop" > "$session/window.log" 2>&1 & mpid=$!
 fi
-setxkbmap -query > "$session/keymap.log" 2>&1 || true
-xmodmap -pm >> "$session/keymap.log" 2>&1 || true
+# Keyboard diagnostics only (support reports read keymap.log). Two X clients
+# took ~5 s of interpreted startup before the desktop could begin; record them
+# beside the session instead of in front of it.
+{ setxkbmap -query; xmodmap -pm; } > "$session/keymap.log" 2>&1 &
 xkb=-xkb
 if [ -f "$session/xkb-mode" ] && [ "$(cat "$session/xkb-mode")" = noxkb ]; then xkb=-noxkb; fi
 focus_policy=managed; [ "$mode" != desktop ] || focus_policy=window-manager
-echo "GUI_SESSION: keyboard=$xkb focus=$focus_policy encoding=Hextile/Raw renderer=$([ "$steamos_gpu" = 1 ] && echo virgl-metal || echo software)"
+echo "GUI_SESSION: keyboard=$xkb focus=$focus_policy encoding=Hextile/Raw renderer=$([ "$xorg_gpu" = 1 ] && echo virgl-metal || echo software)"
 # A Linux sockaddr_un path holds at most 107 bytes. A support-directory UUID
 # path plus GVFS/Qt socket suffix exceeds it. Use a uniquely owned short path
 # for every GUI mode, with restrictive permissions and no preexisting reuse.
@@ -375,6 +492,7 @@ if command -v dbus-daemon >/dev/null; then
             if dbus-update-activation-environment DISPLAY XAUTHORITY XDG_RUNTIME_DIR HOME PATH DBUS_SESSION_BUS_ADDRESS; then
                 echo 'GUI_SESSION: dbus_activation_environment=PASS (explicit session variables, no systemd required)'
             else echo 'GUI_SESSION: dbus_activation_environment=FAIL; inspect bus.log'; fi
+            [ "$native_xorg" != 1 ] || dbus-update-activation-environment LR_GUI_NATIVE_VIRGL
             if [ "$steamos_gpu" = 1 ]; then
                 dbus-update-activation-environment LD_LIBRARY_PATH LIBGL_DRIVERS_PATH __EGL_VENDOR_LIBRARY_FILENAMES \
                     MESA_LOADER_DRIVER_OVERRIDE GALLIUM_DRIVER LR_STEAMOS_GPU QT_STYLE_OVERRIDE \
@@ -401,7 +519,8 @@ if [ "$mode" = desktop ]; then
     desktop_env="$HOME/.cache/linuxrunner/desktop.env"
     if mkdir -p "$HOME/.cache/linuxrunner" && chmod 700 "$HOME/.cache/linuxrunner" &&
         ( umask 077; printf 'DISPLAY=%s\nXAUTHORITY=%s\nXDG_RUNTIME_DIR=%s\n' "$DISPLAY" "$XAUTHORITY" "$XDG_RUNTIME_DIR"
-          [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] || printf 'DBUS_SESSION_BUS_ADDRESS=%s\n' "$DBUS_SESSION_BUS_ADDRESS" ) > "$desktop_env.new" &&
+          [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] || printf 'DBUS_SESSION_BUS_ADDRESS=%s\n' "$DBUS_SESSION_BUS_ADDRESS"
+          [ "${LR_GUI_NATIVE_VIRGL:-0}" != 1 ] || printf 'LR_GUI_NATIVE_VIRGL=1\n' ) > "$desktop_env.new" &&
         mv "$desktop_env.new" "$desktop_env"; then echo 'GUI_SESSION: terminal_desktop_environment=published'
     else rm -f "$desktop_env.new"; desktop_env=; echo 'GUI_SESSION: terminal_desktop_environment=unavailable'; fi
 fi
@@ -423,9 +542,9 @@ echo "GUI_INPUT: mode=$input_mode experimental=$([ "$input_mode" = eager ] && ec
 # autocomplete splice typed URLs (2 of 5 gate runs), so it stays opt-in.
 # The others are latency experiments.
 vnc_timing=default
-[ "$steamos_gpu" != 1 ] || vnc_timing=adaptive
+[ "$xorg_gpu" != 1 ] || vnc_timing=adaptive
 [ ! -f "$session/vnc-timing" ] || vnc_timing=$(cat "$session/vnc-timing")
-if [ "$vnc_timing" = default ] && [ "$steamos_gpu" = 1 ]; then vnc_timing=adaptive; fi
+if [ "$vnc_timing" = default ] && [ "$xorg_gpu" = 1 ]; then vnc_timing=adaptive; fi
 case "$vnc_timing" in
  default|legacy) vnc_timing_options="-noxdamage -defer 16 -wait 25";;
  threads) vnc_timing_options="-noxdamage -defer 16 -wait 25 -threads";;
@@ -440,9 +559,26 @@ case "$vnc_timing" in
  threads-balanced) vnc_timing_options="-noxdamage -defer 5 -wait 15 -threads";;
  *) echo 'GUI_SESSION: invalid vnc timing'; exit 2;;
 esac
+# GPU desktops whose viewer reads the virtual GPU's scanout directly
+# (direct-scanout): x11vnc then mainly carries input. Poll the screen at
+# 10 Hz (RFB stays a working fallback) and every 20 ms while input is recent:
+# x11vnc reads client input only between polls, so a slower rate during input
+# delays the mouse by up to the poll interval.
+if [ "$xorg_gpu" = 1 ] && [ "$(cat "$session/direct-scanout" 2>/dev/null || true)" = enabled ]; then
+    # While a button is held (window drags, scrolling by drag) the screen is
+    # not polled at all (-nodragging), and x11vnc's drag heuristics, which
+    # query window geometry on every motion event, are off: the picture comes
+    # from the GPU scanout, so x11vnc only forwards the pointer then.
+    vnc_timing_options="-noxdamage -defer 20 -wait 100 -wait_ui 5 -nodragging -nowireframe -noscrollcopyrect"
+    # Measurement only (A/B runs): the previous direct-scanout options.
+    [ ! -f "$session/vnc-direct-legacy" ] || vnc_timing_options="-noxdamage -defer 20 -wait 100 -wait_ui 5"
+    echo 'GUI_VNC: direct GPU scanout presentation requested; x11vnc polls at input rate only, never while dragging'
+fi
 echo "GUI_VNC: timing=$vnc_timing options=$vnc_timing_options"
 vnc_lifetime="-once -timeout 60"
-[ "$mode" != desktop ] || vnc_lifetime="-forever"
+# -shared: RDP Mode's local bridge (modes.sh) views the same desktop
+# alongside the app; still localhost-only and password protected.
+[ "$mode" != desktop ] || vnc_lifetime="-forever -shared"
 # Clipboard: only the CLIPBOARD selection (explicit copy, e.g. Ctrl+C) is
 # offered to the app, which keeps it until the user copies it to iOS; PRIMARY
 # (mere selection) is not synced.

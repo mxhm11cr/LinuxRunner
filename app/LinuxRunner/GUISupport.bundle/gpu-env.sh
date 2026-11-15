@@ -17,6 +17,11 @@ lr_gpu_route() {
      mesa-metal-resident|mesa-metal-verify) ;;
      *) export LR_GUI_GPU_ACTIVE=mesa; echo "GPU_ROUTING: requested=$lr_mode active=mesa reason=unknown-mode"; return 0;;
     esac
+    if [ "$lr_mode" = mesa-metal-resident ] && [ "${LR_GUI_NATIVE_VIRGL:-0}" = 1 ]; then
+        export LR_GUI_GPU_ACTIVE=distribution-mesa
+        echo 'GPU_ROUTING: requested=mesa-metal-resident active=distribution-mesa display=virgl-metal application-context=unverified'
+        return 0
+    fi
     lr_provider="$lr_support/liblinuxrunner-mesa-metal.so" lr_why=
     # Distributions whose own Mesa passed the bridge contract
     # (gpu-mesa-metal-check.sh: GLX core context, Metal draws verified against

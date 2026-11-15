@@ -3,6 +3,9 @@
 SUPPORT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 cd "$SUPPORT_DIR"
 SUPPORT_VERSION=$(cat support-version 2>/dev/null || true)
+# Unattended dpkg configuration-file answers for every apt run of these
+# scripts (apt-unattended.conf); the user's own terminal apt is unaffected.
+if [ -r "$SUPPORT_DIR/apt-unattended.conf" ] && [ -z "${APT_CONFIG:-}" ]; then export APT_CONFIG="$SUPPORT_DIR/apt-unattended.conf"; fi
 support_fail() { echo "$1: result=FAIL reason=$2"; exit "${3:-1}"; }
 verify_resources() {
     [ -n "$SUPPORT_VERSION" ] || support_fail SUPPORT_DEPLOY version-missing

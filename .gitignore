@@ -63,3 +63,4 @@ meta.db-*
 .vscode/
 .idea/
 *.swp
+.claude/

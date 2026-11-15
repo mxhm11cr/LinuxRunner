@@ -7,12 +7,13 @@
 # but never the desktop user's runtime directory or session bus.
 # In a shell opened before the desktop, run: linuxrunner_desktop
 _lr_desktop_read() {
-    _lr_d= _lr_x= _lr_r= _lr_b= _lr_w=
+    _lr_d= _lr_x= _lr_r= _lr_b= _lr_w= _lr_g=
     [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ] || return 1
     while IFS= read -r _lr_line; do
         _lr_v=${_lr_line#*=}
         case "$_lr_v" in *[!A-Za-z0-9/._=,:-]*) return 1;; esac
         case "$_lr_line" in
+            LR_GUI_NATIVE_VIRGL=1) _lr_g=1;;
             DISPLAY=:*) _lr_n=${_lr_v#:}; case "$_lr_n" in ''|*[!0-9]*) return 1;; esac; _lr_d=$_lr_v;;
             XAUTHORITY=/home/mobile/Downloads/.linuxrunner/gui/session-*/authority) _lr_x=$_lr_v;;
             XDG_RUNTIME_DIR=/tmp/lr-runtime.*) _lr_r=$_lr_v;;
@@ -42,12 +43,13 @@ linuxrunner_desktop() {
     fi
     if [ -z "$_lr_found" ]; then
         [ "${1:-}" = --quiet ] || echo 'LinuxRunner desktop is not running for this account; open it with Open Desktop in the LinuxRunner app.'
-        unset _lr_d _lr_x _lr_r _lr_b _lr_v _lr_n _lr_line _lr_f _lr_found
+        unset _lr_g _lr_d _lr_x _lr_r _lr_b _lr_v _lr_n _lr_line _lr_f _lr_found
         return 1
     fi
     if [ -n "$_lr_d" ]; then
         export DISPLAY="$_lr_d" XAUTHORITY="$_lr_x" XDG_SESSION_TYPE=x11
         export QT_QPA_PLATFORM=${QT_QPA_PLATFORM:-xcb}
+        if [ "$_lr_g" = 1 ]; then export LR_GUI_NATIVE_VIRGL=1; else unset LR_GUI_NATIVE_VIRGL; fi
     else unset DISPLAY XAUTHORITY; fi
     export QT_FORCE_STDERR_LOGGING=${QT_FORCE_STDERR_LOGGING:-1}
     if [ "$(id -u)" != 0 ]; then
@@ -56,7 +58,7 @@ linuxrunner_desktop() {
         _lr_wayland "$_lr_w"
     fi
     [ "${1:-}" = --quiet ] || echo "LinuxRunner desktop: DISPLAY=${DISPLAY:-none} WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-none}; graphical programs started here open on the desktop."
-    unset _lr_d _lr_x _lr_r _lr_b _lr_w _lr_v _lr_n _lr_line _lr_f _lr_found
+    unset _lr_g _lr_d _lr_x _lr_r _lr_b _lr_w _lr_v _lr_n _lr_line _lr_f _lr_found
     return 0
 }
 # Wayland desktops (Hyprland, Wayfire on the GPU) add their socket: programs
@@ -74,6 +76,6 @@ _lr_wayland() {
 # For launches that already have the session's DISPLAY (launch.sh).
 linuxrunner_wayland() {
     [ "$(id -u)" != 0 ] && [ -n "${HOME:-}" ] && _lr_desktop_read "$HOME/.cache/linuxrunner/desktop.env" && _lr_wayland "$_lr_w"
-    _lr_status=$?; unset _lr_d _lr_x _lr_r _lr_b _lr_w _lr_v _lr_n _lr_line; return $_lr_status
+    _lr_status=$?; unset _lr_g _lr_d _lr_x _lr_r _lr_b _lr_w _lr_v _lr_n _lr_line; return $_lr_status
 }
 linuxrunner_desktop --quiet || true

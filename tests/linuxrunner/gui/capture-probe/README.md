@@ -17,9 +17,9 @@ through the existing desktop request queue, with the selected user's display
 authorization. Ordinary test runs skip the probe. The test terminates the entire
 app after every run and relaunches without the temporary capture override, also
 on assertion failure. This establishes paired-run starting conditions;
-session crash recovery has its own cleanup qualification.
+session crash recovery has its own [cleanup qualification](../../../../docs/CAPTURE_CLEANUP.md).
 The original measurements predated that correction. The
-post-cleanup repeat uses the same
+[post-cleanup repeat](../../../../docs/CAPTURE_POST_CLEANUP.md) uses the same
 measurement fixture and observer with the correction present.
 
 The fullscreen override-redirect X11 fixture encodes an exact sequence ID in

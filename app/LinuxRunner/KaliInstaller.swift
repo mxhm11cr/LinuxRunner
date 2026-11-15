@@ -80,7 +80,7 @@ private final class KaliCancellation: @unchecked Sendable {
                 if !valid {
                     message = "Downloading Kali Linux \(KaliImage.version) ARM64"
                     let partial = cache.appendingPathComponent(KaliImage.filename + ".partial")
-                    try await FedoraImageDownload.fetch(from: KaliImage.url, bytes: KaliImage.bytes, to: partial) { offset, retrying in
+                    try await FedoraImageDownload.fetch(from: KaliImage.url, bytes: KaliImage.bytes, to: partial, distributionName: "Kali") { offset, retrying in
                         Task { @MainActor in
                             guard self.running, !token.check(), self.fraction < 0.7 else { return }
                             self.fraction = max(self.fraction, Double(offset) / Double(KaliImage.bytes) * 0.7)

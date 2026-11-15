@@ -43,7 +43,7 @@ private final class FedoraCancellation: @unchecked Sendable {
 enum FedoraImageDownload {
     private static let chunkSize: Int64 = 4 * 1024 * 1024
 
-    static func fetch(from source: URL, bytes: Int64, to partial: URL,
+    static func fetch(from source: URL, bytes: Int64, to partial: URL, distributionName: String = "Fedora",
                       progress: @Sendable (Int64, Bool) -> Void) async throws {
         let fm = FileManager.default
         let configuration = URLSessionConfiguration.ephemeral
@@ -60,7 +60,7 @@ enum FedoraImageDownload {
         guard info.isRegularFile == true, info.isSymbolicLink != true,
               let size = info.fileSize, size >= 0, Int64(size) <= bytes else {
             try fm.removeItem(at: partial)
-            throw FedoraInstallError.failure("Fedora's saved download was invalid. Tap Try Again to start a fresh download.")
+            throw FedoraInstallError.failure("\(distributionName)'s saved download was invalid. Tap Try Again to start a fresh download.")
         }
 
         var offset = Int64(size)
@@ -71,7 +71,7 @@ enum FedoraImageDownload {
             var request = URLRequest(url: source)
             request.setValue("bytes=\(offset)-\(end)", forHTTPHeaderField: "Range")
             request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-            let (file, response) = try await fetchRange(request, using: session) {
+            let (file, response) = try await fetchRange(request, using: session, distributionName: distributionName) {
                 progress(offset, true)
             }
             defer { try? fm.removeItem(at: file) }
@@ -86,7 +86,7 @@ enum FedoraImageDownload {
             guard response.statusCode == 206,
                   response.value(forHTTPHeaderField: "Content-Range") == "bytes \(offset)-\(end)/\(bytes)",
                   length == end - offset + 1 else {
-                throw FedoraInstallError.failure("The Fedora server returned an invalid download segment (HTTP \(response.statusCode)). Tap Try Again to resume.")
+                throw FedoraInstallError.failure("The \(distributionName) server returned an invalid download segment (HTTP \(response.statusCode)). Tap Try Again to resume.")
             }
             let output = try FileHandle(forWritingTo: partial)
             defer { try? output.close() }
@@ -98,7 +98,7 @@ enum FedoraImageDownload {
         }
     }
 
-    private static func fetchRange(_ request: URLRequest, using session: URLSession,
+    private static func fetchRange(_ request: URLRequest, using session: URLSession, distributionName: String,
                                    retrying: () -> Void) async throws -> (URL, HTTPURLResponse) {
         for attempt in 0..<4 {
             try Task.checkCancellation()
@@ -106,7 +106,7 @@ enum FedoraImageDownload {
                 let (file, response) = try await session.download(for: request)
                 guard let http = response as? HTTPURLResponse else {
                     try? FileManager.default.removeItem(at: file)
-                    throw FedoraInstallError.failure("The Fedora server did not return an HTTP response.")
+                    throw FedoraInstallError.failure("The \(distributionName) server did not return an HTTP response.")
                 }
                 if ![408, 429, 500, 502, 503, 504].contains(http.statusCode) || attempt == 3 {
                     return (file, http)
@@ -120,7 +120,7 @@ enum FedoraImageDownload {
             retrying()
             try await Task.sleep(nanoseconds: UInt64(1 << attempt) * 1_000_000_000)
         }
-        throw FedoraInstallError.failure("The Fedora connection kept dropping. Tap Try Again to resume from the last saved segment.")
+        throw FedoraInstallError.failure("The \(distributionName) connection kept dropping. Tap Try Again to resume from the last saved segment.")
     }
 }
 

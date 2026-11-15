@@ -291,7 +291,7 @@ perform() {
  configure|repair)
   # Persistent metadata checkpoint only. Never claim a full rootfs snapshot.
   checkpoint=$(mktemp -d /var/lib/linuxrunner/repair-checkpoints/repair.XXXXXX)
-  if [ "$distro" = debian ]; then cp -p /var/lib/dpkg/status "$checkpoint/dpkg-status"; dpkg --audit; dpkg --configure -a
+  if [ "$distro" = debian ]; then cp -p /var/lib/dpkg/status "$checkpoint/dpkg-status"; dpkg --audit; dpkg --force-confdef --force-confold --configure -a
    if [ "$operation" = repair ]; then apt-get -f install; fi
   else cp -p /lib/apk/db/installed "$checkpoint/apk-installed"; apk fix; fi
   echo "PACKAGE_REPAIR: metadata_checkpoint=$checkpoint rollback=manual-not-automatic";;

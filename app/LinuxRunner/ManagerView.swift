@@ -139,7 +139,7 @@ import Darwin
             environments[index].storageBytes = measured[environments[index].id]
             if active(environments[index]) {
                 environments[index].lastBootResult = "Runtime running; application acceptance recorded separately"
-                if ["debian", "arch", "fedora", "kali", "steamos"].contains(environments[index].distributionID ?? "") {
+                if ["debian", "ubuntu", "arch", "fedora", "kali", "steamos"].contains(environments[index].distributionID ?? "") {
                     environments[index].installationState = FileManager.default.fileExists(atPath: LRRuntimeBridge.rootURL(environments[index].rootfsName).appendingPathComponent("data/var/lib/linuxrunner/initialized").path) ? "Base packages configured" : "First-start configuration pending; setup may require repair"
                     let support = LRRuntimeBridge.exchangeURL(environments[index].rootfsName).appendingPathComponent(".linuxrunner/gui")
                     if let profile = try? String(contentsOf: support.appendingPathComponent("profile-check.result"), encoding: .utf8) {
@@ -387,9 +387,12 @@ struct ManagerView: View {
     @State private var desktopSummary: [String: Any] = [:]
     @State private var confirmStopDesktop = false
     @State private var startingRuntime = false
+    @State private var showTaskManager = false
     @State private var autoStartRuntime = LRRuntimeBridge.autoStart()
     @AppStorage("LinuxRunner.developerMode") private var developerMode = false
     @AppStorage("LinuxRunner.keepScreenAwake") private var keepScreenAwake = true
+    @AppStorage(BackgroundRunner.defaultsKey) private var keepRunningInBackground = false
+    @ObservedObject private var backgroundRunner = BackgroundRunner.shared
     @AppStorage("LinuxRunner.experimentalMemoryPCFusion") private var memoryPCFusion = true
     @AppStorage("LinuxRunner.appearance") private var appearance = "dark"
     // One shared timer: a publisher stored on the view struct is rebuilt with
@@ -464,6 +467,19 @@ struct ManagerView: View {
             Button("Stop", role: .destructive) { LRRuntimeBridge.stopDesktopSession(); desktopSummary = LRRuntimeBridge.desktopSessionSummary() }
         } message: { Text("Save documents first. This closes applications owned by the desktop; persistent files and the terminal environment remain.") }
         .fullScreenCover(item: $graphical, onDismiss: { desktopSummary = LRRuntimeBridge.desktopSessionSummary() }) { request in NativeController(controller: presentedController(request)) }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("LinuxRunnerLaunchGraphicalApplication"))) { note in
+            // Modes (Arcadia): open an application inside the desktop.
+            guard LRRuntimeBridge.isRunning(), let info = note.userInfo, let executable = info["executable"] as? String else { return }
+            _ = LRRuntimeBridge.desktopTraceBegin("modes launch")
+            graphical = GraphicalRequest(desktop: true, launch: ["requestID": UUID().uuidString, "executable": executable,
+                                                                 "arguments": info["arguments"] as? [String] ?? [], "directory": info["directory"] as? String ?? "/root",
+                                                                 "environment": [String: String]()])
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("LinuxRunnerGraphicalDismissRequested"))) { _ in
+            // Return to Home from inside the desktop: close the cover through SwiftUI.
+            graphical = nil
+            desktopSummary = LRRuntimeBridge.desktopSessionSummary()
+        }
         .sheet(isPresented: $diagnostics) { DeveloperDiagnosticsView() }
         .sheet(isPresented: $desktopSettings) {
             if let navigation = LRRuntimeBridge.desktopController() as? UINavigationController,
@@ -565,7 +581,17 @@ struct ManagerView: View {
                     NavigationLink(destination: AppStoreView(manager: manager, run: run)) { HomeTile(title: "App Store", symbol: "bag.fill", colors: [.blue, .indigo], large: true) }
                         .buttonStyle(HomeTileStyle()).disabled(activeEnvironment == nil).accessibilityIdentifier("App Store")
                 }
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 4), spacing: 16) {
+                // System tools, as large cards with Terminal and App Store.
+                HStack(spacing: 14) {
+                    NavigationLink(destination: SystemResourcesView()) { HomeTile(title: "CPU & Memory", symbol: "memorychip.fill", colors: [.purple, .indigo], large: true) }
+                        .buttonStyle(HomeTileStyle()).accessibilityIdentifier("CPU & Memory")
+                    homeTile("Task Manager", "chart.line.uptrend.xyaxis", [.yellow, .orange], large: true, enabled: LRRuntimeBridge.isRunning()) { showTaskManager = true }
+                }
+                .fullScreenCover(isPresented: $showTaskManager) { TaskManagerView() }
+                // A plain row, not a LazyVGrid: navigation links inside lazily
+                // recycled grid cells stop responding after repeated push/pop
+                // (the whole row "froze" going GPU -> back -> Devices).
+                HStack(alignment: .top, spacing: 14) {
                     if let environment = activeEnvironment {
                         NavigationLink(destination: files(environment)) { HomeTile(title: "Files", symbol: "folder.fill", colors: [.cyan, .blue]) }.buttonStyle(HomeTileStyle())
                     } else { HomeTile(title: "Files", symbol: "folder.fill", colors: [.cyan, .blue]).opacity(0.4) }
@@ -611,7 +637,7 @@ struct ManagerView: View {
     /// serves only the Hyprland/Wayfire compositors, so it does not count here.
     private var gpuInUse: Bool {
         if let routing = LRRuntimeBridge.graphicsSummary()["routing"] as? String { return routing.contains("active=mesa-metal") }
-        return graphicsMode != "mesa" && ["debian", "kali", "fedora", "arch", "archarm"].contains(LRRuntimeBridge.activeDistributionID() ?? "")
+        return graphicsMode != "mesa" && ["debian", "ubuntu", "kali", "fedora", "arch", "archarm"].contains(LRRuntimeBridge.activeDistributionID() ?? "")
     }
     private var desktopUserWarning: String? {
         guard desktopAlive, let user = desktopSummary["user"] as? String else { return nil }
@@ -644,7 +670,7 @@ struct ManagerView: View {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: 14)], spacing: 14) {
                         ForEach(manager.environments) { environment in
                             NavigationLink(destination: environmentDetail(environment)) {
-                                InstalledDistributionCard(name: environment.name, distributionID: environment.distributionID,
+                                InstalledDistributionCard(name: environment.name, distributionID: environment.flavor ?? environment.distributionID,
                                     version: environment.rootfsVersion, size: manager.size(environment), desktop: desktopName(environment),
                                     active: manager.active(environment), nextLaunch: LRRuntimeBridge.nextRootName() == environment.rootfsName && !manager.active(environment))
                             }
@@ -662,7 +688,7 @@ struct ManagerView: View {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 158), spacing: 14)], spacing: 14) {
                         ForEach(CatalogDistribution.all) { item in
                             Button { startSetup(item.id) } label: {
-                                CatalogDistributionCard(item: item, installed: manager.environments.contains { $0.distributionID == item.id })
+                                CatalogDistributionCard(item: item, installed: manager.environments.contains { ($0.flavor ?? $0.distributionID) == item.id })
                             }
                             .buttonStyle(HomeTileStyle()).disabled(manager.busy).accessibilityIdentifier("Install \(item.name)")
                         }
@@ -687,7 +713,7 @@ struct ManagerView: View {
         List {
             Section {
                 HStack(spacing: 14) {
-                    DistroBadge(distributionID: activeEnvironment?.distributionID, size: 56)
+                    DistroBadge(distributionID: activeEnvironment?.flavor ?? activeEnvironment?.distributionID, size: 56)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("LinuxRunner").font(.title3.weight(.semibold))
                         Text(appVersion).font(.subheadline).foregroundColor(.secondary)
@@ -696,15 +722,22 @@ struct ManagerView: View {
                 }.padding(.vertical, 6)
             }
             Section {
+                NavigationLink(destination: ModesView()) {
+                    HStack {
+                        SettingsLabel("LinuxRunner Modes", "sparkles", .purple)
+                        Spacer()
+                        Text("Agent · RDP · SSH · more").font(.caption).foregroundColor(.secondary)
+                    }
+                }
                 Picker(selection: $appearance) { Text("Dark").tag("dark"); Text("Light").tag("light"); Text("System").tag("system") } label: { SettingsLabel("Appearance", "circle.lefthalf.filled", .indigo) }
                 Toggle(isOn: $keepScreenAwake) { SettingsLabel("Keep Screen Awake", "sun.max.fill", .orange) }
                 Toggle(isOn: Binding(get: { LongTaskCenter.notificationsEnabled }, set: { LongTaskCenter.notificationsEnabled = $0 })) { SettingsLabel("Notify When Tasks Finish", "bell.badge.fill", .red) }
+                Toggle(isOn: $keepRunningInBackground) { SettingsLabel("Keep Linux Running in Background", "infinity", .green) }
+                    .onChange(of: keepRunningInBackground) { BackgroundRunner.shared.apply($0) }
                 Picker(selection: Binding(get: { InstallScreensaver.minutes }, set: { InstallScreensaver.minutes = $0 })) {
                     Text("Off").tag(0); Text("3 minutes").tag(3); Text("4 minutes").tag(4); Text("5 minutes").tag(5)
                 } label: { SettingsLabel("Install Screensaver", "moon.zzz.fill", .purple) }
-            } header: { Text("General") } footer: {
-                Text("Keep Screen Awake stops auto-lock during installs and terminal commands. Install Screensaver shows a dim, moving status after the chosen idle time; touch to return. Installs continue in both cases; iOS may pause them when you leave the app.")
-            }
+            } header: { Text("General") }
             Section("Desktop & Display") {
                 Button { desktopSettings = true } label: { SettingsLabel("Desktop Settings", "display", .blue) }.foregroundColor(.primary)
                 NavigationLink(destination: DesktopEnvironmentView()) { SettingsLabel("Desktop Environment", "macwindow.on.rectangle", .teal) }
@@ -713,6 +746,7 @@ struct ManagerView: View {
             }
             Section("Graphics & Performance") {
                 NavigationLink(destination: GraphicsSettingsView()) { SettingsLabel("Graphics", "cpu.fill", .green) }
+                NavigationLink(destination: SystemResourcesView()) { SettingsLabel("CPU & Memory", "speedometer", .indigo) }
             }
             Section("Input & Controls") {
                 NavigationLink(destination: TerminalSettingsView()) { SettingsLabel("Terminal & Keyboard", "keyboard.fill", .gray) }
@@ -770,7 +804,7 @@ struct ManagerView: View {
         return List {
             Section {
                 HStack(spacing: 14) {
-                    DistroBadge(distributionID: environment.distributionID, size: 54)
+                    DistroBadge(distributionID: environment.flavor ?? environment.distributionID, size: 54)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(environment.name).font(.title3.weight(.semibold))
                         Text("\(environment.distribution) \(environment.rootfsVersion) · ARM64").font(.subheadline).foregroundColor(.secondary)
@@ -867,10 +901,55 @@ struct GraphicalRequest: Identifiable {
     let launch: [String: Any]?
 }
 
+/// Embeds a long-lived UIKit controller (the desktop viewer, the terminal) in
+/// SwiftUI. The same controller is shown again after its cover was dismissed
+/// (Home, then back to the desktop). Handing SwiftUI that instance directly
+/// left it attached to the torn-down previous container, and UIKit showed a
+/// black screen instead of it. A fresh container per presentation detaches it
+/// from any earlier parent first and embeds it as a proper child.
 struct NativeController: UIViewControllerRepresentable {
     let controller: UIViewController
-    func makeUIViewController(context: Context) -> UIViewController { controller }
-    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
+    func makeUIViewController(context: Context) -> UIViewController { NativeContainer(embedding: controller) }
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+        (uiViewController as? NativeContainer)?.embedIfNeeded()
+    }
+    static func dismantleUIViewController(_ uiViewController: UIViewController, coordinator: ()) {
+        (uiViewController as? NativeContainer)?.release()
+    }
+}
+
+final class NativeContainer: UIViewController {
+    private let child: UIViewController
+    init(embedding child: UIViewController) { self.child = child; super.init(nibName: nil, bundle: nil) }
+    required init?(coder: NSCoder) { fatalError("not used") }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+        embedIfNeeded()
+    }
+    func embedIfNeeded() {
+        guard isViewLoaded, child.parent !== self else { return }
+        if child.parent != nil || child.view.superview != nil {
+            child.willMove(toParent: nil)
+            child.view.removeFromSuperview()
+            child.removeFromParent()
+        }
+        addChild(child)
+        child.view.frame = view.bounds
+        child.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(child.view)
+        child.didMove(toParent: self)
+    }
+    func release() {
+        guard child.parent === self else { return }
+        child.willMove(toParent: nil)
+        child.view.removeFromSuperview()
+        child.removeFromParent()
+    }
+    override var childForStatusBarHidden: UIViewController? { child }
+    override var childForStatusBarStyle: UIViewController? { child }
+    override var childForHomeIndicatorAutoHidden: UIViewController? { child }
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { child.supportedInterfaceOrientations }
 }
 
 struct TerminalScreen: View {
@@ -1174,28 +1253,134 @@ private struct FileSharingView: View {
     let environment: LinuxEnvironment?
     @ObservedObject var manager: EnvironmentManager
     @Binding var share: ExportItem?
+    @State private var folders: [[String: String]] = LRRuntimeBridge.sharedFolders()
+    @State private var picking = false
+    @State private var message: String?
+    @State private var pendingRemoval: [String: String]?
+    @State private var checks: [String: String] = [:]
+    @State private var checking: String?
+    @Environment(\.openURL) private var openURL
+    private static let appFolderKey = "\u{1}app"
+
+    /// One line from a check: whether Linux and iOS read, wrote and saw the same files.
+    private func verdict(_ summary: String) -> (ok: Bool, text: String) {
+        if summary.contains("not running") { return (false, "Start Linux to check") }
+        let failed = summary.contains("=failed") || summary.contains("=NO") || summary.contains("did not finish") || summary.contains("exists=0")
+        return failed ? (false, "Problem found, see details") : (true, "Read, write and rename work both ways")
+    }
+    private func checkButton(_ key: String, run: @escaping (@escaping (String) -> Void) -> Void) -> some View {
+        Button {
+            checking = key
+            run { summary in checks[key] = summary; checking = nil }
+        } label: {
+            Label(checking == key ? "Checking…" : "Check", systemImage: "checkmark.shield")
+        }
+        .disabled(checking != nil || !LRRuntimeBridge.isRunning())
+    }
+    @ViewBuilder private func result(_ key: String) -> some View {
+        if let summary = checks[key] {
+            let v = verdict(summary)
+            Label(v.text, systemImage: v.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill").font(.footnote.weight(.medium)).foregroundColor(v.ok ? .green : .orange)
+            if !v.ok { LRMoreInfo(title: "Details") { Text(summary).font(.caption.monospaced()).textSelection(.enabled) } }
+        }
+    }
+
     var body: some View {
-        List {
-            Section("Import Files") {
-                if let environment { NavigationLink("Choose Destination & Import", destination: ExchangeFilesView(environment: environment, manager: manager, share: $share)) }
-                else { Text("Install or select a Linux environment before importing files.").foregroundColor(.secondary) }
-                Text("Open a destination subfolder, then Import File Here to select a file from iOS Files.").font(.caption).foregroundColor(.secondary)
-            }
-            Section("Export Files") {
-                if let environment { NavigationLink("Select File or Folder to Export", destination: ExchangeFilesView(environment: environment, manager: manager, share: $share)) }
-                Text("Select a shared file and Save to Files, or export a folder as ZIP. The native picker selects the iOS destination.").font(.caption).foregroundColor(.secondary)
-            }
-            Section("Shared Folders") {
+        ScrollView {
+            VStack(spacing: 16) {
                 if let environment {
-                    NavigationLink("Open Shared Folder", destination: ExchangeFilesView(environment: environment, manager: manager, share: $share))
-                    Text("Linux: /mnt/LinuxRunnerShared · ~/Shared when the home alias is available").font(.caption).textSelection(.enabled)
-                    Text("iOS Files: On My iPhone/iPad → LinuxRunner → Shared → " + environment.rootfsName).font(.caption).textSelection(.enabled)
-                    Text(FileManager.default.fileExists(atPath: LRRuntimeBridge.sharedExchangeURL(environment.rootfsName).path) ? "App shared folder exists. The Linux mount is prepared when this environment runs." : "The app shared folder will be created on first access.").font(.caption).foregroundColor(.secondary)
+                    // The app's own shared folder, visible in the Files app and in Linux.
+                    let iosURL = LRRuntimeBridge.sharedExchangeURL(environment.rootfsName)
+                    LRCard(title: "LinuxRunner Shared", symbol: "folder.fill", colors: [.cyan, .blue], value: LRRuntimeBridge.isRunning() ? "Mounted" : "When Linux runs") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label { Text("/mnt/LinuxRunnerShared  ·  ~/Shared").font(.caption.monospaced()).textSelection(.enabled) } icon: { Image(systemName: "terminal") }
+                            Label { Text("Files › On My iPhone › LinuxRunner › Shared › \(environment.rootfsName)").font(.caption).textSelection(.enabled) } icon: { Image(systemName: "folder") }
+                        }.foregroundStyle(.secondary)
+                        HStack(spacing: 10) {
+                            Button {
+                                try? FileManager.default.createDirectory(at: iosURL, withIntermediateDirectories: true)
+                                if let url = URL(string: "shareddocuments://" + iosURL.path) { openURL(url) }
+                            } label: { Label("Files", systemImage: "arrow.up.forward.app").lineLimit(1) }
+                            .accessibilityLabel("Open in Files")
+                            .buttonStyle(.borderedProminent)
+                            NavigationLink(destination: ExchangeFilesView(environment: environment, manager: manager, share: $share)) { Label("Browse", systemImage: "list.bullet") }
+                                .buttonStyle(.bordered)
+                            checkButton(Self.appFolderKey) { done in LRRuntimeBridge.checkAppSharedFolder(done) }.buttonStyle(.bordered)
+                        }.font(.subheadline.weight(.semibold)).controlSize(.small)
+                        result(Self.appFolderKey)
+                    }
+                } else {
+                    LRCard(title: "LinuxRunner Shared", symbol: "folder.fill", colors: [.cyan, .blue]) {
+                        Text("Install or select a Linux environment first.").font(.subheadline).foregroundStyle(.secondary)
+                    }
                 }
-                NavigationLink("Add or Manage Shared Folders", destination: SharedFoldersView())
-                Text("External locations require your Files selection. Manage access and check availability here; removing a link keeps its files.").font(.caption).foregroundColor(.secondary)
+
+                // Folders from the Files app: iCloud Drive, On My iPhone, USB drives, servers.
+                LRCard(title: "Folders from Files", symbol: "externaldrive.fill.badge.plus", colors: [.orange, .pink], value: folders.isEmpty ? nil : "\(folders.count)") {
+                    if folders.isEmpty {
+                        Text("Link any folder from the Files app (iCloud Drive, a USB drive, a server). Linux sees it at /mnt/<name>.").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    ForEach(folders, id: \.self) { folder in
+                        let name = folder["name"] ?? "", available = folder["available"] == "yes"
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 10) {
+                                Image(systemName: available ? "folder.fill" : "exclamationmark.triangle.fill").foregroundColor(available ? .accentColor : .orange)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(folder["displayName"] ?? name).font(.subheadline.weight(.semibold))
+                                    Text(folder["mountPoint"] ?? "").font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                                }
+                                Spacer()
+                                LRStatusPill(text: available ? "Linked" : "Unavailable", color: available ? .green : .orange)
+                            }
+                            if !available { Text("Moved, disconnected or access revoked. Reconnect it, or remove and add it again.").font(.caption).foregroundStyle(.orange) }
+                            HStack(spacing: 10) {
+                                checkButton(name) { done in LRRuntimeBridge.checkSharedFolder(name, completion: done) }
+                                Button(role: .destructive) { pendingRemoval = folder } label: { Label("Remove", systemImage: "minus.circle") }
+                            }.buttonStyle(.bordered).controlSize(.small).font(.caption.weight(.semibold))
+                            result(name)
+                        }
+                        .padding(12)
+                        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(.tertiarySystemGroupedBackground)))
+                    }
+                    Button { picking = true } label: { Label("Add Folder…", systemImage: "folder.badge.plus").frame(maxWidth: .infinity) }
+                        .buttonStyle(.borderedProminent).disabled(!LRRuntimeBridge.isRunning())
+                    if !LRRuntimeBridge.isRunning() { Text("Start Linux to add folders.").font(.caption).foregroundStyle(.secondary) }
+                    if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
+                    LRMoreInfo { Text("Linux programs read and write the folder where Files allows it; new files belong to the default Linux user. iCloud files download when opened. Removing a link never deletes the files.") }
+                }
+
+                if let environment {
+                    LRCard(title: "Import & Export", symbol: "arrow.up.arrow.down", colors: [.green, .mint]) {
+                        VStack(spacing: 6) {
+                            NavigationLink(destination: ExchangeFilesView(environment: environment, manager: manager, share: $share)) {
+                                LRNavRow(title: "Import Files", subtitle: "Copy files from iOS into Linux", symbol: "square.and.arrow.down", colors: [.blue, .cyan])
+                            }
+                            Divider()
+                            NavigationLink(destination: ExchangeFilesView(environment: environment, manager: manager, share: $share)) {
+                                LRNavRow(title: "Export Files", subtitle: "Save Linux files or folders (ZIP) to Files", symbol: "square.and.arrow.up", colors: [.purple, .indigo])
+                            }
+                        }.buttonStyle(.plain)
+                    }
+                }
             }
-        }.navigationTitle("File Sharing")
+            .padding(.horizontal, 20).padding(.vertical, 12).padding(.bottom, 96)
+        }
+        .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        .navigationTitle("File Sharing").navigationBarTitleDisplayMode(.inline)
+        .onAppear { folders = LRRuntimeBridge.sharedFolders() }
+        .fileImporter(isPresented: $picking, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                do { try LRRuntimeBridge.addSharedFolder(url); folders = LRRuntimeBridge.sharedFolders(); message = "Linked at " + (folders.first { $0["path"] == url.path }?["mountPoint"] ?? "/mnt") + "." }
+                catch { message = error.localizedDescription }
+            case .failure(let error): message = error.localizedDescription
+            }
+        }
+        .alert("Remove Linked Folder?", isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } })) {
+            Button("Cancel", role: .cancel) { pendingRemoval = nil }
+            Button("Remove", role: .destructive) { if let name = pendingRemoval?["name"] { LRRuntimeBridge.removeSharedFolder(name) }; pendingRemoval = nil; folders = LRRuntimeBridge.sharedFolders() }
+        } message: { Text("Linux programs lose access to \(pendingRemoval?["mountPoint"] ?? "this folder"). The files themselves are not deleted.") }
     }
 }
 private struct DesktopFileSharingDestination: View {
@@ -1523,6 +1708,7 @@ struct StorageManagementView: View {
 }
 
 struct ExecutionEngineView: View {
+    @State private var confirmJITRetry = false
     @State private var status = LRRuntimeBridge.executionBackendStatus() as? [String: Any] ?? [:]
     @State private var report = LRRuntimeBridge.jitStatusReport() as? [String: Any] ?? [:]
     @State private var mode = LRRuntimeBridge.executionMode()
@@ -1562,11 +1748,14 @@ struct ExecutionEngineView: View {
                 if !active && (mode != "interpreter" || (report["debugger"] as? Bool ?? false)) {
                     Section {
                         Button("Attach with StikDebug") { requestAttachment() }
-                        Button("Activate JIT Now") { activate() }
+                        Button("Activate JIT Now") {
+                            if report["activationQuarantined"] as? Bool == true { confirmJITRetry = true }
+                            else { activate() }
+                        }
                         if let message { Text(message).font(.footnote).foregroundColor(.orange) }
                     } footer: {
                         Text(LRRuntimeBridge.requiresPreparedJITRegion()
-                             ? "iOS 26 and later: StikDebug attaches with its universal script; return here and LinuxRunner prepares its code region while it is attached. Support on iOS 26 has not been verified on a device yet."
+                             ? "This device needs StikDebug's universal.js script. Tap Attach with StikDebug (it asks for the script), return here, and LinuxRunner prepares its code region while StikDebug stays attached; Activate JIT Now retries safely at any time."
                              : "StikDebug attaches and detaches; return here and LinuxRunner checks whether iOS now allows its code region.")
                     }
                 }
@@ -1574,6 +1763,12 @@ struct ExecutionEngineView: View {
                 Section { Text("This build is interpreter-only. The JIT-capable LinuxRunner build adds the JIT option here; the interpreter remains the default there too.").font(.footnote) }
             }
         }.navigationTitle("Execution Engine")
+        .alert("Retry JIT Activation?", isPresented: $confirmJITRetry) {
+            Button("Cancel", role: .cancel) { }
+            Button("Retry JIT") { activate(retryQuarantined: true) }
+        } message: {
+            Text("An earlier activation ended before verification. Save your Linux work first: another attempt may close LinuxRunner. This retries the method for this iOS version once; automatic retries remain blocked if it fails again.")
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             if requested { requested = false; activate() } else { refresh() }
         }
@@ -1599,19 +1794,15 @@ struct ExecutionEngineView: View {
         status = LRRuntimeBridge.executionBackendStatus() as? [String: Any] ?? [:]
         report = LRRuntimeBridge.jitStatusReport() as? [String: Any] ?? [:]
     }
-    private func activate() {
+    private func activate(retryQuarantined: Bool = false) {
         var detail: NSString?
         if mode == "interpreter" { mode = "automatic"; LRRuntimeBridge.setExecutionMode(mode) }
-        if !LRRuntimeBridge.activateJIT(&detail) { message = detail as String? }
+        let ok = retryQuarantined ? LRRuntimeBridge.retryJIT(afterFailure: &detail) : LRRuntimeBridge.activateJIT(&detail)
+        message = ok ? nil : detail as String?
         refresh()
     }
     private func requestAttachment() {
-        guard let identifier = Bundle.main.bundleIdentifier,
-              var components = URLComponents(string: "stikdebug://enable-jit") else { return }
-        var items = [URLQueryItem(name: "bundle-id", value: identifier), URLQueryItem(name: "pid", value: String(ProcessInfo.processInfo.processIdentifier))]
-        if LRRuntimeBridge.requiresPreparedJITRegion() { items.append(URLQueryItem(name: "script-name", value: "universal")) }
-        components.queryItems = items
-        guard let url = components.url, UIApplication.shared.canOpenURL(url) else {
+        guard let url = LRRuntimeBridge.stikDebugRequestURL(), UIApplication.shared.canOpenURL(url) else {
             message = "StikDebug is not installed or not set up. Install it, pair this device, then try again."
             return
         }
@@ -1757,7 +1948,7 @@ private struct DesktopControlSettings: View {
                 Section("Status") {
                     LabeledContentRow("Session", value: value("state"))
                     LabeledContentRow("Host thermal state", value: health["host_thermal_state"] as? String ?? "Not reported")
-                    LabeledContentRow("Distribution", value: LRRuntimeBridge.activeEnvironmentIsArch() ? "Arch Linux ARM" : LRRuntimeBridge.activeEnvironmentIsKali() ? "Kali Linux ARM64" : LRRuntimeBridge.activeEnvironmentIsDebian() ? "Debian ARM64" : LRRuntimeBridge.activeEnvironmentIsFedora() ? "Fedora ARM64" : "Alpine ARM64")
+                    LabeledContentRow("Distribution", value: LRRuntimeBridge.activeEnvironmentIsArch() ? "Arch Linux ARM" : LRRuntimeBridge.activeEnvironmentIsKali() ? "Kali Linux ARM64" : LRRuntimeBridge.activeEnvironmentIsUbuntu() ? "Ubuntu ARM64" : LRRuntimeBridge.activeEnvironmentIsDebian() ? "Debian ARM64" : LRRuntimeBridge.activeEnvironmentIsFedora() ? "Fedora ARM64" : "Alpine ARM64")
                     LabeledContentRow("Desktop", value: value("desktopEnvironment"))
                     LabeledContentRow("Linux user", value: value("user"))
                     LabeledContentRow("Display server", value: value("displayServer"))
@@ -1993,49 +2184,88 @@ private struct NetworkDiagnosticsView: View {
 // What external devices reach Linux, detected live through public iOS APIs.
 // iOS gives apps no raw USB access, so each category says which path it uses.
 private struct DevicesView: View {
-    private struct Row: Identifiable { let id = UUID(); let name: String; let symbol: String; let detected: String; let linux: String; let works: Bool }
+    private struct Row: Identifiable { let id = UUID(); let name: String; let symbol: String; let detected: String; let linux: String; let works: Bool; let connected: Bool }
     @State private var rows: [Row] = []
     @State private var input: [String: Any] = [:]
     @AppStorage("LinuxRunnerInput.mouseMode") private var mouseMode = "auto"
     @AppStorage("LinuxRunnerDesktop.externalDisplay") private var externalOutput = true
     @State private var wirelessHelp = false
+    @State private var selected: Row?
     private let timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
+    private func tile(_ row: Row) -> some View {
+        Button { selected = row } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    LRIconTile(symbol: row.symbol, colors: row.works ? [.blue, .cyan] : [.gray, Color(.darkGray)], size: 34)
+                    Spacer()
+                    if row.connected { Circle().fill(Color.green).frame(width: 8, height: 8) }
+                }
+                Text(row.name).font(.subheadline.weight(.semibold)).foregroundColor(.primary).lineLimit(2).multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                HStack(spacing: 6) {
+                    LRStatusPill(text: row.works ? "Works" : "Not yet", color: row.works ? .green : .secondary)
+                    Text(row.detected).font(.caption2).foregroundColor(.secondary).lineLimit(1)
+                }
+            }
+            .padding(12).frame(maxWidth: .infinity, minHeight: 128, alignment: .topLeading)
+            .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.secondarySystemGroupedBackground)))
+        }.buttonStyle(HomeTileStyle())
+    }
     var body: some View {
-        List {
-            Section {
-                NavigationLink(destination: BluetoothSerialView()) {
-                    Label { VStack(alignment: .leading, spacing: 2) { Text("Bluetooth Serial"); Text("ESP32, Arduino BLE boards as /dev/ttyBLE").font(.caption).foregroundStyle(.secondary) } } icon: { Image(systemName: "dot.radiowaves.left.and.right") }
+        ScrollView {
+            VStack(spacing: 16) {
+                // Connected and supported devices; tap one for what Linux can do with it.
+                let pairs = stride(from: 0, to: rows.count, by: 2).map { Array(rows[$0..<min($0 + 2, rows.count)]) }
+                VStack(spacing: 12) {
+                    ForEach(pairs.indices, id: \.self) { index in
+                        HStack(spacing: 12) {
+                            ForEach(pairs[index]) { tile($0) }
+                            if pairs[index].count == 1 { Color.clear.frame(maxWidth: .infinity) }
+                        }
+                    }
                 }
-                NavigationLink(destination: USBSerialView()) {
-                    Label { VStack(alignment: .leading, spacing: 2) { Text("USB Serial Adapter"); Text("Pico, ESP32-S3, Leonardo via USB MIDI as /dev/ttyMIDI").font(.caption).foregroundStyle(.secondary) } } icon: { Image(systemName: "cable.connector") }
+
+                LRCard(title: "Development Boards", symbol: "memorychip", colors: [.orange, .red]) {
+                    VStack(spacing: 6) {
+                        NavigationLink(destination: BluetoothSerialView()) { LRNavRow(title: "Bluetooth Serial", subtitle: "ESP32, Arduino BLE → /dev/ttyBLE", symbol: "dot.radiowaves.left.and.right", colors: [.blue, .indigo]) }
+                        Divider()
+                        NavigationLink(destination: USBSerialView()) { LRNavRow(title: "USB Serial Adapter", subtitle: "Pico, ESP32-S3, Leonardo → /dev/ttyMIDI", symbol: "cable.connector", colors: [.teal, .green]) }
+                        Divider()
+                        NavigationLink(destination: EmbeddedCompatibilityView()) { LRNavRow(title: "What Works", subtitle: "Embedded development on iPhone", symbol: "checklist", colors: [.purple, .pink]) }
+                    }.buttonStyle(.plain)
                 }
-                NavigationLink(destination: EmbeddedCompatibilityView()) { Label("What Works for Embedded Development", systemImage: "checklist") }
-            } header: { Text("Development Boards") }
-            Section {
-                ForEach(rows) { row in
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack { Image(systemName: row.symbol).frame(width: 24); Text(row.name).fontWeight(.semibold); Spacer(); Text(row.detected).font(.caption).foregroundStyle(.secondary) }
-                        Text(row.linux).font(.caption).foregroundStyle(row.works ? Color.primary : Color.secondary)
+
+                LRCard(title: "Mouse & Pointer", symbol: "cursorarrow.rays", colors: [.indigo, .purple]) {
+                    LRChoiceList(choices: [
+                        LRChoice(id: "auto", title: "Automatic", subtitle: "Pointer mode when a mouse or AssistiveTouch is active", symbol: "wand.and.stars"),
+                        LRChoice(id: "touch", title: "Touch Gestures", subtitle: "Tap to click, long press to right-click", symbol: "hand.tap"),
+                        LRChoice(id: "pointer", title: "Mouse Pointer", subtitle: "Clicks at the pointer; drag and double-click", symbol: "cursorarrow"),
+                    ], selection: $mouseMode)
+                    LRMoreInfo(title: "Live input") {
+                        ForEach(inputLines, id: \.self) { line in Text(line).font(.caption.monospaced()) }
+                        Text("Open the desktop, use the mouse, then return here to see which events iOS delivered.")
+                    }
+                }
+
+                LRCard(title: "External Display", symbol: "tv", colors: [.cyan, .blue]) {
+                    Toggle("Show the desktop on a connected display", isOn: $externalOutput).font(.subheadline)
+                    Button { wirelessHelp = true } label: { Label("Connect with AirPlay", systemImage: "airplayvideo") }.font(.subheadline.weight(.semibold))
+                    LRMoreInfo {
+                        Text("A USB-C or AirPlay display shows the desktop in its own window while input stays on this device. Choose Desktop → Use This Device as Touchpad for a separate display; mirroring alone shows the same screen on both.")
+                        Text("Resolution is chosen when a desktop starts: restart it with Fit Screen for a new monitor. Software rendering is limited to 1600 × 1200.")
+                        Text("Linux cannot control raw USB devices; devices iOS supports work through the interfaces above.")
                     }
                 }
             }
-            Section {
-                Picker("Mouse Mode", selection: $mouseMode) {
-                    Text("Automatic").tag("auto"); Text("Touch Gestures").tag("touch"); Text("Mouse Pointer").tag("pointer")
-                }
-                Text("Automatic uses the mouse pointer behaviour when a mouse, trackpad or AssistiveTouch is active: a click presses the Linux button at the pointer, holding and dragging works, double-click works. Touch Gestures keeps tap = click, long press = right click.").font(.caption).foregroundStyle(.secondary)
-                ForEach(inputLines, id: \.self) { line in Text(line).font(.caption.monospaced()) }
-            } header: { Text("Mouse and Pointer") } footer: { Text("Live input sources of the open desktop. Open the desktop, use the mouse, return here (or export the Open Desktop report) to see which events iOS delivered.") }
-            Section {
-                Toggle("External Desktop Output", isOn: $externalOutput)
-                Button("Connect Wirelessly with AirPlay…") { wirelessHelp = true }
-                Text("Shows the Linux desktop in a separate connected-display window. Keyboard, mouse and touch input stay on this device. Closing the viewer keeps output running while LinuxRunner stays in the foreground. Disconnecting returns control to this device; it does not stop Linux.").font(.caption).foregroundStyle(.secondary)
-                Text("Display resolution is selected when a session starts. Stop and restart the desktop with Fit Screen selected to size it for a newly connected monitor. Software rendering is capped at 1600 × 1200.").font(.caption).foregroundStyle(.secondary)
-                Text("For a connected separate display, choose Desktop → Use This Device as Touchpad. AirPlay mirroring alone shows the same screen on both devices.").font(.caption).foregroundStyle(.secondary)
-            } header: { Text("External Monitor · USB-C or AirPlay") }
-            Section {} footer: { Text("Linux cannot directly control raw USB devices. A network adapter recognized by iOS can carry LinuxRunner’s host-socket traffic; it does not become a guest-owned USB device. Devices iOS supports use the public interfaces listed above.") }
+            .padding(.horizontal, 20).padding(.vertical, 12).padding(.bottom, 96)
         }
-        .navigationTitle("Devices").onAppear(perform: refresh).onReceive(timer) { _ in refresh() }
+        .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        .navigationTitle("Devices").navigationBarTitleDisplayMode(.inline)
+        .onAppear(perform: refresh).onReceive(timer) { _ in refresh() }
+        .alert(selected?.name ?? "", isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } })) {
+            Button("OK", role: .cancel) { selected = nil }
+        } message: { Text(selected.map { "\($0.detected)\n\n\($0.linux)" } ?? "") }
         .alert("Wireless Linux Desktop", isPresented: $wirelessHelp) {
             Button("OK", role: .cancel) { }
         } message: {
@@ -2054,14 +2284,15 @@ private struct DevicesView: View {
         let available = folders.filter { $0["available"] == "yes" }.count
         let outputs = AVAudioSession.sharedInstance().currentRoute.outputs.map { $0.portName }.joined(separator: ", ")
         let controllers = GCController.controllers().map { $0.vendorName ?? "Controller" }
+        let keyboard = GCKeyboard.coalesced != nil, mouse = !GCMouse.mice().isEmpty
         rows = [
-            Row(name: "Keyboard", symbol: "keyboard", detected: GCKeyboard.coalesced != nil ? "Connected" : "None", linux: "Works: key presses go to the Linux desktop and terminal (USB and Bluetooth keyboards).", works: true),
-            Row(name: "Mouse / Trackpad", symbol: "computermouse", detected: GCMouse.mice().isEmpty ? "None" : "Connected", linux: "Works through iOS pointer events: pointer, clicks and scrolling on the desktop. On iPhone, iOS provides a pointer only through AssistiveTouch.", works: true),
-            Row(name: "USB Drives and Files Locations", symbol: "externaldrive", detected: folders.isEmpty ? "No shared folders" : "\(available) of \(folders.count) available", linux: "Works for folders you share in Settings › File Sharing › Add or Manage Shared Folders (pick a folder on the drive). They appear at /mnt/<name>.", works: true),
-            Row(name: "Audio Output (incl. USB audio)", symbol: "hifispeaker", detected: outputs.isEmpty ? "None" : outputs, linux: "Works: Linux sound plays through whatever iOS currently uses, including USB audio interfaces and headphones.", works: true),
-            Row(name: "Microphone (incl. USB)", symbol: "mic", detected: "—", linux: "Not available yet: Linux programs cannot record audio in this version.", works: false),
-            Row(name: "Game Controllers", symbol: "gamecontroller", detected: controllers.isEmpty ? "None" : controllers.joined(separator: ", "), linux: "Detected by iOS, but not yet passed to Linux programs as joysticks.", works: false),
-            Row(name: "USB Serial (CH340, CP210x, FTDI) and Raw USB", symbol: "cable.connector", detected: "—", linux: "Not directly: iOS gives apps no USB host access to these chips. Use a USB Serial Adapter (USB MIDI), Bluetooth Serial or Wi-Fi (OTA) instead.", works: false),
+            Row(name: "Keyboard", symbol: "keyboard", detected: keyboard ? "Connected" : "None", linux: "Key presses from USB and Bluetooth keyboards go to the Linux desktop and terminal.", works: true, connected: keyboard),
+            Row(name: "Mouse & Trackpad", symbol: "computermouse", detected: mouse ? "Connected" : "None", linux: "Pointer, clicks and scrolling on the desktop through iOS pointer events. On iPhone, iOS provides a pointer through AssistiveTouch.", works: true, connected: mouse),
+            Row(name: "Drives & Folders", symbol: "externaldrive", detected: folders.isEmpty ? "None shared" : "\(available) of \(folders.count)", linux: "Folders you share in File Sharing (on a drive, iCloud or On My iPhone) appear in Linux at /mnt/<name>.", works: true, connected: available > 0),
+            Row(name: "Audio Output", symbol: "hifispeaker", detected: outputs.isEmpty ? "None" : outputs, linux: "Linux sound plays through whatever iOS uses, including USB audio interfaces and headphones.", works: true, connected: !outputs.isEmpty),
+            Row(name: "Microphone", symbol: "mic", detected: "—", linux: "Linux programs cannot record audio in this version.", works: false, connected: false),
+            Row(name: "Game Controllers", symbol: "gamecontroller", detected: controllers.isEmpty ? "None" : controllers.joined(separator: ", "), linux: "Detected by iOS, but not yet passed to Linux programs as joysticks.", works: false, connected: !controllers.isEmpty),
+            Row(name: "USB Serial & Raw USB", symbol: "cable.connector", detected: "—", linux: "iOS gives apps no USB host access to CH340, CP210x or FTDI chips. Use a USB Serial Adapter (USB MIDI), Bluetooth Serial or Wi-Fi instead.", works: false, connected: false),
         ]
     }
 }
@@ -2238,140 +2469,138 @@ private struct DesktopEnvironmentView: View {
     @AppStorage private var hyprlandEffects: String
     init() {
         let key = "LinuxRunnerDesktop.environment." + LRRuntimeBridge.activeRootName()
-        let previous = LRRuntimeBridge.activeEnvironmentIsDebian() && !LRRuntimeBridge.activeEnvironmentIsKali() ? UserDefaults.standard.string(forKey: "LinuxRunnerDesktop.environment") : nil
+        let previous = LRRuntimeBridge.activeEnvironmentIsDebian() && !LRRuntimeBridge.activeEnvironmentIsKali() && !LRRuntimeBridge.activeEnvironmentIsUbuntu() ? UserDefaults.standard.string(forKey: "LinuxRunnerDesktop.environment") : nil
         _environment = AppStorage(wrappedValue: previous ?? "linuxrunner", key)
         _hyprlandEffects = AppStorage(wrappedValue: "visual", "LinuxRunnerDesktop.hyprland.effects." + LRRuntimeBridge.activeRootName())
     }
-    @State private var installed = LRRuntimeBridge.plasmaInstalled()
-    @State private var lxqtInstalled = LRRuntimeBridge.lxqtInstalled()
-    @State private var enlightenmentInstalled = LRRuntimeBridge.enlightenmentInstalled()
-    @State private var wayfireInstalled = LRRuntimeBridge.wayfireInstalled()
-    @State private var hyprlandInstalled = LRRuntimeBridge.hyprlandInstalled()
-    @State private var working: String?
-    @State private var lxqtWorking: String?
-    @State private var enlightenmentWorking: String?
-    @State private var wayfireWorking: String?
-    @State private var hyprlandWorking: String?
+    @State private var installed: [String: Bool] = [:]
+    @State private var wayfireDisplayReady = LRRuntimeBridge.wayfireBridgeDependenciesInstalled()
+    @State private var installing: String?
+    @State private var progress: String?
     @State private var failure: String?
-    var body: some View { Form {
-        Section {
-            Picker("Desktop", selection: $environment) {
-                Text("LinuxRunner Desktop").tag("linuxrunner")
-                if LRRuntimeBridge.activeEnvironmentIsKali() { Text("Kali Desktop (Xfce)").tag("xfce").disabled(!LRRuntimeBridge.xfceInstalled()) }
-                Text("LXQt").tag("lxqt").disabled(!lxqtInstalled)
-                Text("Enlightenment").tag("enlightenment").disabled(!enlightenmentInstalled || LRRuntimeBridge.activeEnvironmentIsDebian())
-                Text("Wayfire").tag("wayfire").disabled(!wayfireInstalled)
-                Text("Hyprland · Experimental").tag("hyprland").disabled(!hyprlandInstalled)
-                Text("KDE Plasma · Experimental").tag("plasma").disabled(!installed)
-            }
-            if environment == "hyprland" {
-                Picker("Effects", selection: $hyprlandEffects) {
-                    Text("Performance").tag("performance")
-                    Text("Balanced").tag("balanced")
-                    Text("Visual").tag("visual")
+    @State private var pendingInstall: DesktopOption?
+    private let distro = DesktopCatalog.activeDistribution()
+    // Only desktops this distribution can install and start are listed.
+    private var options: [DesktopOption] { DesktopCatalog.options.filter { DesktopCatalog.unavailableReason($0.id, distro) == nil } }
+    private var current: DesktopOption { options.first { $0.id == environment } ?? DesktopCatalog.option("linuxrunner") }
+    private func isInstalled(_ id: String) -> Bool { installed[id] ?? DesktopCatalog.isInstalled(id) }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                hero
+                Text("Available on \(DesktopCatalog.distributionName(distro))".uppercased())
+                    .font(.caption.weight(.semibold)).foregroundColor(.secondary).padding(.horizontal, 4)
+                VStack(spacing: 10) {
+                    ForEach(options) { option in
+                        DesktopChoiceCard(option: display(option), distro: distro, selected: current.id == option.id,
+                                          installed: isInstalled(option.id), progress: installing == option.id ? (progress ?? "Starting") : nil,
+                                          enabled: installing == nil && (isInstalled(option.id) || LRRuntimeBridge.isRunning())) { choose(option) }
+                    }
                 }
-                Text("Applies next session. Performance disables effects; Balanced uses light shadows and animations; Visual adds blur. Software rendering always disables these effects. Your other Hyprland settings are preserved.").font(.caption).foregroundColor(.secondary)
+                if current.id == "hyprland" { hyprlandEffectsCard }
+                if current.id == "wayfire" && isInstalled("wayfire") && !wayfireDisplayReady && ["debian", "arch", "fedora"].contains(distro) {
+                    Button { install(DesktopCatalog.option("wayfire")) } label: {
+                        Label(installing == "wayfire" ? "Installing…" : "Install Wayfire display components", systemImage: "display.and.arrow.down")
+                            .frame(maxWidth: .infinity).padding(12)
+                            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(.secondarySystemGroupedBackground)))
+                    }.disabled(installing != nil || !LRRuntimeBridge.isRunning())
+                }
+                if let failure {
+                    Label(failure, systemImage: "exclamationmark.triangle.fill").font(.footnote).foregroundColor(.orange)
+                        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.orange.opacity(0.12)))
+                }
+                Text(LRRuntimeBridge.isRunning()
+                     ? "Applies to the next desktop start; stop a running desktop first to switch. Desktops install from \(DesktopCatalog.distributionName(distro))'s own packages (network needed once). The LinuxRunner Desktop always stays installed as the fallback."
+                     : "Start Linux to install a desktop. Installed desktops can be selected now and apply to the next desktop start.")
+                    .font(.footnote).foregroundColor(.secondary).padding(.horizontal, 4)
             }
-            Text(environment == "hyprland"
-                 ? "Hyprland (tiling Wayland compositor with animations and rounded windows; Waybar panel with an Apps launcher, foot terminal). Uses the active virtual GPU when Metal GPU is enabled; otherwise it composites in software. If it is not installed, Open Desktop starts the LinuxRunner Desktop."
-                 : environment == "wayfire"
-                 ? "Wayfire (Wayland compositor with animations, window previews and workspaces; wf-shell panel and dock, foot terminal) using the active virtual GPU where available, with a software fallback. If it is not installed, Open Desktop starts the LinuxRunner Desktop."
-                 : environment == "enlightenment"
-                 ? "Enlightenment (X11 session with its own software compositor: shelf, main menu on a desktop click, Terminology terminal) from the distribution's own packages. If it is not installed, Open Desktop starts the LinuxRunner Desktop."
-                 : environment == "lxqt"
-                 ? "LXQt 2 (X11 session: LXQt panel and menu, PCManFM-Qt desktop, QTerminal, Openbox) from the distribution's own packages. Lightweight; if it is not installed, Open Desktop starts the LinuxRunner Desktop."
-                 : environment == "plasma"
-                 ? ((LRRuntimeBridge.activeEnvironmentIsArch() || LRRuntimeBridge.activeEnvironmentIsFedora()) ? "KDE Plasma Wayland: KWin, Plasma panel, Dolphin, Konsole, Kate and System Settings. Select a regular Linux user before starting. For accelerated KWin compositing, choose Metal GPU in Settings › Graphics and relaunch LinuxRunner. Plasma’s Qt shell and applications use their existing rendering defaults." : "KDE Plasma 6 (X11 session: KWin, Plasma panel and desktop, Dolphin, Konsole) from Debian's own packages. It needs more memory and starts more slowly than the LinuxRunner Desktop. If it is not installed, Open Desktop starts the LinuxRunner Desktop.")
-                 : LRRuntimeBridge.activeEnvironmentIsArch() ? "Arch X11 desktop: Openbox window manager, LXQt panel and PCManFM-Qt file manager." : "Openbox window manager, panel and file manager: the lightest and most tested desktop.").font(.caption)
-        } header: { Text("Open Desktop Starts") } footer: { Text("Applies to the next desktop start. Stop a running desktop first to switch.") }
-        Section {
-            if installed { Label("KDE Plasma installed", systemImage: "checkmark.circle") }
-            else if !LRRuntimeBridge.activeEnvironmentIsDebian() && !LRRuntimeBridge.activeEnvironmentIsArch() && !LRRuntimeBridge.activeEnvironmentIsFedora() { Text("KDE Plasma installation is available for Debian, Arch Linux ARM and Fedora environments.").foregroundColor(.secondary) }
-            else {
-                Button(working == nil ? "Install KDE Plasma" : "Installing…") { install() }.disabled(working != nil || !LRRuntimeBridge.isRunning())
-                if let working { Text(working).font(.caption).foregroundColor(.secondary) }
-            }
-            if let failure { Text(failure).font(.footnote).foregroundColor(.orange) }
-        } header: { Text("KDE Plasma") } footer: {
-            Text(LRRuntimeBridge.activeEnvironmentIsFedora() ? "Installs KDE Plasma from official Fedora packages. Experimental; uses more memory than the lightweight desktop, which remains available as a fallback. Select a regular Linux user before starting." : LRRuntimeBridge.activeEnvironmentIsArch() ? "Installs official Arch Linux ARM packages and builds the local Plasma display bridge. Experimental; physical-device validation is still required. The LinuxRunner Desktop remains available as the fallback." : "About 550 official Debian packages (about 240 MB download, 930 MB installed); network needed once. The LinuxRunner Desktop stays installed as the fallback.")
+            .padding(16)
         }
-        Section {
-            if lxqtInstalled { Label("LXQt installed", systemImage: "checkmark.circle") }
-            else if LRRuntimeBridge.activeEnvironmentIsFedora() { Text("Fedora LXQt is not qualified yet. Use LinuxRunner Desktop.").foregroundColor(.secondary) }
-            else {
-                Button(lxqtWorking == nil ? "Install LXQt" : "Installing…") { installLXQt() }.disabled(lxqtWorking != nil || working != nil || !LRRuntimeBridge.isRunning())
-                if let lxqtWorking { Text(lxqtWorking).font(.caption).foregroundColor(.secondary) }
+        .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        .navigationTitle("Desktop Environment")
+        .onAppear(perform: refresh)
+        .confirmationDialog(pendingInstall.map { "Install \($0.title)?" } ?? "", isPresented: Binding(get: { pendingInstall != nil }, set: { if !$0 { pendingInstall = nil } }), titleVisibility: .visible) {
+            if let option = pendingInstall { Button("Install \(option.title)") { install(option) } }
+            Button("Cancel", role: .cancel) { pendingInstall = nil }
+        } message: { Text("Downloads \(pendingInstall?.title ?? "the desktop") from \(DesktopCatalog.distributionName(distro))'s packages and selects it for the next desktop start.") }
+    }
+
+    private var hero: some View {
+        HStack(spacing: 16) {
+            DesktopBadge(desktopID: current.id, size: 64)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Open Desktop starts").font(.caption.weight(.semibold)).foregroundColor(.secondary)
+                Text(display(current).title).font(.title3.weight(.bold)).foregroundColor(.primary)
+                HStack(spacing: 6) {
+                    DistroBadge(distributionID: distro, size: 18)
+                    Text(DesktopCatalog.distributionName(distro)).font(.caption).foregroundColor(.secondary)
+                    if (LRRuntimeBridge.gpuStatus() as? [String: Any])?["device"] as? Bool == true {
+                        StatusChip(text: "GPU", color: .green)
+                    }
+                }
             }
-        } header: { Text("LXQt") } footer: {
-            Text("The LXQt desktop from the distribution's own packages; network needed once. The LinuxRunner Desktop stays installed as the fallback.")
+            Spacer()
         }
-        Section {
-            // Debian's Enlightenment shows only its splash, then a black screen
-            // (same with the earlier runtime); Arch's works. Not offered on Debian.
-            if LRRuntimeBridge.activeEnvironmentIsFedora() { Text("Enlightenment is not qualified on Fedora yet.").foregroundColor(.secondary) }
-            else if LRRuntimeBridge.activeEnvironmentIsDebian() { Label("Not available on Debian", systemImage: "xmark.circle").foregroundColor(.secondary) }
-            else if enlightenmentInstalled { Label("Enlightenment installed", systemImage: "checkmark.circle") }
-            else {
-                Button(enlightenmentWorking == nil ? "Install Enlightenment" : "Installing…") { installEnlightenment() }.disabled(enlightenmentWorking != nil || lxqtWorking != nil || working != nil || !LRRuntimeBridge.isRunning())
-                if let enlightenmentWorking { Text(enlightenmentWorking).font(.caption).foregroundColor(.secondary) }
-            }
-        } header: { Text("Enlightenment") } footer: {
-            Text(LRRuntimeBridge.activeEnvironmentIsDebian() ? "Enlightenment does not start correctly on Debian yet (it stops at its splash screen). Use LXQt or the LinuxRunner Desktop, or Enlightenment on Arch Linux ARM." : "A large download (mostly Enlightenment's themes and wallpapers); network needed once. The LinuxRunner Desktop stays installed as the fallback.")
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .fill(LinearGradient(colors: [Color.accentColor.opacity(0.22), Color(.secondarySystemGroupedBackground)], startPoint: .topLeading, endPoint: .bottomTrailing)))
+    }
+
+    private var hyprlandEffectsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Hyprland effects").font(.subheadline.weight(.semibold))
+            Picker("Effects", selection: $hyprlandEffects) {
+                Text("Performance").tag("performance"); Text("Balanced").tag("balanced"); Text("Visual").tag("visual")
+            }.pickerStyle(.segmented)
+            Text("Applies next session. Performance turns effects off; Balanced adds light shadows and animations; Visual adds blur. Software rendering always turns effects off. Your other Hyprland settings are kept.")
+                .font(.caption).foregroundColor(.secondary)
         }
-        Section {
-            if wayfireInstalled { Label("Wayfire installed", systemImage: "checkmark.circle") }
-            else if !(LRRuntimeBridge.activeEnvironmentIsDebian() || LRRuntimeBridge.activeEnvironmentIsArch() || LRRuntimeBridge.activeEnvironmentIsFedora()) { Text("Wayfire is available for Debian, Arch Linux ARM and Fedora environments.").foregroundColor(.secondary) }
-            else {
-                Button(wayfireWorking == nil ? "Install Wayfire" : "Installing…") { installWayfire() }.disabled(wayfireWorking != nil || enlightenmentWorking != nil || lxqtWorking != nil || working != nil || !LRRuntimeBridge.isRunning())
-                if let wayfireWorking { Text(wayfireWorking).font(.caption).foregroundColor(.secondary) }
-            }
-        } header: { Text("Wayfire") } footer: {
-            Text("Wayland desktop from the distribution's packages (Arch: about 70 MB download); network needed once. Effects that need a GPU (cube, blur) are off. The LinuxRunner Desktop stays installed as the fallback.")
-        }
-        Section {
-            if hyprlandInstalled { Label("Hyprland installed", systemImage: "checkmark.circle") }
-            else if !LRRuntimeBridge.activeEnvironmentIsArch() { Text("Hyprland is packaged by Arch Linux ARM only.").foregroundColor(.secondary) }
-            else {
-                Button(hyprlandWorking == nil ? "Install Hyprland" : "Installing…") { installHyprland() }.disabled(hyprlandWorking != nil || wayfireWorking != nil || enlightenmentWorking != nil || lxqtWorking != nil || working != nil || !LRRuntimeBridge.isRunning())
-                if let hyprlandWorking { Text(hyprlandWorking).font(.caption).foregroundColor(.secondary) }
-            }
-        } header: { Text("Hyprland · Experimental") } footer: {
-            Text("Uses the active virtual GPU when available. Software rendering keeps effects off. Network needed once. The LinuxRunner Desktop stays installed as the fallback.")
-        }
-    }.navigationTitle("Desktop Environment").onAppear { installed = LRRuntimeBridge.plasmaInstalled(); lxqtInstalled = LRRuntimeBridge.lxqtInstalled(); enlightenmentInstalled = LRRuntimeBridge.enlightenmentInstalled(); wayfireInstalled = LRRuntimeBridge.wayfireInstalled(); hyprlandInstalled = LRRuntimeBridge.hyprlandInstalled() } }
-    private func installHyprland() {
-        failure = nil; hyprlandWorking = "Starting"
-        LRRuntimeBridge.installHyprland({ hyprlandWorking = $0 }) { error in
-            hyprlandWorking = nil; hyprlandInstalled = LRRuntimeBridge.hyprlandInstalled()
-            if let error { failure = error.localizedDescription } else if hyprlandInstalled { environment = "hyprland" }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.secondarySystemGroupedBackground)))
+    }
+
+    /// Distribution-specific wording for the same desktop.
+    private func display(_ option: DesktopOption) -> DesktopOption {
+        switch (option.id, distro) {
+        case ("linuxrunner", "arch"):
+            return DesktopOption(id: option.id, title: option.title, detail: "Openbox with the LXQt panel and PCManFM-Qt. Fastest start and lowest memory use.", experimental: false, lightweight: true)
+        case ("xfce", "kali"):
+            return DesktopOption(id: option.id, title: "Kali Desktop (Xfce)", detail: "Kali's own desktop (kali-desktop-xfce) with the Kali menu, themes and wallpaper.", experimental: false, lightweight: false)
+        case ("gnome", "ubuntu") where LRRuntimeBridge.activeFlavor() == "zorin":
+            return DesktopOption(id: option.id, title: "Zorin Desktop", detail: "Zorin OS's own desktop: GNOME Shell with the Zorin menu, taskbar, desktop icons, tiling and Zorin themes. Requires a regular user and substantial memory.", experimental: true, lightweight: false)
+        case ("xfce", _):
+            return DesktopOption(id: option.id, title: option.title, detail: "The Xfce desktop from your distribution: panel, Whisker-style menu, Thunar file manager and settings. Light and familiar.", experimental: false, lightweight: true)
+        case ("plasma", "arch"), ("plasma", "fedora"):
+            return DesktopOption(id: option.id, title: option.title, detail: "KDE Plasma Wayland: KWin, Plasma panel, Dolphin, Konsole and System Settings. Needs a regular Linux user and the most memory.", experimental: true, lightweight: false)
+        default: return option
         }
     }
-    private func installWayfire() {
-        failure = nil; wayfireWorking = "Starting"
-        LRRuntimeBridge.installWayfire({ wayfireWorking = $0 }) { error in
-            wayfireWorking = nil; wayfireInstalled = LRRuntimeBridge.wayfireInstalled()
-            if let error { failure = error.localizedDescription } else if wayfireInstalled { environment = "wayfire" }
-        }
+
+    private func refresh() {
+        var state: [String: Bool] = [:]
+        for option in options { state[option.id] = DesktopCatalog.isInstalled(option.id) }
+        installed = state
+        wayfireDisplayReady = LRRuntimeBridge.wayfireBridgeDependenciesInstalled()
+        if !options.contains(where: { $0.id == environment }) { environment = "linuxrunner" }
     }
-    private func installEnlightenment() {
-        failure = nil; enlightenmentWorking = "Starting"
-        LRRuntimeBridge.installEnlightenment({ enlightenmentWorking = $0 }) { error in
-            enlightenmentWorking = nil; enlightenmentInstalled = LRRuntimeBridge.enlightenmentInstalled()
-            if let error { failure = error.localizedDescription } else if enlightenmentInstalled { environment = "enlightenment" }
-        }
+
+    private func choose(_ option: DesktopOption) {
+        failure = nil
+        if isInstalled(option.id) { withAnimation(.easeInOut(duration: 0.2)) { environment = option.id } }
+        else { pendingInstall = option }
     }
-    private func installLXQt() {
-        failure = nil; lxqtWorking = "Starting"
-        LRRuntimeBridge.installLXQt({ lxqtWorking = $0 }) { error in
-            lxqtWorking = nil; lxqtInstalled = LRRuntimeBridge.lxqtInstalled()
-            if let error { failure = error.localizedDescription } else if lxqtInstalled { environment = "lxqt" }
-        }
-    }
-    private func install() {
-        failure = nil; working = "Starting"
-        LRRuntimeBridge.installPlasma({ working = $0 }) { error in
-            working = nil; installed = LRRuntimeBridge.plasmaInstalled()
-            if let error { failure = error.localizedDescription } else if installed { environment = "plasma" }
+
+    private func install(_ option: DesktopOption) {
+        pendingInstall = nil
+        guard let installer = DesktopCatalog.installer(option.id) else { environment = option.id; return }
+        failure = nil; installing = option.id; progress = "Starting"
+        installer({ progress = $0 }) { error in
+            installing = nil; progress = nil
+            refresh()
+            if let error { failure = error.localizedDescription }
+            else if isInstalled(option.id) { withAnimation { environment = option.id } }
         }
     }
 }
@@ -2383,46 +2612,78 @@ private struct GraphicsSettingsView: View {
     @State private var summary: [String: Any] = [:]
     private let refresh = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
     private var processes: [[String: String]] { (summary["processes"] as? [[String: String]]) ?? [] }
-    var body: some View { Form {
-        Section {
-            Picker("Renderer", selection: $mode) {
-                Text("GPU (Metal) · Default").tag("mesa-metal-resident")
-                Text("Software (Mesa)").tag("mesa")
-                if developerMode || mode == "mesa-metal-verify" { Text("Metal Verification · Diagnostics").tag("mesa-metal-verify") }
-            }
-            Text(description).font(.caption)
-        } header: { Text("Linux Applications") } footer: {
-            Text("Applies to the next desktop start and to applications opened from LinuxRunner. A launcher with its own graphics choice keeps it. Browsers keep software rendering.")
-        }
-        if LRRuntimeBridge.virglCompiledIn() {
-            Section {
-                Picker("GPU", selection: $gpuMode) {
-                    Text("Automatic").tag("automatic")
-                    Text("Metal GPU · Experimental").tag("metal")
-                    Text("Software Rendering").tag("software")
-                }.onChange(of: gpuMode) { LRRuntimeBridge.setGPUMode($0); gpu = LRRuntimeBridge.gpuStatus() as? [String: Any] ?? [:] }
-                HStack { Text("Active renderer"); Spacer(); Text(gpu["active"] as? String ?? "Software").foregroundColor((gpu["device"] as? Bool ?? false) ? .green : .secondary) }
-                Text(gpu["detail"] as? String ?? "").font(.caption).foregroundColor(.secondary)
-                if (gpu["restartNeeded"] as? Bool ?? false) || (gpuMode != "metal" && (gpu["device"] as? Bool ?? false)) {
-                    Text("Takes effect after LinuxRunner restarts.").font(.caption).foregroundColor(.orange)
+    private var deviceActive: Bool { gpu["device"] as? Bool ?? false }
+    /// "Apple A17 Pro GPU" from ANGLE's renderer string; the raw detail otherwise.
+    private var chipName: String? {
+        let detail = gpu["detail"] as? String ?? ""
+        guard let range = detail.range(of: #"Renderer: ([^,)]+)"#, options: .regularExpression) else { return nil }
+        return String(detail[range]).replacingOccurrences(of: "Renderer: ", with: "")
+    }
+    private var restartNeeded: Bool { (gpu["restartNeeded"] as? Bool ?? false) || (gpuMode != "metal" && gpuMode != "automatic" && deviceActive) }
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                // Status at a glance.
+                HStack(spacing: 14) {
+                    LRIconTile(symbol: deviceActive ? "bolt.fill" : "cpu", colors: deviceActive ? [.green, .teal] : [.gray, Color(.darkGray)], size: 56)
+                    VStack(alignment: .leading, spacing: 4) {
+                        let running = LRRuntimeBridge.isRunning()
+                        Text(deviceActive ? "Metal GPU Active" : running ? "Software Rendering" : "Linux Not Running").font(.title3.weight(.bold))
+                        Text(chipName ?? (deviceActive ? "virtual GPU through ANGLE" : running ? "Linux graphics run on the CPU" : "The GPU starts together with Linux")).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                        HStack(spacing: 6) {
+                            if deviceActive { LRStatusPill(text: "virgl", color: .green); LRStatusPill(text: "ANGLE", color: .teal); LRStatusPill(text: "Metal", color: .blue); LRStatusPill(text: "Experimental", color: .orange) }
+                            else if running { LRStatusPill(text: "Mesa", color: .secondary) }
+                        }
+                    }
+                    Spacer(minLength: 0)
                 }
-            } header: { Text("Linux GPU Device") } footer: {
-                Text("Metal GPU gives Linux a virtual GPU through Mesa's virgl driver and ANGLE/Metal. Hyprland and the managed Plasma sessions on Arch and Fedora can use it for compositing; prepared SteamOS uses it for Xorg and Qt rendering (KWin effects off); applications choose their rendering path separately. Automatic starts it with Linux; if it does not start (or a previous start did not finish), LinuxRunner uses software and shows why.")
+                .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color(.secondarySystemGroupedBackground)))
+
+                if LRRuntimeBridge.virglCompiledIn() {
+                    LRCard(title: "Linux GPU", symbol: "cpu.fill", colors: [.green, .teal], value: ["automatic": "Automatic", "metal": "Metal", "software": "Software"][gpuMode]) {
+                        LRChoiceList(choices: [
+                            LRChoice(id: "automatic", title: "Automatic", subtitle: "Metal GPU when it starts; software otherwise", symbol: "wand.and.stars"),
+                            LRChoice(id: "metal", title: "Metal GPU", subtitle: "Virtual GPU on the iPhone's graphics chip", symbol: "bolt.fill"),
+                            LRChoice(id: "software", title: "Software", subtitle: "CPU only; most compatible, slowest", symbol: "cpu"),
+                        ], selection: $gpuMode)
+                        .onChange(of: gpuMode) { LRRuntimeBridge.setGPUMode($0); gpu = LRRuntimeBridge.gpuStatus() as? [String: Any] ?? [:] }
+                        if restartNeeded { Label("Takes effect after LinuxRunner restarts", systemImage: "arrow.clockwise.circle.fill").font(.footnote.weight(.medium)).foregroundColor(.orange) }
+                        LRMoreInfo {
+                            Text("Linux gets a virtual GPU through Mesa's virgl driver, translated to Metal by ANGLE. Desktops, Hyprland, Plasma and SteamOS composite with it; each application picks its own renderer below. If the GPU does not start, LinuxRunner uses software and says why.")
+                            if let detail = gpu["detail"] as? String, !detail.isEmpty { Text(detail).font(.caption.monospaced()).textSelection(.enabled) }
+                        }
+                    }
+                }
+
+                LRCard(title: "Applications", symbol: "square.stack.3d.up.fill", colors: [.blue, .indigo], value: mode == "mesa" ? "Software" : "GPU") {
+                    LRChoiceList(choices: [
+                        LRChoice(id: "mesa-metal-resident", title: "GPU (Metal)", subtitle: "OpenGL draws run on the GPU; recommended", symbol: "bolt.fill"),
+                        LRChoice(id: "mesa", title: "Software (Mesa)", subtitle: "Every draw on the CPU; for troubleshooting", symbol: "cpu"),
+                    ] + (developerMode || mode == "mesa-metal-verify" ? [LRChoice(id: "mesa-metal-verify", title: "Metal Verification", subtitle: "Compares each draw with Mesa; diagnostics only", symbol: "checkmark.seal")] : []),
+                    selection: $mode)
+                    LRMoreInfo { Text(description + " Applies to the next desktop start and to applications opened from LinuxRunner; browsers keep software rendering.") }
+                }
+
+                LRCard(title: "Live", symbol: "waveform.path.ecg", colors: [.pink, .orange], value: summary["session"] as? Bool == true ? "Desktop running" : "Idle") {
+                    if summary["session"] as? Bool == true {
+                        Label(routingText, systemImage: "dot.radiowaves.left.and.right").font(.subheadline)
+                    } else {
+                        Text("Start a desktop to see which renderer it uses.").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    ForEach(processes.indices, id: \.self) { index in
+                        ProcessGraphicsRow(values: processes[index])
+                            .padding(10).background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(.tertiarySystemGroupedBackground)))
+                    }
+                }
             }
+            .padding(.horizontal, 20).padding(.vertical, 12).padding(.bottom, 96)
         }
-        Section("Current Session") {
-            if summary["session"] as? Bool == true {
-                Text(routingText).font(.callout)
-            } else { Text("No GUI session has started since LinuxRunner opened.").foregroundColor(.secondary) }
-        }
-        if !processes.isEmpty {
-            Section {
-                ForEach(processes.indices, id: \.self) { index in ProcessGraphicsRow(values: processes[index]) }
-            } header: { Text("OpenGL Processes") } footer: {
-                Text("Metal draws are guest OpenGL draws executed by the GPU. Mesa draws were rasterised in software. Presenting the desktop through Metal is not counted as acceleration.")
-            }
-        }
-    }.navigationTitle("Graphics").onAppear { summary = LRRuntimeBridge.graphicsSummary() }.onReceive(refresh) { _ in summary = LRRuntimeBridge.graphicsSummary() } }
+        .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        .navigationTitle("Graphics").navigationBarTitleDisplayMode(.inline)
+        .onAppear { summary = LRRuntimeBridge.graphicsSummary(); gpu = LRRuntimeBridge.gpuStatus() as? [String: Any] ?? [:] }
+        .onReceive(refresh) { _ in summary = LRRuntimeBridge.graphicsSummary() }
+    }
     private var description: String {
         switch mode {
         case "mesa-metal-resident": return "Supported OpenGL draws run on the iPhone GPU through Metal, with images kept on the GPU between draws. Unsupported operations fall back to software Mesa. Tested on Mac with Blender; device results are still being collected."
@@ -2436,7 +2697,7 @@ private struct GraphicsSettingsView: View {
             let pair = part.split(separator: "=", maxSplits: 1); return pair.count == 2 ? (String(pair[0]), String(pair[1])) : nil })
         let active = fields["active"] ?? "?"
         if let reason = fields["reason"] { return "Requested \(fields["requested"] ?? "?"), using software: " + reason.replacingOccurrences(of: "-", with: " ") }
-        return active == "mesa" ? "Software rendering (Mesa)" : (active == "mesa-metal-resident" ? "GPU-resident Metal routing active" : "Metal verification routing active")
+        return active == "mesa" ? "Applications render in software (Mesa)" : (active == "mesa-metal-resident" ? "Applications draw on the Metal GPU" : "Metal verification running")
     }
 }
 private struct ProcessGraphicsRow: View {
@@ -2445,13 +2706,15 @@ private struct ProcessGraphicsRow: View {
     var body: some View {
         let metal = number("metal_draws"), mesa = number("mesa_draws"), total = metal + mesa
         let age = Date().timeIntervalSince1970 - number("updated_unix")
-        VStack(alignment: .leading, spacing: 4) {
-            HStack { Text(values["command"] ?? "process").font(.headline); Spacer(); Text(age < 5 ? String(format: "%.1f fps", number("fps")) : "idle").foregroundColor(.secondary) }
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(values["command"] ?? "process").font(.subheadline.weight(.semibold)).lineLimit(1)
+                Spacer()
+                Text(age < 5 ? String(format: "%.0f fps", number("fps")) : "idle").font(.caption.monospacedDigit()).foregroundColor(.secondary)
+            }
             ProgressView(value: total > 0 ? metal / total : 0).tint(.green)
-            Text(String(format: "GPU %@ draws · software %@ (%.0f%% on Metal)", format(metal), format(mesa), total > 0 ? 100 * metal / total : 0)).font(.caption)
-            Text(String(format: "Transfers: %@ uploads (%.1f MB), %@ readbacks (%.1f MB) · GPU %.0f ms", format(number("uploads")), number("upload_bytes") / 1_048_576, format(number("writebacks")), number("writeback_bytes") / 1_048_576, number("gpu_ms"))).font(.caption).foregroundColor(.secondary)
-            Text("Shaders: \(values["program_compiles"] ?? "0") compiled, \(values["program_cache_hits"] ?? "0") cache hits").font(.caption).foregroundColor(.secondary)
-            if let reasons = values["reasons"], reasons != "none" { Text("Main fallbacks: " + reasons.replacingOccurrences(of: ",", with: ", ")).font(.caption2).foregroundColor(.secondary).lineLimit(3) }
+            Text(String(format: "%.0f%% of draws on the GPU · %@ GPU, %@ software", total > 0 ? 100 * metal / total : 0, format(metal), format(mesa))).font(.caption).foregroundColor(.secondary)
+            if let reasons = values["reasons"], reasons != "none" { Text("Software fallbacks: " + reasons.replacingOccurrences(of: ",", with: ", ")).font(.caption2).foregroundColor(.secondary).lineLimit(2) }
         }.accessibilityElement(children: .combine)
     }
     private func format(_ value: Double) -> String { value >= 10_000 ? String(format: "%.0fk", value / 1000) : String(format: "%.0f", value) }
@@ -2944,6 +3207,7 @@ enum SimulatorWorkflow {
 final class InstallMonitor: ObservableObject {
     struct State {
         var title: String, stage: String, detail: String, fraction: Double, elapsed: Double, phase: String, error: String?, log: String?
+        var steps: [String] = [], kind: String = ""
     }
     static let shared = InstallMonitor()
     @Published var state: State?
@@ -2954,7 +3218,8 @@ final class InstallMonitor: ObservableObject {
             let state = State(title: info["title"] as? String ?? "Installing", stage: info["stage"] as? String ?? "",
                               detail: info["detail"] as? String ?? "", fraction: (info["fraction"] as? NSNumber)?.doubleValue ?? -1,
                               elapsed: (info["elapsed"] as? NSNumber)?.doubleValue ?? 0, phase: info["phase"] as? String ?? "running",
-                              error: info["error"] as? String, log: info["log"] as? String)
+                              error: info["error"] as? String, log: info["log"] as? String,
+                              steps: info["steps"] as? [String] ?? [], kind: info["kind"] as? String ?? "")
             self.hide?.cancel()
             self.state = state
             if state.phase == "succeeded" {
@@ -2967,51 +3232,131 @@ final class InstallMonitor: ObservableObject {
     func dismiss() { state = nil }
 }
 
+// Installation progress: a compact floating card. Collapsed it is one line
+// (step, percentage ring); tap to expand for the package being processed,
+// download/install segments and the finished steps. Every number comes from
+// the package manager (see RuntimeBridge runSupportInstall); without one the
+// bar shows activity instead of a guess.
 struct InstallProgressCard: View {
     @ObservedObject private var monitor = InstallMonitor.shared
+    @State private var expanded = false
     @State private var showLog = false
+    @State private var sweep = false
     private func clock(_ seconds: Double) -> String { String(format: "%d:%02d", Int(seconds) / 60, Int(seconds) % 60) }
-    var body: some View {
-        if let state = monitor.state {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Image(systemName: state.phase == "failed" ? "exclamationmark.triangle.fill" : state.phase == "succeeded" ? "checkmark.circle.fill" : "arrow.down.circle")
-                        .foregroundColor(state.phase == "failed" ? .orange : state.phase == "succeeded" ? .green : .accentColor)
-                        .accessibilityHidden(true)
-                    Text(state.title).font(.headline)
-                    Spacer()
-                    Text(clock(state.elapsed)).font(.caption.monospacedDigit()).foregroundColor(.secondary).accessibilityLabel("Elapsed \(Int(state.elapsed)) seconds")
-                }
-                if state.phase == "succeeded" {
-                    Text("Installation complete").font(.subheadline)
-                } else {
-                    Text(state.phase == "failed" ? "Stopped at: \(state.stage)" : "Current step: \(state.stage)").font(.subheadline)
-                    if state.phase == "running" {
-                        if state.fraction >= 0 {
-                            ProgressView(value: state.fraction).accessibilityValue("\(Int(state.fraction * 100)) percent")
-                            Text("\(Int(state.fraction * 100)) %").font(.caption.monospacedDigit()).foregroundColor(.secondary)
-                        } else {
-                            ProgressView().frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        if !state.detail.isEmpty { Text(state.detail).font(.caption).foregroundColor(.secondary).lineLimit(2) }
-                        Text("Please keep LinuxRunner open.").font(.caption).foregroundColor(.secondary)
-                    }
-                    if let error = state.error {
-                        Text(error).font(.footnote).foregroundColor(.orange).fixedSize(horizontal: false, vertical: true)
-                        if let log = state.log, !log.isEmpty {
-                            Button(showLog ? "Hide Details" : "Show Details") { showLog.toggle() }.font(.footnote)
-                            if showLog { ScrollView { Text(log).font(.caption2.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 160) }
-                        }
-                        Button("Dismiss") { monitor.dismiss() }.font(.footnote)
+    private func tint(_ state: InstallMonitor.State) -> Color { state.phase == "failed" ? .orange : state.phase == "succeeded" ? .green : .accentColor }
+
+    @ViewBuilder private func ring(_ state: InstallMonitor.State) -> some View {
+        ZStack {
+            Circle().stroke(tint(state).opacity(0.18), lineWidth: 4)
+            if state.phase == "succeeded" {
+                Image(systemName: "checkmark").font(.system(size: 14, weight: .bold)).foregroundColor(.green)
+            } else if state.phase == "failed" {
+                Image(systemName: "exclamationmark").font(.system(size: 15, weight: .bold)).foregroundColor(.orange)
+            } else if state.fraction >= 0 {
+                Circle().trim(from: 0, to: max(0.02, state.fraction)).stroke(tint(state), style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                    .rotationEffect(.degrees(-90)).animation(.easeOut(duration: 0.4), value: state.fraction)
+                Text("\(Int(state.fraction * 100))").font(.system(size: 11, weight: .semibold).monospacedDigit())
+            } else {
+                Circle().trim(from: 0, to: 0.28).stroke(tint(state), style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                    .rotationEffect(.degrees(sweep ? 360 : 0))
+                    .animation(.linear(duration: 1).repeatForever(autoreverses: false), value: sweep)
+                    .onAppear { sweep = true }
+            }
+        }
+        .frame(width: 34, height: 34)
+    }
+
+    // Download and install are separate phases with their own real percentage;
+    // two segments show which one is running instead of a bar that restarts.
+    @ViewBuilder private func bar(_ state: InstallMonitor.State) -> some View {
+        let downloading = state.kind == "download", installing = state.kind == "install"
+        HStack(spacing: 4) {
+            segment(fill: installing ? 1 : downloading ? state.fraction : -1, label: "Download", active: downloading, done: installing)
+            segment(fill: installing ? state.fraction : downloading ? 0 : -1, label: "Install", active: installing, done: false)
+        }
+    }
+    @ViewBuilder private func segment(fill: Double, label: String, active: Bool, done: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.08))
+                    if fill >= 0 {
+                        Capsule().fill(LinearGradient(colors: [.accentColor, .accentColor.opacity(0.7)], startPoint: .leading, endPoint: .trailing))
+                            .frame(width: max(fill > 0 ? 6 : 0, geo.size.width * fill)).animation(.easeOut(duration: 0.4), value: fill)
                     }
                 }
             }
-            .padding(14)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .padding(.horizontal, 12).padding(.bottom, 56)
+            .frame(height: 6)
+            HStack(spacing: 3) {
+                if done { Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)) }
+                Text(label)
+            }
+            .font(.caption2.weight(active ? .semibold : .regular)).foregroundColor(active || done ? .primary : .secondary)
+        }
+    }
+
+    var body: some View {
+        if let state = monitor.state {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 12) {
+                    ring(state)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(state.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                        Text(state.phase == "succeeded" ? "Installation complete" : state.phase == "failed" ? "Stopped: \(state.stage)"
+                             : (state.stage == state.title && !state.detail.isEmpty) ? state.detail : state.stage)
+                            .font(.caption).foregroundColor(.secondary).lineLimit(expanded ? 3 : 1)
+                    }
+                    Spacer(minLength: 4)
+                    Text(clock(state.elapsed)).font(.caption.monospacedDigit()).foregroundColor(.secondary).accessibilityLabel("Elapsed \(Int(state.elapsed)) seconds")
+                    if state.phase != "succeeded" {
+                        Image(systemName: "chevron.up").font(.caption.weight(.semibold)).foregroundColor(.secondary)
+                            .rotationEffect(.degrees(expanded ? 180 : 0))
+                    }
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { expanded.toggle() } }
+
+                if state.phase == "running" && expanded {
+                    if state.fraction >= 0 && !state.kind.isEmpty { bar(state) }
+                    if !state.detail.isEmpty {
+                        Label(state.detail, systemImage: state.kind == "download" ? "arrow.down.circle" : "shippingbox")
+                            .font(.caption.monospacedDigit()).foregroundColor(.secondary).lineLimit(2)
+                    }
+                    let finished = state.steps.dropLast()
+                    if !finished.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(Array(finished.suffix(4).enumerated()), id: \.offset) { _, step in
+                                Label(step, systemImage: "checkmark.circle.fill").font(.caption2).foregroundColor(.secondary).lineLimit(1)
+                                    .labelStyle(TintedIconLabel(tint: .green))
+                            }
+                        }
+                    }
+                    Label("Keep LinuxRunner open until it finishes", systemImage: "iphone").font(.caption2).foregroundColor(.secondary)
+                }
+                if let error = state.error {
+                    Text(error).font(.footnote).foregroundColor(.orange).fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 16) {
+                        if let log = state.log, !log.isEmpty { Button(showLog ? "Hide Details" : "Show Details") { showLog.toggle() } }
+                        Button("Dismiss") { monitor.dismiss() }
+                    }.font(.footnote.weight(.semibold))
+                    if showLog, let log = state.log { ScrollView { Text(log).font(.caption2.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 160) }
+                }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 12)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Color.primary.opacity(0.06)))
+            .shadow(color: .black.opacity(0.25), radius: 16, y: 6)
+            .padding(.horizontal, 14).padding(.bottom, 92)
             .accessibilityElement(children: .contain)
             .transition(.move(edge: .bottom).combined(with: .opacity))
+            .onChange(of: state.phase) { phase in if phase == "failed" { expanded = true } }
         }
+    }
+}
+private struct TintedIconLabel: LabelStyle {
+    let tint: Color
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 6) { configuration.icon.foregroundColor(tint); configuration.title }
     }
 }
 
@@ -3073,19 +3418,82 @@ private struct GuestProcess: Identifiable {
     }
 }
 
-private struct Sparkline: View {
+/// Line chart with a soft gradient fill; scales to its own peak (minimum 1).
+private struct AreaChart: View {
     let values: [Double]; let color: Color
     var body: some View {
         GeometryReader { geo in
             let top = max(values.max() ?? 1, 1)
-            Path { p in
-                for (i, v) in values.enumerated() {
-                    let point = CGPoint(x: geo.size.width * CGFloat(i) / CGFloat(max(values.count - 1, 1)),
-                                        y: geo.size.height * (1 - CGFloat(v / top)))
-                    if i == 0 { p.move(to: point) } else { p.addLine(to: point) }
+            let points = values.enumerated().map { i, v in
+                CGPoint(x: geo.size.width * CGFloat(i) / CGFloat(max(values.count - 1, 1)), y: geo.size.height * (1 - CGFloat(v / top)) )
+            }
+            ZStack {
+                // Grid
+                Path { p in for f in [0.25, 0.5, 0.75] { p.move(to: CGPoint(x: 0, y: geo.size.height * f)); p.addLine(to: CGPoint(x: geo.size.width, y: geo.size.height * f)) } }
+                    .stroke(TaskStyle.line, style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
+                if points.count > 1 {
+                    Path { p in
+                        p.move(to: CGPoint(x: points[0].x, y: geo.size.height)); points.forEach { p.addLine(to: $0) }
+                        p.addLine(to: CGPoint(x: points[points.count - 1].x, y: geo.size.height)); p.closeSubpath()
+                    }.fill(LinearGradient(colors: [color.opacity(0.35), color.opacity(0.02)], startPoint: .top, endPoint: .bottom))
+                    Path { p in p.move(to: points[0]); points.dropFirst().forEach { p.addLine(to: $0) } }
+                        .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                    Circle().fill(color).frame(width: 7, height: 7).position(points[points.count - 1])
                 }
-            }.stroke(color, style: StrokeStyle(lineWidth: 2, lineJoin: .round))
+            }
         }
+    }
+}
+
+/// Circular gauge: fraction 0...1 of the ring, value text in the middle.
+private struct RingGauge: View {
+    let fraction: Double; let value: String; let label: String; let colors: [Color]
+    var body: some View {
+        VStack(spacing: 8) {
+            ZStack {
+                Circle().stroke(TaskStyle.line, lineWidth: 10)
+                Circle().trim(from: 0, to: CGFloat(min(max(fraction, 0), 1)))
+                    .stroke(AngularGradient(colors: colors + [colors[0]], center: .center), style: StrokeStyle(lineWidth: 10, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(.easeInOut(duration: 0.6), value: fraction)
+                Text(value).font(.system(.title3, design: .rounded).weight(.bold)).foregroundColor(TaskStyle.text).minimumScaleFactor(0.6).padding(12)
+            }
+            .frame(width: 104, height: 104)
+            Text(label).font(.caption).foregroundColor(TaskStyle.dim).multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+/// Rounded tile identifying a process: a symbol for well-known programs,
+/// otherwise its initial on a colour derived from the name.
+private struct ProcessGlyph: View {
+    let name: String
+    private var symbol: String? {
+        let n = name.lowercased()
+        if ["bash", "sh", "zsh", "dash", "fish", "ash", "login", "su", "sudo"].contains(n) { return "terminal.fill" }
+        if n.hasPrefix("xorg") || n.hasPrefix("xvfb") || n == "x11vnc" || n.hasPrefix("xwayland") { return "display" }
+        if n.contains("firefox") || n.contains("chrom") || n.contains("browser") { return "globe" }
+        if n.hasPrefix("python") || n.hasPrefix("node") || n.hasPrefix("ruby") || n.hasPrefix("perl") || n == "java" { return "chevron.left.forwardslash.chevron.right" }
+        if n.contains("gnome-shell") || n.contains("kwin") || n.contains("plasma") || n.contains("openbox") || n.contains("xfwm") || n.contains("hyprland") || n.contains("wayfire") || n == "i3" { return "macwindow" }
+        if n.contains("dbus") || n.contains("systemd") || n.contains("logind") { return "gearshape.2.fill" }
+        if n.contains("pulse") || n.contains("pipewire") { return "speaker.wave.2.fill" }
+        if n.contains("pcmanfm") || n.contains("nautilus") || n.contains("dolphin") || n.contains("thunar") { return "folder.fill" }
+        if n == "apt" || n == "apt-get" || n == "dpkg" || n == "pacman" || n == "dnf" || n == "apk" { return "shippingbox.fill" }
+        return nil
+    }
+    private var color: Color {
+        let palette: [Color] = [TaskStyle.frost, TaskStyle.green, Color(red: 0.75, green: 0.45, blue: 1), Color(red: 1, green: 0.6, blue: 0.25), Color(red: 1, green: 0.4, blue: 0.55), Color(red: 0.3, green: 0.8, blue: 0.85)]
+        return palette[name.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) & 0xffff } % palette.count]
+    }
+    var body: some View {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(color.opacity(0.18))
+            .frame(width: 38, height: 38)
+            .overlay(Group {
+                if let symbol { Image(systemName: symbol).font(.system(size: 16, weight: .semibold)) }
+                else { Text(String(name.prefix(1)).uppercased()).font(.system(size: 17, weight: .bold, design: .rounded)) }
+            }.foregroundColor(color))
     }
 }
 
@@ -3097,6 +3505,7 @@ struct TaskManagerView: View {
     @State private var sort = 0   // 0 CPU, 1 memory, 2 PID, 3 name
     @State private var selected: GuestProcess?
     private let timer = Timer.publish(every: TaskSampler.interval, on: .main, in: .common).autoconnect()
+    private let cores = Double(max(Int(ProcessInfo.processInfo.environment["LINUXRUNNER_CPU_CORES"] ?? "") ?? 4, 1))
 
     private var shown: [GuestProcess] {
         let filtered = search.isEmpty ? sampler.processes : sampler.processes.filter { $0.name.localizedCaseInsensitiveContains(search) || String($0.id) == search }
@@ -3107,13 +3516,19 @@ struct TaskManagerView: View {
         default: return filtered.sorted { $0.cpuPercent > $1.cpuPercent }
         }
     }
+    private var totalCPU: Double { sampler.cpuHistory.last ?? 0 }
+    private var privateKB: Double { Double(sampler.processes.reduce(0) { $0 + $1.privateKB }) }
+    private var memoryLimitKB: Double {
+        let configured = Double(ProcessInfo.processInfo.environment["LINUXRUNNER_MEMORY_MB"] ?? "") ?? 0
+        return (configured > 0 ? configured : 4096) * 1024
+    }
+
     var body: some View {
         NavigationView {
             ZStack {
                 TaskStyle.base.ignoresSafeArea()
                 VStack(spacing: 12) {
-                    Picker("", selection: $tab) { Text("Overview").tag(0); Text("Processes").tag(1); Text("Performance").tag(2) }
-                        .pickerStyle(.segmented).padding(.horizontal)
+                    tabBar
                     switch tab {
                     case 1: processList
                     case 2: performance
@@ -3125,94 +3540,159 @@ struct TaskManagerView: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
         .navigationViewStyle(.stack)
+        .preferredColorScheme(.dark)
         .onAppear { sampler.sample() }
         .onReceive(timer) { _ in sampler.sample() }
         .sheet(item: $selected) { ProcessDetailView(process: $0, sampler: sampler) }
     }
 
-    private func card<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title.uppercased()).font(.caption2.weight(.semibold)).foregroundColor(TaskStyle.dim)
+    private var tabBar: some View {
+        HStack(spacing: 6) {
+            ForEach(Array(["Overview", "Processes", "Performance"].enumerated()), id: \.offset) { index, title in
+                Button { withAnimation(.easeInOut(duration: 0.2)) { tab = index } } label: {
+                    Text(title).font(.subheadline.weight(.semibold))
+                        .foregroundColor(tab == index ? .white : TaskStyle.dim)
+                        .frame(maxWidth: .infinity).padding(.vertical, 9)
+                        .background(Capsule().fill(tab == index ? TaskStyle.frost.opacity(0.35) : Color.clear))
+                }.buttonStyle(.plain)
+            }
+        }
+        .padding(4).background(Capsule().fill(TaskStyle.panel)).padding(.horizontal)
+    }
+
+    private func card<Content: View>(_ title: String, systemImage: String? = nil, @ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                if let systemImage { Image(systemName: systemImage).font(.caption.weight(.bold)).foregroundColor(TaskStyle.frost) }
+                Text(title.uppercased()).font(.caption2.weight(.semibold)).foregroundColor(TaskStyle.dim)
+            }
             content()
         }
-        .frame(maxWidth: .infinity, alignment: .leading).padding(14)
-        .background(RoundedRectangle(cornerRadius: 14).fill(TaskStyle.panel))
+        .frame(maxWidth: .infinity, alignment: .leading).padding(16)
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(TaskStyle.panel))
     }
-    private func metric(_ value: String, _ label: String, _ color: Color = TaskStyle.text) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value).font(.system(.title2, design: .rounded).weight(.semibold)).foregroundColor(color)
-            Text(label).font(.caption).foregroundColor(TaskStyle.dim)
+    private func tile(_ value: String, _ label: String, _ systemImage: String, _ color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Image(systemName: systemImage).font(.system(size: 15, weight: .semibold)).foregroundColor(color)
+                .frame(width: 30, height: 30).background(Circle().fill(color.opacity(0.16)))
+            Text(value).font(.system(.title3, design: .rounded).weight(.bold)).foregroundColor(TaskStyle.text).lineLimit(1).minimumScaleFactor(0.6)
+            Text(label).font(.caption).foregroundColor(TaskStyle.dim).lineLimit(2)
         }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(14)
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(TaskStyle.panel))
     }
     private static func bytes(_ kb: Double) -> String { kb >= 1024 * 1024 ? String(format: "%.1f GB", kb / 1048576) : kb >= 1024 ? String(format: "%.0f MB", kb / 1024) : String(format: "%.0f KB", kb) }
 
     private var overview: some View {
         let execution = LRRuntimeBridge.executionBackendStatus()
         let jit = (execution["active"] as? String) == "jit"
+        let gpu = LRRuntimeBridge.gpuStatus() as? [String: Any] ?? [:]
         return ScrollView { VStack(spacing: 12) {
-            card("Linux") {
-                HStack(spacing: 24) {
-                    metric(String(format: "%.0f%%", sampler.cpuHistory.last ?? 0), "CPU (100% = 1 core)", TaskStyle.frost)
-                    metric(Self.bytes(Double(sampler.processes.reduce(0) { $0 + $1.privateKB })), "Private guest memory", TaskStyle.green)
-                }
-                HStack(spacing: 24) {
-                    metric("\(sampler.processes.count)", "Processes")
-                    metric("\(sampler.processes.reduce(0) { $0 + $1.threads })", "Threads")
+            card("Linux right now", systemImage: "waveform.path.ecg") {
+                HStack {
+                    RingGauge(fraction: totalCPU / (cores * 100), value: String(format: "%.0f%%", totalCPU), label: String(format: "CPU · %.0f cores = %.0f%%", cores, cores * 100), colors: [TaskStyle.frost, Color(red: 0.55, green: 0.45, blue: 1)])
+                    RingGauge(fraction: privateKB / memoryLimitKB, value: Self.bytes(privateKB), label: "Memory · of \(Self.bytes(memoryLimitKB))", colors: [TaskStyle.green, Color(red: 0.3, green: 0.8, blue: 0.85)])
                 }
             }
-            card("LinuxRunner") {
-                metric(sampler.footprint > 0 ? Self.bytes(Double(sampler.footprint) / 1024) : "Unavailable", "App memory (iOS footprint, includes the runtime)", TaskStyle.yellow)
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+                tile("\(sampler.processes.count)", "Processes", "square.stack.3d.up.fill", TaskStyle.frost)
+                tile("\(sampler.processes.reduce(0) { $0 + $1.threads })", "Threads", "point.3.connected.trianglepath.dotted", Color(red: 0.75, green: 0.45, blue: 1))
+                tile(sampler.footprint > 0 ? Self.bytes(Double(sampler.footprint) / 1024) : "—", "App memory (iOS)", "memorychip", TaskStyle.yellow)
+                tile((gpu["device"] as? Bool ?? false) ? "Metal GPU" : "Software", "Graphics", "cube.transparent.fill", (gpu["device"] as? Bool ?? false) ? TaskStyle.green : TaskStyle.dim)
+            }
+            card("Top processes", systemImage: "flame.fill") {
+                ForEach(sampler.processes.sorted { $0.cpuPercent > $1.cpuPercent }.prefix(4)) { p in
+                    Button { selected = p } label: { processRow(p, compact: true) }.buttonStyle(.plain)
+                }
+                if sampler.processes.isEmpty { Text("Linux is not running.").font(.callout).foregroundColor(TaskStyle.dim) }
+            }
+            card("LinuxRunner", systemImage: "cpu") {
                 row("Distribution", LRRuntimeBridge.activeRootName() ?? "None")
                 row("Execution", (LRRuntimeBridge.jitStatusReport() as? [String: Any])?["state"] as? String ?? (jit ? "JIT" : "Interpreter"))
-                row("Graphics", (LRRuntimeBridge.gpuStatus() as? [String: Any])?["active"] as? String ?? "Software")
-                row("GPU activity", "Unavailable")
+                row("Renderer", gpu["active"] as? String ?? "Software")
             }
-        }.padding(.horizontal) }
+        }.padding(.horizontal).padding(.bottom, 16) }
     }
     private func row(_ label: String, _ value: String) -> some View {
-        HStack { Text(label).foregroundColor(TaskStyle.dim); Spacer(); Text(value).foregroundColor(TaskStyle.text) }.font(.callout)
+        HStack { Text(label).foregroundColor(TaskStyle.dim); Spacer(); Text(value).foregroundColor(TaskStyle.text).lineLimit(1) }.font(.callout)
+    }
+
+    private func processRow(_ p: GuestProcess, compact: Bool = false) -> some View {
+        HStack(spacing: 12) {
+            ProcessGlyph(name: p.name)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(p.name).foregroundColor(TaskStyle.text).font(.body.weight(.medium)).lineLimit(1)
+                if !compact { Text("PID \(p.id) · \(p.stateName) · \(p.threads) thread\(p.threads == 1 ? "" : "s")").font(.caption).foregroundColor(TaskStyle.dim) }
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(TaskStyle.line)
+                        Capsule().fill(p.cpuPercent > 50 ? TaskStyle.yellow : TaskStyle.frost)
+                            .frame(width: geo.size.width * CGFloat(min(p.cpuPercent / 100, 1)))
+                    }
+                }.frame(height: 4)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(String(format: "%.1f%%", p.cpuPercent)).foregroundColor(p.cpuPercent > 50 ? TaskStyle.yellow : TaskStyle.frost).font(.callout.monospacedDigit().weight(.semibold))
+                Text(Self.bytes(Double(p.privateKB))).font(.caption.monospacedDigit()).foregroundColor(TaskStyle.dim)
+            }
+        }
+        .padding(.vertical, compact ? 2 : 4)
+        .contentShape(Rectangle())
     }
 
     private var processList: some View {
-        VStack(spacing: 8) {
-            HStack {
-                TextField("Search name or PID", text: $search).textFieldStyle(.roundedBorder)
-                Menu { Picker("Sort", selection: $sort) { Text("CPU").tag(0); Text("Memory").tag(1); Text("PID").tag(2); Text("Name").tag(3) } }
-                    label: { Image(systemName: "arrow.up.arrow.down").foregroundColor(TaskStyle.frost) }
-            }.padding(.horizontal)
-            List(shown) { p in
-                Button { selected = p } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(p.name).foregroundColor(TaskStyle.text).font(.body.weight(.medium))
-                            Text("PID \(p.id) · \(p.stateName) · \(p.threads) thread\(p.threads == 1 ? "" : "s")").font(.caption).foregroundColor(TaskStyle.dim)
-                        }
-                        Spacer()
-                        VStack(alignment: .trailing, spacing: 2) {
-                            Text(String(format: "%.1f%%", p.cpuPercent)).foregroundColor(p.cpuPercent > 50 ? TaskStyle.yellow : TaskStyle.frost).font(.callout.monospacedDigit())
-                            Text(Self.bytes(Double(p.privateKB))).font(.caption.monospacedDigit()).foregroundColor(TaskStyle.dim)
-                        }
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundColor(TaskStyle.dim)
+                TextField("Search name or PID", text: $search).foregroundColor(TaskStyle.text).autocapitalization(.none).disableAutocorrection(true)
+                if !search.isEmpty { Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundColor(TaskStyle.dim) } }
+            }
+            .padding(10).background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(TaskStyle.panel)).padding(.horizontal)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Array(["CPU", "Memory", "PID", "Name"].enumerated()), id: \.offset) { index, title in
+                        Button { sort = index } label: {
+                            Text(title).font(.caption.weight(.semibold)).padding(.horizontal, 12).padding(.vertical, 6)
+                                .foregroundColor(sort == index ? .black : TaskStyle.text)
+                                .background(Capsule().fill(sort == index ? TaskStyle.frost : TaskStyle.panel))
+                        }.buttonStyle(.plain)
                     }
-                }.listRowBackground(TaskStyle.panel)
-            }.listStyle(.plain)
+                    Text("\(shown.count) of \(sampler.processes.count)").font(.caption).foregroundColor(TaskStyle.dim).padding(.leading, 4)
+                }.padding(.horizontal)
+            }
+            List(shown) { p in
+                Button { selected = p } label: { processRow(p) }
+                    .listRowBackground(TaskStyle.panel)
+            }
+            .listStyle(.insetGrouped)
         }
     }
 
     private var performance: some View {
         ScrollView { VStack(spacing: 12) {
-            card("CPU · last 2 minutes") {
-                Sparkline(values: sampler.cpuHistory, color: TaskStyle.frost).frame(height: 90)
-                Text(String(format: "Now %.0f%% · peak %.0f%% (100%% = one core)", sampler.cpuHistory.last ?? 0, sampler.cpuHistory.max() ?? 0)).font(.caption).foregroundColor(TaskStyle.dim)
+            card("CPU · last 2 minutes", systemImage: "cpu") {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(String(format: "%.0f%%", totalCPU)).font(.system(.largeTitle, design: .rounded).weight(.bold)).foregroundColor(TaskStyle.frost)
+                    Spacer()
+                    Text(String(format: "peak %.0f%%", sampler.cpuHistory.max() ?? 0)).font(.caption).foregroundColor(TaskStyle.dim)
+                }
+                AreaChart(values: sampler.cpuHistory, color: TaskStyle.frost).frame(height: 120)
+                Text(String(format: "100%% = one core · %.0f guest cores", cores)).font(.caption).foregroundColor(TaskStyle.dim)
             }
-            card("Private guest memory · last 2 minutes") {
-                Sparkline(values: sampler.memoryHistory, color: TaskStyle.green).frame(height: 90)
-                Text(String(format: "Now %.0f MB", sampler.memoryHistory.last ?? 0)).font(.caption).foregroundColor(TaskStyle.dim)
+            card("Memory · last 2 minutes", systemImage: "memorychip") {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(String(format: "%.0f MB", sampler.memoryHistory.last ?? 0)).font(.system(.largeTitle, design: .rounded).weight(.bold)).foregroundColor(TaskStyle.green)
+                    Spacer()
+                    Text(String(format: "peak %.0f MB", sampler.memoryHistory.max() ?? 0)).font(.caption).foregroundColor(TaskStyle.dim)
+                }
+                AreaChart(values: sampler.memoryHistory, color: TaskStyle.green).frame(height: 120)
+                Text("Private guest memory (shared mappings counted separately)").font(.caption).foregroundColor(TaskStyle.dim)
             }
-            card("Processes") {
-                metric("\(sampler.processes.count)", "running guest processes")
-                Text("GPU utilisation is not measurable through public iOS APIs and is not shown.").font(.caption).foregroundColor(TaskStyle.dim)
+            card("Notes", systemImage: "info.circle") {
+                Text("GPU utilisation cannot be measured through public iOS APIs and is not shown. Values refresh every \(Int(TaskSampler.interval)) seconds.").font(.caption).foregroundColor(TaskStyle.dim)
             }
-        }.padding(.horizontal) }
+        }.padding(.horizontal).padding(.bottom, 16) }
     }
 }
 

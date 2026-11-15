@@ -1,0 +1,26 @@
+diff --git a/src/vrend/vrend_renderer.c b/src/vrend/vrend_renderer.c
+index 682db39..e8959ab 100644
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -2517,10 +2517,19 @@ static GLuint convert_wrap(struct vrend_context *ctx, int wrap)
+ {
+    switch(wrap){
+    case PIPE_TEX_WRAP_REPEAT: return GL_REPEAT;
+-   case PIPE_TEX_WRAP_CLAMP: if (vrend_state.use_core_profile == false) return GL_CLAMP; else return GL_CLAMP_TO_EDGE;
++   /* GLES has no GL_CLAMP: passing it is GL_INVALID_ENUM. */
++   case PIPE_TEX_WRAP_CLAMP: if (vrend_state.use_core_profile == false && !vrend_state.use_gles) return GL_CLAMP; else return GL_CLAMP_TO_EDGE;
+ 
+    case PIPE_TEX_WRAP_CLAMP_TO_EDGE: return GL_CLAMP_TO_EDGE;
+-   case PIPE_TEX_WRAP_CLAMP_TO_BORDER: return GL_CLAMP_TO_BORDER;
++   /* A GLES host without border clamping (GLES < 3.2 and no
++    * EXT/OES_texture_border_clamp, e.g. ANGLE on Metal) rejects
++    * GL_CLAMP_TO_BORDER with GL_INVALID_ENUM, and that error puts the whole
++    * guest context into the error state. Clamp to the edge texel instead:
++    * results differ only where the guest samples outside the texture. */
++   case PIPE_TEX_WRAP_CLAMP_TO_BORDER:
++      if (vrend_state.use_gles && !has_feature(feat_sampler_border_colors))
++         return GL_CLAMP_TO_EDGE;
++      return GL_CLAMP_TO_BORDER;
+ 
+    case PIPE_TEX_WRAP_MIRROR_REPEAT: return GL_MIRRORED_REPEAT;
+    case PIPE_TEX_WRAP_MIRROR_CLAMP:

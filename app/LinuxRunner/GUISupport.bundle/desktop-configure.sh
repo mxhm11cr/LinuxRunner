@@ -20,10 +20,16 @@ if [ ! -e /usr/share/applications/debian-xterm.desktop ] &&
  echo 'DESKTOP_CONFIG: managed panel terminal launcher resolved from installed desktop entry'
 fi
 put desktop-theme.conf "$base/share/themes/LinuxRunner/openbox-3/themerc"
+# The 4:3 wallpaper left bars on the 16:9 desktop in "fit"; "crop" fills it.
+# Migrate only the unchanged managed default (mode fit + LinuxRunner wallpaper).
+gtk_items="$base/config/pcmanfm/LinuxRunner/desktop-items-0.conf"
+if [ -f "$gtk_items" ] && grep -qx 'wallpaper_mode=fit' "$gtk_items" && grep -q '^wallpaper=.*/desktop-wallpaper\.png$' "$gtk_items"; then
+ sed 's/^wallpaper_mode=fit$/wallpaper_mode=crop/' "$gtk_items" > "$gtk_items.new" && mv "$gtk_items.new" "$gtk_items"
+fi
 if [ ! -e "$base/config/pcmanfm/LinuxRunner/desktop-items-0.conf" ]; then
  cat > "$base/config/pcmanfm/LinuxRunner/desktop-items-0.conf.new" <<EOF
 [*]
-wallpaper_mode=fit
+wallpaper_mode=crop
 wallpaper_common=1
 wallpaper=$PWD/desktop-wallpaper.png
 desktop_bg=#0b1425
@@ -88,7 +94,7 @@ case "$desktop_distro" in arch|archarm)
 FallbackIconThemeName=Adwaita
 Terminal=xterm
 [Desktop]
-WallpaperMode=fit
+WallpaperMode=zoom
 Wallpaper=$PWD/desktop-wallpaper.png
 BgColor=#0b1425
 FgColor=#e9f1ff
@@ -105,17 +111,48 @@ LastWindowHeight=420
 EOF
   mv "$base/config/pcmanfm-qt/LinuxRunner-X11/settings.conf.new" "$base/config/pcmanfm-qt/LinuxRunner-X11/settings.conf"
  fi
+ # The 4:3 wallpaper left black bars on the 16:9 desktop in "fit" mode. Move the
+ # managed default to "zoom"; a mode or wallpaper the user chose is kept.
+ qt_settings="$base/config/pcmanfm-qt/LinuxRunner-X11/settings.conf"
+ if grep -qx 'WallpaperMode=fit' "$qt_settings" && grep -q '^Wallpaper=.*/desktop-wallpaper\.png$' "$qt_settings"; then
+  sed 's/^WallpaperMode=fit$/WallpaperMode=zoom/' "$qt_settings" > "$qt_settings.new" && mv "$qt_settings.new" "$qt_settings"
+ fi
  profile_link "$base/config/pcmanfm-qt/LinuxRunner-X11" "$user_config/pcmanfm-qt/LinuxRunner-X11"
+ # pcmanfm-qt marks a deletable desktop entry as untrusted (red emblem, and a
+ # confirmation before it runs) unless gvfs metadata says metadata::trust=true;
+ # LinuxRunner has no gvfs metadata daemon, so that trust can never be stored.
+ # A Type=Link entry whose URL is a native path under /usr/share is not treated
+ # as an executable by libfm-qt (no emblem, no prompt) and launches that
+ # distribution entry directly. Use it whenever the distribution ships one.
  for app in Terminal Files; do
-  case "$app" in Terminal) executable=xterm; icon=utilities-terminal;; Files) executable='pcmanfm-qt --profile LinuxRunner-X11'; icon=system-file-manager;; esac
+  case "$app" in
+   Terminal) executable=xterm; icon=utilities-terminal; system_entry=/usr/share/applications/xterm.desktop;;
+   Files) executable='pcmanfm-qt --profile LinuxRunner-X11'; icon=system-file-manager; system_entry=/usr/share/applications/pcmanfm-qt.desktop;;
+  esac
+  legacy=$(printf '[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nIcon=%s\nTerminal=false\nCategories=Utility;\n' "$app" "$executable" "$icon")
   target="$base/share/applications/linuxrunner-$app.desktop"
   if [ ! -e "$target" ]; then
-   printf '[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nIcon=%s\nTerminal=false\nCategories=Utility;\n' "$app" "$executable" "$icon" > "$target.new"
+   printf '%s\n' "$legacy" > "$target.new"
    chmod 644 "$target.new"; mv "$target.new" "$target"
+  fi
+  if [ -r "$system_entry" ]; then
+   launcher=$(printf '[Desktop Entry]\nType=Link\nName=%s\nIcon=%s\nURL=%s\n' "$app" "$icon" "$system_entry")
+  else
+   launcher=$legacy
   fi
   desktop_dir="$HOME/Desktop"
   if command -v xdg-user-dir >/dev/null; then desktop_dir=$(xdg-user-dir DESKTOP); fi
-  case "$desktop_dir" in /*) mkdir -p "$desktop_dir"; if [ ! -e "$desktop_dir/LinuxRunner-$app.desktop" ] && [ ! -L "$desktop_dir/LinuxRunner-$app.desktop" ]; then put "$target" "$desktop_dir/LinuxRunner-$app.desktop"; chmod u+x "$desktop_dir/LinuxRunner-$app.desktop"; fi;; esac
+  case "$desktop_dir" in /*)
+   mkdir -p "$desktop_dir"
+   item="$desktop_dir/LinuxRunner-$app.desktop"
+   # Replace only a launcher LinuxRunner wrote and the user never changed.
+   if [ -f "$item" ] && [ ! -L "$item" ] && [ "$(cat "$item")" = "$legacy" ] && [ "$launcher" != "$legacy" ]; then
+    printf '%s\n' "$launcher" > "$item.new"; chmod 644 "$item.new"; mv "$item.new" "$item"
+    echo "DESKTOP_CONFIG: desktop launcher $app now links $system_entry (trusted by pcmanfm-qt)"
+   elif [ ! -e "$item" ] && [ ! -L "$item" ]; then
+    printf '%s\n' "$launcher" > "$item.new"; chmod 644 "$item.new"; mv "$item.new" "$item"
+   fi;;
+  esac
  done
  echo 'DESKTOP_CONFIG: qt-profile=LinuxRunner-X11 panel=managed configuration=first-write-only old-profiles=preserved'
 ;; esac

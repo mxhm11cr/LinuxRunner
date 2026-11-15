@@ -10,6 +10,12 @@ The marks are trademarks of their respective owners; no endorsement is implied.
 | debian.png | Flat-Remix icon theme (GPL-3.0), `distributor-logo-debian.svg`, as shipped in Kali |
 | fedora.png | Fedora `fedora-logos`, `hicolor/256x256/apps/fedora-logo-icon.png` |
 | kali.png | Kali `kali-menu`, `hicolor/scalable/apps/kali-menu.svg` |
+| ubuntu.png | Papirus icon theme 20240201 (GPL-3.0), `distributor-logo-ubuntu.svg` |
+| pop.png | Papirus icon theme 20240201 (GPL-3.0), `distributor-logo-pop-os.svg` |
+| zorin.png | Papirus icon theme 20240201 (GPL-3.0), `distributor-logo-zorin.svg` |
+| void.png | Papirus icon theme 20240201 (GPL-3.0), `distributor-logo-void.svg` |
+| opensuse.png | Papirus icon theme 20240201 (GPL-3.0), `distributor-logo-opensuse.svg` |
 | steamos.png | SteamOS image, `/usr/share/pixmaps/steamos.png` |
 
-SVGs were rasterized to 256x256 PNG with transparency.
+SVGs were rasterized to 256x256 PNG with transparency. Papirus: Copyright the
+Papirus Development Team, https://github.com/PapirusDevelopmentTeam/papirus-icon-theme

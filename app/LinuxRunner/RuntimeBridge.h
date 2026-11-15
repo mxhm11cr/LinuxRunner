@@ -2,6 +2,9 @@
 #import "../TerminalViewController.h"
 
 NS_ASSUME_NONNULL_BEGIN
+// Settings › CPU & Memory (NSInteger, 0 = automatic); applied at the next launch.
+extern NSString *const LRSystemCPUCoresKey;
+extern NSString *const LRSystemMemoryMBKey;
 void LRSetDatalessMaterialization(void);
 @interface LRTransferControl : NSObject
 - (void)cancel;
@@ -97,6 +100,8 @@ void LRSetDatalessMaterialization(void);
 + (BOOL)requiresPreparedJITRegion;      // iOS 26+: StikDebug's TXM script protocol
 + (NSDictionary *)executionBackendStatus;
 + (BOOL)activateJIT:(NSString * _Nullable * _Nullable)detail;
++ (BOOL)retryJITAfterFailure:(NSString * _Nullable * _Nullable)detail;
++ (NSURL * _Nullable)stikDebugRequestURL;
 + (void)prepareExecutionBackendAtLaunch;
 + (void)createEnvironment:(NSString *)root completion:(void (^)(NSError * _Nullable))completion;
 // The mounted root stays in use until app relaunch, even after guest init exits.
@@ -123,6 +128,7 @@ void LRSetDatalessMaterialization(void);
 + (void)removeSharedFolder:(NSString *)name;
 + (void)applySharedFolderOwnership;
 + (void)checkSharedFolder:(NSString *)name completion:(void (^)(NSString *summary))completion;
++ (void)checkAppSharedFolder:(void (^)(NSString *summary))completion;
 + (BOOL)setDefaultLinuxUser:(NSString *)name error:(NSError **)error;
 + (NSArray<NSString *> * _Nullable)defaultLinuxLoginCommand:(NSError **)error;
 + (TerminalViewController * _Nullable)createLinuxUser:(NSString *)name error:(NSError **)error;
@@ -139,11 +145,16 @@ void LRSetDatalessMaterialization(void);
 /// Experimental KDE Plasma (X11) from Debian's packages, on top of the regular desktop.
 + (void)installPlasma:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;
 + (BOOL)plasmaInstalled;
++ (void)installGnome:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;
++ (BOOL)gnomeInstalled;
 + (void)installXfce:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;
 + (BOOL)xfceInstalled;
 + (void)installKaliTools:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;
 + (BOOL)kaliToolsInstalled;
 + (BOOL)activeEnvironmentIsKali;
++ (BOOL)activeEnvironmentIsUbuntu;
++ (BOOL)activeEnvironmentIsVoid;
++ (nullable NSString *)activeFlavor;            // "pop", "zorin" on the Ubuntu base; nil otherwise
 + (nullable NSString *)activeDistributionID;
 + (void)installLXQt:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;
 + (BOOL)lxqtInstalled;
@@ -151,6 +162,15 @@ void LRSetDatalessMaterialization(void);
 + (BOOL)enlightenmentInstalled;
 + (void)installWayfire:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;
 + (BOOL)wayfireInstalled;
++ (BOOL)wayfireBridgeDependenciesInstalled;
++ (void)installI3:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;
++ (BOOL)i3Installed;
++ (void)installDesktop:(NSString *)desktop progress:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;
++ (BOOL)desktopInstalled:(NSString *)desktop;   // mate, cinnamon, budgie
+// LinuxRunner Modes (Settings > Modes): opt-in services run by modes.sh.
++ (nullable TerminalViewController *)modesCommand:(NSArray<NSString *> *)arguments;   // status | start/stop rdp|ssh | agent <user>
++ (NSDictionary<NSString *, NSString *> *)modesStatus;   // parsed modes-status (key=value lines)
++ (nullable NSString *)desktopSessionPassword;            // running desktop's VNC password (RDP Mode)
 + (void)installHyprland:(void (^)(NSString *stage))progress completion:(void (^)(NSError * _Nullable error))completion;
 + (BOOL)hyprlandInstalled;
 /// True while a support installation (account tools, desktop, KDE) runs; a

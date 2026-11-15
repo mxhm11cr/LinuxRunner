@@ -7,6 +7,7 @@ struct BluetoothSerialView: View {
     @State private var state = "unknown"
     @State private var discovered: [[String: Any]] = []
     @State private var links: [[String: Any]] = []
+    @State private var saved: [[String: Any]] = []
     @State private var scanning = false
     @State private var showAll = false
     private let bridge = LRBLESerial.shared()
@@ -25,7 +26,7 @@ struct BluetoothSerialView: View {
                     Button(scanning ? "Stop" : "Scan") { scanning ? bridge.stopScan() : bridge.startScan() }.buttonStyle(.bordered)
                 }
             } footer: {
-                Text("For boards running Bluetooth LE UART firmware: ESP32 with the Nordic UART Service, Arduino boards with HM-10/CC254x modules, Microchip RN4870/BM70. Each connection becomes a Linux serial port.")
+                Text("Each board becomes a Linux serial port (/dev/ttyBLE0-3). Works with ESP32 Nordic UART, HM-10/CC254x, Microchip RN4870/BM70, u-blox, Ezurio (Laird), DFRobot Bluno and Telit modules, and with custom firmware that has one writable and one notifying characteristic. Dropped links reconnect by themselves on the same port.")
             }
             if !links.isEmpty {
                 Section("Linux Serial Ports") {
@@ -51,6 +52,26 @@ struct BluetoothSerialView: View {
                     Text("In the Linux terminal: picocom -b 115200 /dev/ttyBLE0, or pyserial serial.Serial(\"/dev/ttyBLE0\"). The baud rate is accepted but BLE ignores it; the board's firmware sets its own UART speed.").font(.caption).foregroundColor(.secondary)
                 }
             }
+            let savedRows = saved.filter { s in !links.contains { ($0["id"] as? String) == (s["id"] as? String) } }
+            if !savedRows.isEmpty {
+                Section {
+                    ForEach(savedRows.indices, id: \.self) { i in
+                        let device = savedRows[i]
+                        Button { _ = bridge.connect(device["id"] as? String ?? "") } label: {
+                            HStack {
+                                Image(systemName: "clock.arrow.circlepath").foregroundColor(.accentColor).frame(width: 24)
+                                VStack(alignment: .leading) {
+                                    Text(device["name"] as? String ?? "").foregroundColor(.primary)
+                                    Text((device["profile"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Serial").font(.caption).foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Text("Connect").font(.caption.weight(.semibold)).foregroundColor(.accentColor)
+                            }
+                        }
+                        .swipeActions { Button("Forget", role: .destructive) { bridge.forgetDevice(device["id"] as? String ?? "") } }
+                    }
+                } header: { Text("Saved Boards") } footer: { Text("Boards that connected before. Tap to connect while one is in range; no scan needed. Swipe to forget.") }
+            }
             Section {
                 let rows = discovered.filter { showAll || ($0["serial"] as? Bool ?? false) }
                 if rows.isEmpty { Text(scanning ? "Looking for boards…" : "Tap Scan to look for nearby boards.").foregroundColor(.secondary) }
@@ -68,9 +89,9 @@ struct BluetoothSerialView: View {
                         }
                     }
                 }
-                Toggle("Show devices without an advertised serial service", isOn: $showAll).font(.footnote)
+                Toggle("Show all named devices (custom firmware)", isOn: $showAll).font(.footnote)
             } header: { Text("Nearby") } footer: {
-                Text("Some firmware does not advertise its UART service; connecting checks the device's services and reports when none is supported.")
+                Text("Custom firmware often does not advertise its service. Connecting looks for a known serial service first, then for any writable and notifying characteristic pair.")
             }
             Section { NavigationLink(destination: EmbeddedCompatibilityView()) { Label("What Works for Embedded Development", systemImage: "checklist") } }
         }
@@ -88,7 +109,7 @@ struct BluetoothSerialView: View {
         default: return "Tap Scan to start Bluetooth."
         }
     }
-    private func refresh() { state = bridge.bluetoothState; scanning = bridge.scanning; discovered = bridge.discovered; links = bridge.links }
+    private func refresh() { state = bridge.bluetoothState; scanning = bridge.scanning; discovered = bridge.discovered; links = bridge.links; saved = bridge.saved }
     private func color(_ s: String?) -> Color { s == "connected" ? .green : (s == "connecting" || s == "discovering") ? .orange : .red }
     private func bytes(_ v: Any?) -> String { ByteCountFormatter.string(fromByteCount: (v as? NSNumber)?.int64Value ?? 0, countStyle: .binary) }
 }
@@ -97,7 +118,7 @@ struct BluetoothSerialView: View {
 struct EmbeddedCompatibilityView: View {
     private struct Entry: Identifiable { let id = UUID(); let name, status, detail: String; let level: Int } // 2 works, 1 partial, 0 not possible
     private let entries: [Entry] = [
-        Entry(name: "Bluetooth LE serial (ESP32 Nordic UART, HM-10, RN4870)", status: "Supported", detail: "Appears as /dev/ttyBLE0-3: terminal programs, pyserial, arduino-cli monitor. Throughput is BLE-limited (typically a few KB/s). Tested on the Mac with the Linux tty layer; tested with a physical board: not yet.", level: 2),
+        Entry(name: "Bluetooth LE serial (ESP32, HM-10, RN4870, u-blox, Ezurio, Bluno, Telit, custom firmware)", status: "Supported", detail: "Appears as /dev/ttyBLE0-3: terminal programs, pyserial, arduino-cli monitor. Any firmware with one writable and one notifying characteristic works; dropped links reconnect on the same port. Throughput is BLE-limited (typically a few KB/s). Tested with a physical board: not yet.", level: 2),
         Entry(name: "Wi-Fi: OTA upload (ArduinoOTA, espota.py), telnet/RFC2217 serial bridges, MQTT, HTTP", status: "Supported", detail: "Uses Linux networking directly. pyserial accepts socket:// and rfc2217:// URLs; PlatformIO and arduino-cli support OTA upload to network ports.", level: 2),
         Entry(name: "Compiling sketches (arduino-cli, PlatformIO, esp-idf)", status: "Partial", detail: "The ARM64 Linux toolchains run in LinuxRunner's interpreter; builds are slow. Install from the App Store (arduino-cli, PlatformIO Core, esptool).", level: 1),
         Entry(name: "USB serial through a USB-MIDI adapter (Raspberry Pi Pico, ESP32-S2/S3, Leonardo/Micro, Teensy)", status: "Supported", detail: "Boards with native USB run LinuxRunner's serial-over-MIDI firmware once (flashed from a computer) and appear as /dev/ttyMIDI0-3, with baud rate and DTR/RTS passed to the adapter. iOS supports USB MIDI for every app without special permission. App side tested on the Mac; with a physical adapter: not yet.", level: 2),

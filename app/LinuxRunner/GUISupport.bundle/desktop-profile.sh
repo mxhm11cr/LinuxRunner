@@ -22,9 +22,19 @@ distro=$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | tr -d '"')
 if [ "$distro" = steamos ]; then exec /bin/sh ./steamos-profile.sh "$@"; fi
 # Kali Linux is Debian-based (same package names and apt); keep its identity
 # for Kali-only profiles (its own Xfce desktop and tool metapackages).
+# Pop!_OS and Zorin OS are Ubuntu with their vendor's repository layered on
+# top (initialize-<flavor>.sh); Ubuntu checks and package names apply.
+os_id=$distro
+case "$distro" in pop|zorin) distro=ubuntu;; esac
 distro_id=$distro
 [ "$distro" != kali ] || distro=debian
+[ "$distro" != ubuntu ] || distro=debian
 have() { command -v "$1" >/dev/null 2>&1; }
+gnome_packages_present() {
+    for package in gnome-shell gnome-session ubuntu-session gnome-shell-extension-ubuntu-dock ubuntu-settings ubuntu-wallpapers yaru-theme-gnome-shell yaru-theme-gtk yaru-theme-icon nautilus gnome-terminal dbus-x11; do
+        [ "$(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null)" = installed ] || return 1
+    done
+}
 helper_key() { { cat support-version; sha256sum "$@"; } | sha256sum | awk '{print $1}'; }
 
 gui_missing() {
@@ -106,9 +116,16 @@ check() {
       if have startlxqt && have lxqt-panel && have pcmanfm-qt; then echo lxqt=installed; else echo lxqt=missing; fi
       if have enlightenment_start && have terminology; then echo enlightenment=installed; else echo enlightenment=missing; fi
       if have wayfire && have wf-panel && have foot; then echo wayfire=installed; else echo wayfire=missing; fi
+      if have i3 && have xterm && have dmenu_run; then echo i3=installed; else echo i3=missing; fi
+      if [ "$os_id" = zorin ]; then gnome_mode=zorin gnome_extension=zorin-taskbar@zorinos.com; else gnome_mode=ubuntu gnome_extension=ubuntu-dock@ubuntu.com; fi
+      if have gnome-shell && have gnome-session && [ -x /usr/lib/systemd/systemd-logind ] && [ -f "/usr/share/gnome-shell/modes/$gnome_mode.json" ] && [ -d "/usr/share/gnome-shell/extensions/$gnome_extension" ]; then echo gnome=installed; else echo gnome=missing; fi
       if have Hyprland && have waybar && have fuzzel && have seatd; then echo hyprland=installed; else echo hyprland=missing; fi
+      if have mate-session && have marco && have mate-panel; then echo mate=installed; else echo mate=missing; fi
+      if have cinnamon-session && have cinnamon; then echo cinnamon=installed; else echo cinnamon=missing; fi
+      if have budgie-desktop && have budgie-panel; then echo budgie=installed; else echo budgie=missing; fi
+      if have cosmic-session && have cosmic-comp && have cosmic-panel; then echo cosmic=installed; else echo cosmic=missing; fi
       # Startup timeline: real initialization state, independent of package history.
-      if [ "$distro" = fedora ] || [ -e /usr/lib/linuxrunner/initialize-debian.sh ] || [ -e /usr/lib/linuxrunner/initialize-arch.sh ]; then
+      if [ "$distro" = fedora ] || [ "$distro_id" = ubuntu ] || [ -e /usr/lib/linuxrunner/initialize-debian.sh ] || [ -e /usr/lib/linuxrunner/initialize-arch.sh ]; then
           if [ -f /var/lib/linuxrunner/initialized ] && { [ "$distro" != fedora ] || have awk; }; then echo first-start=done; else echo first-start=pending; fi
       fi
       if [ ! -x focus-manager ] || [ ! -x gui-test ]; then echo helpers=missing; elif [ "$helpers_stale" = 1 ]; then echo helpers=stale; else echo helpers=current; fi
@@ -117,7 +134,33 @@ check() {
     cat profile-check.result
 }
 
-stage() { echo "PROFILE_STAGE: $1"; }
+# Each step starts with an empty progress record (apt-status), so the app never
+# shows the previous step's percentage under a new step.
+stage() { : > "$SUPPORT_DIR/apt-status" 2>/dev/null || true; echo "PROFILE_STAGE: $1"; }
+# Translate package-manager output into the apt-status records the app reads
+# ("dlstatus|pmstatus:<item>:<percent>:<message>"), from the real counters each
+# tool prints: dnf "[ n/m]", apk/zypper "(n/m) Installing", xbps configuring
+# lines against its transaction size. Nothing is estimated.
+progress_filter() { # $1 = tool
+    awk -v tool="$1" -v status="$SUPPORT_DIR/apt-status" '
+        function rec(kind, n, t, name, verb) { if (t > 0) { printf "%s:%s:%.1f:%s %s (%d of %d)\n", kind, name, 100 * n / t, verb, name, n, t >> status; fflush(status) } }
+        { print; fflush() }
+        tool == "dnf" && match($0, /^\[ *[0-9]+\/[0-9]+\]/) { split(substr($0, 2, RLENGTH - 2), c, "/"); n = c[1] + 0; t = c[2] + 0
+            split(substr($0, RLENGTH + 1), w, " ")
+            if (w[1] ~ /^(Installing|Upgrading|Reinstalling)$/) rec("pmstatus", n, t, w[2], "Installing"); else if (w[1] !~ /^(Verifying|Running|Prepare|Removing|Cleaning)/) rec("dlstatus", n, t, w[1], "Downloading") }
+        tool == "dnf" && /^ +(Installing|Upgrading) +: / && match($0, /[0-9]+\/[0-9]+ *$/) { split(substr($0, RSTART), c, "/"); rec("pmstatus", c[1] + 0, c[2] + 0, $3, "Installing") }
+        (tool == "apk" || tool == "zypper") && match($0, /^\( *[0-9]+\/[0-9]+\) (Installing|Upgrading)/) { split(substr($0, 2), c, /[\/)]/); name = $3; sub(/:$/, "", $2); rec("pmstatus", c[1] + 0, c[2] + 0, name, "Installing") }
+        tool == "zypper" && /^Retrieving: / && match($0, /\( *[0-9]+\/[0-9]+\)/) { split(substr($0, RSTART + 1, RLENGTH - 2), c, "/"); rec("dlstatus", c[1] + 0, c[2] + 0, $2, "Downloading") }
+        tool == "xbps" && /^[^ ]+ +(install|update|reinstall) +/ { total++ }
+        tool == "xbps" && / configuring \.\.\.$/ { done++; name = $1; sub(/:$/, "", name); rec("pmstatus", done, total, name, "Installing") }
+'
+}
+run_progress() { # $1 = tool, rest = command; keeps the command's exit status
+    tool=$1; shift
+    : > "$SUPPORT_DIR/apt-status" 2>/dev/null || true
+    { "$@" 2>&1; echo "LR_PM_EXIT:$?"; } | progress_filter "$tool" > "$apt_log"
+    grep -q '^LR_PM_EXIT:0$' "$apt_log"
+}
 apt_log=/tmp/linuxrunner-profile-apt.$$
 # The real reason of a package failure, from the package manager's output:
 #   PROFILE_FAILURE: category=<CATEGORY> stage=<what> detail=<first matching line>
@@ -149,17 +192,17 @@ classify_failure() {
 }
 
 install_packages() {
-    # $1 = label, then Debian -- Alpine -- Arch -- Fedora package names.
-    # Missing adapters fail explicitly; never pass another distro's names or
-    # an empty request to its package manager.
+    # $1 = label, then Debian -- Alpine -- Arch -- Fedora [-- Void [-- openSUSE]]
+    # package names. Missing adapters fail explicitly; never pass another
+    # distro's names or an empty request to its package manager.
     label=$1; shift
-    debian= alpine= arch= fedora= side=debian
+    debian= alpine= arch= fedora= void= suse= side=debian
     for p in "$@"; do
         if [ "$p" = -- ]; then
-            case $side in debian) side=alpine;; alpine) side=arch;; arch) side=fedora;; *) return 2;; esac
+            case $side in debian) side=alpine;; alpine) side=arch;; arch) side=fedora;; fedora) side=void;; void) side=suse;; *) return 2;; esac
             continue
         fi
-        case $side in debian) debian="$debian $p";; alpine) alpine="$alpine $p";; arch) arch="$arch $p";; fedora) fedora="$fedora $p";; esac
+        case $side in debian) debian="$debian $p";; alpine) alpine="$alpine $p";; arch) arch="$arch $p";; fedora) fedora="$fedora $p";; void) void="$void $p";; suse) suse="$suse $p";; esac
     done
     if have apt-get; then
         export DEBIAN_FRONTEND=noninteractive
@@ -174,7 +217,15 @@ install_packages() {
         # tools). Skip that rebuild; man still works, apropos may be stale.
         echo 'man-db man-db/auto-update boolean false' | debconf-set-selections 2>/dev/null || true
         if [ -z "${apt_updated:-}" ]; then
-            if dpkg --audit 2>/dev/null | grep -q .; then stage "Finishing an interrupted installation"; dpkg --configure -a >> "$apt_log" 2>&1 || { classify_failure "$label"; return 1; }; fi
+            if dpkg --audit 2>/dev/null | grep -q .; then
+                stage "Finishing an interrupted installation"
+                # dpkg finishes what was unpacked; packages that were never
+                # downloaded (an interrupted install) need apt to fetch them.
+                if ! dpkg --force-confdef --force-confold --configure -a >> "$apt_log" 2>&1; then
+                    stage "Repairing missing packages"
+                    apt-get -o APT::Status-Fd=3 -f install -y 3> "$SUPPORT_DIR/apt-status" >> "$apt_log" 2>&1 || { classify_failure "$label"; return 1; }
+                fi
+            fi
             # Package lists from the last 3 days that can resolve these packages
             # are reused (a failed download below refreshes them and retries).
             stage "Checking package dependencies"
@@ -238,11 +289,24 @@ install_packages() {
         stage "Installing $label"
         # Use the configured Fedora repositories and normal RPM signature
         # policy. Do not erase conflicting packages or disable GPG checks.
-        dnf -y --setopt=install_weak_deps=False install $fedora > "$apt_log" 2>&1 || { cat "$apt_log"; classify_failure "$label"; return 1; }
+        run_progress dnf dnf -y --setopt=install_weak_deps=False install $fedora || { cat "$apt_log"; classify_failure "$label"; return 1; }
         cat "$apt_log"
     elif have apk; then
         stage "Installing $label"
-        apk add --no-cache $alpine > "$apt_log" 2>&1 || { cat "$apt_log"; classify_failure "$label"; return 1; }
+        run_progress apk apk add --no-cache $alpine || { cat "$apt_log"; classify_failure "$label"; return 1; }
+        cat "$apt_log"
+    elif have xbps-install; then
+        [ -n "$void" ] || { echo "PROFILE_FAILURE: category=PACKAGE_NOT_FOUND stage=$label detail=no Void Linux package adapter for this component"; return 1; }
+        stage "Installing $label"
+        # Void's signed repositories (xbps verifies RSA signatures); -S syncs
+        # the index in the same transaction as the install.
+        run_progress xbps xbps-install -Sy $void || { cat "$apt_log"; classify_failure "$label"; return 1; }
+        cat "$apt_log"
+    elif have zypper; then
+        [ -n "$suse" ] || { echo "PROFILE_FAILURE: category=PACKAGE_NOT_FOUND stage=$label detail=no openSUSE package adapter for this component"; return 1; }
+        stage "Installing $label"
+        # openSUSE's signed repositories with normal RPM signature policy.
+        run_progress zypper zypper --non-interactive install --no-recommends $suse || { cat "$apt_log"; classify_failure "$label"; return 1; }
         cat "$apt_log"
     else support_fail PROFILE package-manager-unsupported; fi
 }
@@ -271,24 +335,67 @@ build_audio_relay() {
     mv audio-relay.new audio-relay; echo "$key" > audio-relay.key
 }
 
+# Pop!_OS / Zorin OS (recorded at first start by the app): layer the vendor's
+# signed repository and defaults onto the Ubuntu base once. Runs at the first
+# account setup (right after the first launch) and again at desktop setup if
+# that did not complete.
+apply_flavor() {
+    lr_flavor=$(cat /var/lib/linuxrunner/flavor 2>/dev/null || true)
+    case "$lr_flavor" in
+        pop|zorin)
+            if [ ! -f "/var/lib/linuxrunner/$lr_flavor-initialized" ]; then
+                case "$lr_flavor" in pop) stage "Setting up Pop!_OS (System76's repository and defaults)";; zorin) stage "Setting up Zorin OS (Zorin's repositories and defaults)";; esac
+                printf '#include "%s";\nAPT::Status-Fd "3";\n' "$SUPPORT_DIR/apt-unattended.conf" > "$SUPPORT_DIR/apt-progress.conf"
+                APT_CONFIG="$SUPPORT_DIR/apt-progress.conf" /bin/sh "./initialize-$lr_flavor.sh" 3>> "$SUPPORT_DIR/apt-status" || support_fail PROFILE "$lr_flavor-initialization"
+            fi;;
+    esac
+}
+
 repair() {
     want_accounts=${1:-}
     verify_resources
     [ "$(id -u)" = 0 ] || support_fail PROFILE root-required
+    apply_flavor
     if gui_missing; then
         install_packages "X server and display support" busybox procps xvfb x11vnc xauth x11-xserver-utils x11-utils x11-apps libx11-dev libxcb1-dev build-essential pkg-config binutils xterm xfonts-base fonts-dejavu-core fontconfig dbus-daemon dbus-x11 librsvg2-common \
             -- xvfb x11vnc xclock libx11-dev libxcb-dev build-base pkgconf binutils xterm font-misc-misc font-dejavu fontconfig xauth setxkbmap xmodmap dbus \
             -- procps-ng xorg-server-xvfb x11vnc xorg-xauth xorg-xset xorg-xrandr xorg-xprop xorg-xwininfo xorg-xdpyinfo xorg-xsetroot xorg-xmodmap xorg-setxkbmap xorg-xclock libx11 libxcb gcc make pkgconf binutils xterm xorg-fonts-misc ttf-dejavu fontconfig dbus librsvg \
-            -- procps-ng util-linux-core gawk findutils xorg-x11-server-Xvfb x11vnc xorg-x11-xauth xset xrandr xprop xwininfo xdpyinfo xsetroot xmodmap setxkbmap xclock libX11-devel libxcb-devel libXext-devel gcc make pkgconf-pkg-config binutils xterm xorg-x11-fonts-misc dejavu-sans-fonts fontconfig dbus-daemon dbus-tools dbus-x11 librsvg2 || support_fail PROFILE gui-packages
+            -- procps-ng util-linux-core gawk findutils xorg-x11-server-Xvfb x11vnc xorg-x11-xauth xset xrandr xprop xwininfo xdpyinfo xsetroot xmodmap setxkbmap xclock libX11-devel libxcb-devel libXext-devel gcc make pkgconf-pkg-config binutils xterm xorg-x11-fonts-misc dejavu-sans-fonts fontconfig dbus-daemon dbus-tools dbus-x11 librsvg2 \
+            -- procps-ng gawk findutils xorg-server-xvfb x11vnc xauth xset xrandr xprop xwininfo xdpyinfo xsetroot xmodmap setxkbmap xclock libX11-devel libxcb-devel libXext-devel gcc make pkg-config binutils xterm font-misc-misc dejavu-fonts-ttf fontconfig dbus librsvg || support_fail PROFILE gui-packages
         mkdir -p /var/lib/dbus; dbus-uuidgen --ensure 2>/dev/null || true
     fi
+    # GPU display server: the distribution's own Xorg (modesetting/glamor) and
+    # Mesa drive LinuxRunner's virtual GPU (virgl -> ANGLE -> Metal); see
+    # xorg-native.sh. Optional: without it the software display is used.
+    if ! { [ -x /usr/lib/xorg/Xorg ] || [ -x /usr/lib/Xorg ] || [ -x /usr/libexec/Xorg ]; } || ! have glxinfo; then
+        # Optional but it decides GPU versus software rendering, so a failed
+        # download (large Mesa/LLVM packages on a slow link) is retried once.
+        gpu_try=1
+        while ! install_packages "GPU display server" xserver-xorg-core libgl1-mesa-dri libegl-mesa0 mesa-utils \
+            -- xorg-server mesa-dri-gallium mesa-demos \
+            -- xorg-server mesa mesa-utils \
+            -- xorg-x11-server-Xorg mesa-dri-drivers glx-utils \
+            -- xorg-server mesa-dri glxinfo; do
+            if [ "$gpu_try" -ge 2 ]; then echo 'PROFILE: GPU display server not installed; the software display remains available'; break; fi
+            gpu_try=$((gpu_try + 1)); echo 'PROFILE: GPU display server download failed; retrying once'; sleep 5
+        done
+    fi
     if gui_missing || gui_helpers_stale; then build_gui_helpers || support_fail PROFILE gui-helpers; fi
+    # File managers recognise launchers and file types through the shared MIME
+    # database. A package hook that failed (seen once in an interrupted Arch
+    # upgrade) leaves it missing: every .desktop launcher then shows as a plain
+    # document. Regenerate it when absent; normally a no-op.
+    if [ -d /usr/share/mime/packages ] && [ ! -s /usr/share/mime/mime.cache ] && have update-mime-database; then
+        stage "Rebuilding the file type database"
+        update-mime-database /usr/share/mime || echo 'PROFILE: file type database could not be rebuilt; launchers may show as documents'
+    fi
     if desktop_missing; then
         if ! desktop_commands_present; then
             install_packages "desktop (window manager, panel, file manager)" openbox lxpanel pcmanfm adwaita-icon-theme fonts-dejavu-core dbus-daemon dbus-bin xterm \
                 -- openbox xfce4-panel pcmanfm adwaita-icon-theme gdk-pixbuf-loaders font-dejavu dbus xterm \
                 -- openbox lxqt-panel pcmanfm-qt adwaita-icon-theme ttf-dejavu dbus xterm \
-                -- openbox lxpanel lxmenu-data pcmanfm adwaita-icon-theme dejavu-sans-fonts dbus-daemon dbus-tools xterm || support_fail PROFILE desktop-packages
+                -- openbox lxpanel lxmenu-data pcmanfm adwaita-icon-theme dejavu-sans-fonts dbus-daemon dbus-tools xterm \
+                -- openbox lxpanel pcmanfm adwaita-icon-theme dejavu-fonts-ttf dbus xterm || support_fail PROFILE desktop-packages
         fi
         stage "Building desktop helpers"
         build_desktop_probe || support_fail PROFILE desktop-probe
@@ -312,7 +419,7 @@ repair() {
     fi
     # Account tools: LinuxRunner's Debian image does not include passwd.
     if [ "$want_accounts" = accounts ] && accounts_missing; then
-        install_packages "account tools" passwd -- shadow -- shadow -- shadow-utils || support_fail PROFILE account-tools
+        install_packages "account tools" passwd -- shadow -- shadow -- shadow-utils -- shadow || support_fail PROFILE account-tools
     fi
     stage "Checking"
     check
@@ -325,9 +432,10 @@ case "$mode" in
     accounts)
         # Account tools only (and sudo when asked): native account setup.
         [ "$(id -u)" = 0 ] || support_fail PROFILE root-required
+        apply_flavor
         stage "Checking existing installation"
-        if accounts_missing; then install_packages "account tools" passwd -- shadow -- shadow -- shadow-utils || support_fail PROFILE account-tools; else echo 'PROFILE: account tools already installed'; fi
-        if [ "${2:-}" = sudo ] && ! have sudo; then install_packages "administrator tools" sudo -- sudo -- sudo -- sudo || support_fail PROFILE sudo; fi
+        if accounts_missing; then install_packages "account tools" passwd -- shadow -- shadow -- shadow-utils -- shadow || support_fail PROFILE account-tools; else echo 'PROFILE: account tools already installed'; fi
+        if [ "${2:-}" = sudo ] && ! have sudo; then install_packages "administrator tools" sudo -- sudo -- sudo -- sudo -- sudo || support_fail PROFILE sudo; fi
         # Present is not enough: each tool must run.
         stage "Verifying installation"
         accounts_missing && support_fail PROFILE account-tools-missing
@@ -395,6 +503,157 @@ case "$mode" in
         fi
         have enlightenment_start && have terminology || support_fail PROFILE enlightenment-missing
         echo 'PROFILE: enlightenment=PASS';;
+    gnome)
+        [ "$distro_id" = ubuntu ] || support_fail PROFILE gnome-ubuntu-only
+        repair "${2:-}"
+        if [ "$os_id" = zorin ]; then
+            # Zorin OS's own desktop: GNOME Shell in Zorin's session mode with
+            # the Zorin menu, taskbar, desktop icons, tiling and themes, from
+            # Zorin's signed repository (architecture-independent packages).
+            zorin_desktop_present() {
+                for package in zorin-desktop-session gnome-shell-extensions-zorin-desktop zorin-desktop-themes zorin-icon-themes zorin-os-default-settings gnome-menus nautilus gnome-terminal dbus-x11; do
+                    [ "$(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null)" = installed ] || return 1
+                done
+            }
+            if ! zorin_desktop_present; then
+                install_packages "Zorin Desktop" zorin-desktop-session gnome-shell-extensions-zorin-desktop zorin-desktop-themes zorin-icon-themes zorin-os-default-settings zorin-appearance gnome-menus nautilus gnome-terminal dbus-x11 -- -- -- || support_fail PROFILE gnome-packages
+            fi
+            # Zorin's default wallpaper (/usr/share/backgrounds/Zorin.jpg).
+            # Optional: without it the desktop shows a plain background.
+            if [ ! -e /usr/share/backgrounds/Zorin.jpg ]; then
+                install_packages "Zorin wallpapers" zorin-os-wallpapers -- -- -- || echo 'PROFILE: Zorin wallpapers unavailable; plain background'
+            fi
+            # Zorin's wallpapers are 6144x3340: one 82 MB texture, larger than
+            # a single GPU buffer may be (64 MB), so GNOME Shell cannot create
+            # its background. Install 2560-pixel copies of the same pictures
+            # and point Zorin's background setting at them (a higher-priority
+            # schema override; Zorin's own files are unchanged).
+            if [ -e /usr/share/backgrounds/Zorin.jpg ] && [ ! -e /usr/share/backgrounds/linuxrunner/Zorin-2560.jpg ] && have python3; then
+                mkdir -p /usr/share/backgrounds/linuxrunner
+                python3 - <<'PYSCALE' || echo 'PROFILE: Zorin wallpaper could not be scaled; plain background'
+import gi
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import GdkPixbuf
+for name in ("Zorin", "Zorin-Dark"):
+    source = "/usr/share/backgrounds/%s.jpg" % name
+    try:
+        picture = GdkPixbuf.Pixbuf.new_from_file_at_scale(source, 2560, -1, True)
+    except Exception:
+        continue
+    picture.savev("/usr/share/backgrounds/linuxrunner/%s-2560.jpg" % name, "jpeg", ["quality"], ["90"])
+PYSCALE
+            fi
+            if [ -e /usr/share/backgrounds/linuxrunner/Zorin-2560.jpg ]; then
+                dark=/usr/share/backgrounds/linuxrunner/Zorin-Dark-2560.jpg; [ -e "$dark" ] || dark=/usr/share/backgrounds/linuxrunner/Zorin-2560.jpg
+                printf '[org.gnome.desktop.background]\npicture-uri = %s\npicture-uri-dark = %s\n\n[org.gnome.desktop.screensaver]\npicture-uri = %s\n' \
+                    "'file:///usr/share/backgrounds/linuxrunner/Zorin-2560.jpg'" "'file://$dark'" "'file:///usr/share/backgrounds/linuxrunner/Zorin-2560.jpg'" \
+                    > /usr/share/glib-2.0/schemas/90_linuxrunner-zorin.gschema.override
+                glib-compile-schemas /usr/share/glib-2.0/schemas || echo 'PROFILE: schema compile failed'
+            fi
+            # zorin-desktop-themes links its GNOME Shell themes into
+            # /usr/share/gnome-shell/theme only if GNOME Shell was already
+            # installed when it was configured. Zorin OS setup installs the
+            # themes first, so run the package's own configure step again.
+            zorin_shell_theme=$(sed -n 's/.*"themeResourceName": *"theme\/\([^/]*\)\/.*/\1/p' /usr/share/gnome-shell/modes/zorin.json 2>/dev/null)
+            if [ -n "$zorin_shell_theme" ] && [ ! -e "/usr/share/gnome-shell/theme/$zorin_shell_theme/gnome-shell-theme.gresource" ] &&
+                [ -x /var/lib/dpkg/info/zorin-desktop-themes.postinst ]; then
+                stage "Linking Zorin GNOME Shell themes"
+                /var/lib/dpkg/info/zorin-desktop-themes.postinst configure || echo 'PROFILE: zorin-desktop-themes configure step failed'
+            fi
+            [ -z "$zorin_shell_theme" ] || [ -e "/usr/share/gnome-shell/theme/$zorin_shell_theme/gnome-shell-theme.gresource" ] || support_fail PROFILE zorin-shell-theme-missing
+            zorin_desktop_present && have gnome-shell && [ -x /usr/lib/systemd/systemd-logind ] && [ -f /usr/share/gnome-shell/modes/zorin.json ] && [ -d /usr/share/gnome-shell/extensions/zorin-taskbar@zorinos.com ] || support_fail PROFILE gnome-missing
+            echo 'PROFILE: gnome-packages=present flavor=zorin session=not-tested'
+            exit 0
+        fi
+        if ! gnome_packages_present; then
+            install_packages "Ubuntu GNOME" gnome-shell gnome-session ubuntu-session gnome-shell-extension-ubuntu-dock ubuntu-settings ubuntu-wallpapers yaru-theme-gnome-shell yaru-theme-gtk yaru-theme-icon nautilus gnome-terminal dbus-x11 -- -- -- || support_fail PROFILE gnome-packages
+        fi
+        gnome_packages_present && have gnome-shell && have gnome-session && [ -x /usr/lib/systemd/systemd-logind ] && [ -f /usr/share/gnome-shell/modes/ubuntu.json ] && [ -d /usr/share/gnome-shell/extensions/ubuntu-dock@ubuntu.com ] || support_fail PROFILE gnome-missing
+        echo 'PROFILE: gnome-packages=present session=not-tested';;
+    mate)
+        # MATE from the distribution's own packages (core session, no extras).
+        repair "${2:-}"
+        if ! { have mate-session && have marco && have mate-panel; }; then
+            install_packages "MATE" mate-desktop-environment-core mate-terminal \
+                -- mate-desktop mate-session-manager marco mate-panel caja mate-terminal mate-settings-daemon \
+                -- mate mate-terminal \
+                -- mate-session-manager marco mate-panel caja mate-terminal mate-settings-daemon || support_fail PROFILE mate-packages
+        fi
+        have mate-session && have marco && have mate-panel || support_fail PROFILE mate-missing
+        # The distribution's schema override picks the panel layout (Ubuntu:
+        # 'familiar'). Every applet that layout names must exist, or MATE
+        # opens one "Error loading applet" dialog per missing factory.
+        # Install the distribution packages that provide them (apt only).
+        if command -v apt-get >/dev/null 2>&1; then
+            mate_layout=$(sed -n "s/^default-layout=['\"]*\([^'\"]*\).*/\1/p" /usr/share/glib-2.0/schemas/*.gschema.override 2>/dev/null | tail -n 1)
+            mate_layout_file=/usr/share/mate-panel/layouts/${mate_layout:-default}.layout
+            mate_missing=
+            if [ -f "$mate_layout_file" ]; then
+                for factory in $(sed -n 's/^applet-iid=\([^:]*\)::.*/\1/p' "$mate_layout_file" | sort -u); do
+                    grep -qs "^Id=$factory\$" /usr/share/mate-panel/applets/*.mate-panel-applet && continue
+                    case "$factory" in
+                        BriskMenuFactory) mate_missing="$mate_missing mate-applet-brisk-menu";;
+                        IndicatorAppletCompleteFactory|IndicatorAppletFactory) mate_missing="$mate_missing mate-indicator-applet";;
+                        TrashAppletFactory|CommandAppletFactory|NetspeedAppletFactory|MultiLoadAppletFactory|StickyNotesAppletFactory) mate_missing="$mate_missing mate-applets";;
+                        *) echo "PROFILE: mate layout applet $factory has no known package";;
+                    esac
+                done
+            fi
+            if [ -n "$mate_missing" ]; then
+                # shellcheck disable=SC2086
+                install_packages "MATE panel applets" $(printf '%s\n' $mate_missing | sort -u) -- -- -- ||
+                    echo 'PROFILE: mate panel applets could not be installed; the panel may report missing applets'
+            fi
+            echo "PROFILE: mate layout=${mate_layout:-default}"
+        fi
+        echo 'PROFILE: mate=PASS';;
+    cinnamon)
+        # Cinnamon; not packaged by Alpine.
+        repair "${2:-}"
+        [ "$distro" != alpine ] || support_fail PROFILE cinnamon-not-packaged
+        if ! { have cinnamon-session && have cinnamon; }; then
+            install_packages "Cinnamon" cinnamon-core \
+                -- \
+                -- cinnamon gnome-terminal \
+                -- cinnamon cinnamon-session gnome-terminal || support_fail PROFILE cinnamon-packages
+        fi
+        have cinnamon-session && have cinnamon || support_fail PROFILE cinnamon-missing
+        echo 'PROFILE: cinnamon=PASS';;
+    cosmic)
+        # Pop!_OS's own desktop (COSMIC) from System76's repository.
+        repair "${2:-}"
+        [ "$os_id" = pop ] || support_fail PROFILE cosmic-needs-pop
+        if ! { have cosmic-session && have cosmic-comp && have cosmic-panel; }; then
+            install_packages "COSMIC Desktop" cosmic-session cosmic-term cosmic-files cosmic-wallpapers cosmic-icons -- -- -- || support_fail PROFILE cosmic-packages
+        fi
+        have cosmic-session && have cosmic-comp && have cosmic-panel || support_fail PROFILE cosmic-missing
+        # window-fit keeps cosmic-comp's nested output at the screen size.
+        if [ ! -x window-fit ] || [ window-fit.c -nt window-fit ]; then
+            gcc window-fit.c -O2 -Wall -lX11 -o window-fit.new && chmod 755 window-fit.new && mv window-fit.new window-fit || support_fail PROFILE window-fit
+        fi
+        echo 'PROFILE: cosmic=PASS';;
+    budgie)
+        # Budgie; not packaged by Alpine.
+        repair "${2:-}"
+        [ "$distro" != alpine ] || support_fail PROFILE budgie-not-packaged
+        if ! { have budgie-desktop && have budgie-panel; }; then
+            install_packages "Budgie" budgie-desktop gnome-terminal \
+                -- \
+                -- budgie gnome-terminal \
+                -- budgie-desktop gnome-terminal || support_fail PROFILE budgie-packages
+        fi
+        have budgie-desktop && have budgie-panel || support_fail PROFILE budgie-missing
+        echo 'PROFILE: budgie=PASS';;
+    i3)
+        repair "${2:-}"
+        if ! { have i3 && have xterm && have dmenu_run; }; then
+            install_packages "i3" i3-wm suckless-tools xterm \
+                -- i3wm dmenu xterm \
+                -- i3-wm dmenu xterm \
+                -- i3 dmenu xterm || support_fail PROFILE i3-packages
+        fi
+        have i3 && have xterm && have dmenu_run || support_fail PROFILE i3-missing
+        echo 'PROFILE: i3=PASS';;
     wayfire)
         # Wayfire (wlroots), its wf-shell panel/dock/background, the foot terminal
         # and the WCM settings app from the distribution's packages. It runs
@@ -408,6 +667,16 @@ case "$mode" in
                 -- wayfire wf-shell foot xorg-x11-server-Xwayland seatd wayland-devel wayland-protocols-devel libxkbcommon-devel || support_fail PROFILE wayfire-packages
         fi
         have wayfire && have wf-panel && have foot || support_fail PROFILE wayfire-missing
+        # The GPU session uses seatd and builds the shared KMS bridge. Older
+        # Wayfire profiles installed only the desktop commands, which silently
+        # forced software rendering when seatd or development headers were absent.
+        if ! { have seatd && have gcc && have pkg-config && pkg-config --exists wayland-client xkbcommon; }; then
+            install_packages "Wayfire display dependencies" seatd gcc pkg-config libwayland-dev libxkbcommon-dev \
+                -- -- seatd gcc pkgconf wayland libxkbcommon \
+                -- seatd gcc pkgconf-pkg-config wayland-devel libxkbcommon-devel || support_fail PROFILE wayfire-display-dependencies
+        fi
+        have seatd && have gcc && have pkg-config && pkg-config --exists wayland-client xkbcommon ||
+            support_fail PROFILE wayfire-display-dependencies-missing
         echo 'PROFILE: wayfire=PASS';;
     xfce)
         # Xfce 4 X11 session from the distribution's packages, on top of the
@@ -415,11 +684,15 @@ case "$mode" in
         # own desktop: kali-desktop-xfce (Kali menu, themes and wallpaper).
         repair "${2:-}"
         if ! { have startxfce4 && have xfce4-panel && have xfwm4 && have xfdesktop; }; then
-            if [ "$distro_id" = kali ]; then
-                install_packages "Kali desktop (Xfce)" kali-desktop-xfce -- -- -- || support_fail PROFILE xfce-packages
-            else
-                support_fail PROFILE xfce-not-yet-qualified-on-$distro_id
-            fi
+            case "$distro_id" in
+                kali) install_packages "Kali desktop (Xfce)" kali-desktop-xfce -- -- -- || support_fail PROFILE xfce-packages;;
+                # Debian and Ubuntu-based: the distribution's Xfce desktop
+                # (session, panel, desktop, Thunar, terminal, settings).
+                debian|ubuntu|pop|zorin) install_packages "Xfce" xfce4 xfce4-terminal xfce4-notifyd dbus-x11 -- -- -- || support_fail PROFILE xfce-packages;;
+                # Void Linux's own desktop: its official installer images ship Xfce.
+                void) install_packages "Xfce" -- -- -- -- xfce4 xfce4-terminal xfce4-notifyd dbus-x11 || support_fail PROFILE xfce-packages;;
+                *) support_fail PROFILE xfce-not-yet-qualified-on-$distro_id;;
+            esac
         fi
         have startxfce4 && have xfce4-panel && have xfwm4 && have xfdesktop || support_fail PROFILE xfce-missing
         echo 'PROFILE: xfce=PASS';;
@@ -451,5 +724,121 @@ case "$mode" in
                 swaybg papirus-icon-theme inter-font ttf-jetbrains-mono || echo 'PROFILE: hyprland appearance packages unavailable; plain background'
         fi
         echo 'PROFILE: hyprland=PASS';;
+    mode-agent)
+        # Gemini CLI is not offered: it needs WebAssembly, which Node lacks in
+        # LinuxRunner's interpreter (--jitless).
+        # Agent Mode (opt-in): command-line AI coding agents with the tools they
+        # use. Each agent is its own npm package; one failing does not stop the
+        # others. Sign-in happens inside each agent (no keys are stored here).
+        [ "$(id -u)" = 0 ] || support_fail PROFILE root-required
+        apply_flavor
+        stage "Installing developer tools"
+        if ! { have node && have npm && have git && have rg; }; then
+            install_packages "developer tools" nodejs npm git curl ca-certificates ripgrep python3 build-essential \
+                -- nodejs npm git curl ca-certificates ripgrep python3 build-base bash \
+                -- nodejs npm git curl ca-certificates ripgrep python base-devel \
+                -- nodejs npm git curl ca-certificates ripgrep python3 gcc make \
+                -- nodejs git curl ca-certificates ripgrep python3 base-devel || support_fail PROFILE agent-tools
+        fi
+        have node && have npm || support_fail PROFILE node-missing
+        node_major=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
+        echo "PROFILE: node=$(node --version 2>/dev/null) npm=$(npm --version 2>/dev/null)"
+        agents_ok=
+        for spec in "Claude Code:@anthropic-ai/claude-code:claude:18" "Codex CLI:@openai/codex:codex:18" "OpenCode:opencode-ai:opencode:18"; do
+            title=${spec%%:*}; rest=${spec#*:}; package=${rest%%:*}; rest=${rest#*:}; command=${rest%%:*}; need=${rest#*:}
+            stage "Installing $title"
+            if have "$command"; then echo "PROFILE: agent $command already installed"; agents_ok="$agents_ok $command"; continue; fi
+            if [ "$node_major" -lt "$need" ]; then echo "PROFILE: agent $command skipped: needs Node $need+, this distribution has $node_major"; continue; fi
+            if npm install -g --no-fund --no-audit --loglevel=error "$package"; then
+                have "$command" && agents_ok="$agents_ok $command" && echo "PROFILE: agent $command=PASS"
+            else
+                echo "PROFILE: agent $command install failed; the other agents are kept"
+            fi
+        done
+        [ -n "$agents_ok" ] || support_fail PROFILE agents-missing
+        install -m 755 ./lr-agent.sh /usr/local/bin/lr-agent || support_fail PROFILE agent-launcher
+        echo "PROFILE: agents=$agents_ok"
+        echo 'PROFILE: mode-agent=PASS';;
+    mode-rdp)
+        # RDP Mode (opt-in): xrdp shares the running LinuxRunner desktop with
+        # Remote Desktop clients on the same network (modes.sh starts it).
+        [ "$(id -u)" = 0 ] || support_fail PROFILE root-required
+        apply_flavor
+        stage "Installing Remote Desktop server"
+        if ! have xrdp; then
+            install_packages "xrdp" xrdp -- xrdp -- xrdp -- xrdp -- xrdp || support_fail PROFILE xrdp-packages
+        fi
+        have xrdp || support_fail PROFILE xrdp-missing
+        echo 'PROFILE: mode-rdp=PASS';;
+    mode-ssh)
+        # SSH Mode (opt-in): OpenSSH server on port 2222 for terminals, editors
+        # (VS Code Remote) and file transfer from a computer.
+        [ "$(id -u)" = 0 ] || support_fail PROFILE root-required
+        apply_flavor
+        stage "Installing SSH server"
+        if [ ! -x /usr/sbin/sshd ]; then
+            install_packages "OpenSSH server" openssh-server -- openssh-server -- openssh -- openssh-server -- openssh || support_fail PROFILE ssh-packages
+        fi
+        [ -x /usr/sbin/sshd ] || support_fail PROFILE sshd-missing
+        echo 'PROFILE: mode-ssh=PASS';;
+    mode-liftoff)
+        # Liftoff (Dev Server mode, opt-in): Python, Node.js and git; modes.sh
+        # serves ~/Sites on port 8080 and any dev server can listen on 0.0.0.0.
+        [ "$(id -u)" = 0 ] || support_fail PROFILE root-required
+        apply_flavor
+        stage "Installing web development tools"
+        if ! { have python3 && have node && have npm && have git; }; then
+            install_packages "web development tools" python3 nodejs npm git curl ca-certificates \
+                -- python3 nodejs npm git curl ca-certificates \
+                -- python nodejs npm git curl ca-certificates \
+                -- python3 nodejs npm git curl ca-certificates \
+                -- python3 nodejs git curl ca-certificates || support_fail PROFILE liftoff-tools
+        fi
+        have python3 && have node || support_fail PROFILE liftoff-missing
+        mkdir -p /var/lib/linuxrunner && touch /var/lib/linuxrunner/mode-liftoff
+        echo 'PROFILE: mode-liftoff=PASS';;
+    mode-pocket)
+        # Pocket Cloud (Pocket Server mode, opt-in): WsgiDAV (WebDAV + web file
+        # browser, pure Python) in its own virtual environment.
+        [ "$(id -u)" = 0 ] || support_fail PROFILE root-required
+        apply_flavor
+        stage "Installing Python"
+        # venv imports without Debian's python3-venv, but cannot create an
+        # environment (no ensurepip); check what creating one needs.
+        if ! { have python3 && python3 -c 'import ensurepip, venv' >/dev/null 2>&1; }; then
+            install_packages "Python" python3 python3-venv python3-pip -- python3 py3-pip -- python python-pip -- python3 python3-pip -- python3 python3-pip || support_fail PROFILE pocket-python
+        fi
+        stage "Installing Pocket Cloud server"
+        venv=/opt/linuxrunner/pocket-cloud
+        if [ ! -x "$venv/bin/wsgidav" ]; then
+            rm -rf "$venv"   # a failed earlier attempt leaves a broken environment
+            python3 -m venv "$venv" || support_fail PROFILE pocket-venv
+            "$venv/bin/pip" install --disable-pip-version-check --no-cache-dir -q wsgidav cheroot || support_fail PROFILE pocket-server
+        fi
+        [ -x "$venv/bin/wsgidav" ] || support_fail PROFILE pocket-missing
+        touch /var/lib/linuxrunner/mode-pocket 2>/dev/null || { mkdir -p /var/lib/linuxrunner && touch /var/lib/linuxrunner/mode-pocket; }
+        echo 'PROFILE: mode-pocket=PASS';;
+    mode-arcadia)
+        # Arcadia (Retro Lab mode, opt-in): RetroArch and the classic-console
+        # cores the distribution packages. No games are included.
+        [ "$(id -u)" = 0 ] || support_fail PROFILE root-required
+        apply_flavor
+        stage "Installing RetroArch"
+        if ! have retroarch; then
+            install_packages "RetroArch" retroarch -- retroarch -- retroarch -- retroarch -- retroarch || support_fail PROFILE arcadia-retroarch
+        fi
+        have retroarch || support_fail PROFILE arcadia-missing
+        stage "Installing emulator cores"
+        if have apt-get; then cores="libretro-nestopia libretro-snes9x libretro-gambatte libretro-mgba libretro-genesisplusgx libretro-beetle-pce-fast"
+        elif have pacman; then cores="libretro-nestopia libretro-snes9x libretro-gambatte libretro-mgba libretro-genesis-plus-gx libretro-beetle-pce"
+        elif have xbps-install; then cores="libretro-nestopia libretro-snes9x libretro-gambatte libretro-mgba libretro-genesis-plus-gx"
+        else cores=; fi
+        installed_cores=
+        for core in $cores; do
+            if install_packages "$core" "$core" -- "$core" -- "$core" -- "$core" -- "$core" >/dev/null 2>&1; then installed_cores="$installed_cores $core"; else echo "PROFILE: core $core not offered here"; fi
+        done
+        echo "PROFILE: cores=${installed_cores# }"
+        mkdir -p /var/lib/linuxrunner && touch /var/lib/linuxrunner/mode-arcadia
+        echo 'PROFILE: mode-arcadia=PASS';;
     *) exit 2;;
 esac

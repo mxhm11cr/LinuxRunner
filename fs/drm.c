@@ -49,6 +49,7 @@
 #define DRM_MODE_ADDFB_ 0xc01c64aeU
 #define DRM_MODE_RMFB_ 0xc00464afU
 #define DRM_MODE_PAGE_FLIP_ 0xc01864b0U
+#define DRM_MODE_DIRTYFB_ 0xc01864b1U
 #define DRM_MODE_GETPLANERESOURCES_ 0xc01064b5U
 #define DRM_MODE_GETPLANE_ 0xc02064b6U
 #define DRM_MODE_SETPLANE_ 0xc03064b7U
@@ -90,7 +91,11 @@
 #define CLIENT_CAP_ASPECT_RATIO 4
 #define DRM_CLOEXEC_ 02000000U
 
-#define MAX_HANDLES 1024
+// GEM handles per open file grow on demand (games keep thousands of textures
+// and buffers alive; the kernel has no such limit). One submission may
+// reference up to MAX_SUBMIT_HANDLES of them.
+#define MAX_HANDLES 65536
+#define MAX_SUBMIT_HANDLES 4096
 #define BUFFER_LIMIT (64ULL << 20)
 #define TOTAL_BUDGET (512ULL << 20)
 
@@ -140,6 +145,9 @@ struct buffer {
     uint32_t res_id;
     void *host_map;
     struct buffer *next_virgl; // virgl_buffers list (PRIME imports find the same resource)
+    // Scanout readback cache: the virgl_generation at which this buffer's guest
+    // pages last matched the host resource (0: unknown). See scanout_sync_box.
+    atomic_ullong synced_generation;
 };
 #define EVENT_QUEUE 16
 struct drm_file {
@@ -147,7 +155,8 @@ struct drm_file {
     bool virgl;            // virtio-gpu render node: one host virgl context per open file
     bool ctx_created;
     uint32_t ctx_id;
-    struct buffer *handles[MAX_HANDLES]; // handle n is handles[n - 1]
+    struct buffer **handles;   // handle n is handles[n - 1]; grows up to MAX_HANDLES
+    uint32_t handle_capacity, handle_hint;   // hint: no free slot below it
     union display_event events[EVENT_QUEUE];
     unsigned event_count;
     struct { uint64_t sequence, user_data; uint32_t type; } pending[EVENT_QUEUE];
@@ -165,6 +174,14 @@ void lr_virgl_install(const struct lr_virgl_backend *backend) { virgl = backend;
 static lock_t virgl_lock = LOCK_INITIALIZER;   // virgl_buffers
 static struct buffer *virgl_buffers;
 static atomic_uint next_virgl_ctx = 1, next_virgl_res = 1;
+// Counts command submissions to any context: GPU work that may change any
+// resource. A scanout synced at the current generation needs no readback.
+static atomic_ullong virgl_generation = 1;
+static bool readback_cache_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) { const char *v = getenv("LR_SCANOUT_READBACK_CACHE"); enabled = !(v && v[0] == '0'); }
+    return enabled;
+}
 
 static void buffer_put(struct buffer *b) {
     if (atomic_fetch_sub(&b->refs, 1) != 1) return;
@@ -182,13 +199,22 @@ static void buffer_put(struct buffer *b) {
 }
 
 static int install_handle(struct drm_file *f, struct buffer *b, uint32_t *handle) {
-    for (unsigned i = 0; i < MAX_HANDLES; i++) {
-        if (!f->handles[i]) { f->handles[i] = b; *handle = i + 1; return 0; }
+    for (uint32_t i = f->handle_hint; i < f->handle_capacity; i++) {
+        if (!f->handles[i]) { f->handles[i] = b; *handle = i + 1; f->handle_hint = i + 1; return 0; }
     }
-    return _ENOSPC;
+    if (f->handle_capacity >= MAX_HANDLES) return _ENOSPC;
+    uint32_t capacity = f->handle_capacity ? f->handle_capacity * 2 : 256;
+    if (capacity > MAX_HANDLES) capacity = MAX_HANDLES;
+    struct buffer **grown = realloc(f->handles, capacity * sizeof *grown);
+    if (!grown) return _ENOMEM;
+    memset(grown + f->handle_capacity, 0, (capacity - f->handle_capacity) * sizeof *grown);
+    uint32_t slot = f->handle_capacity;
+    f->handles = grown; f->handle_capacity = capacity;
+    f->handles[slot] = b; *handle = slot + 1; f->handle_hint = slot + 1;
+    return 0;
 }
 static struct buffer *lookup(struct drm_file *f, uint32_t handle) {
-    return handle && handle <= MAX_HANDLES ? f->handles[handle - 1] : NULL;
+    return handle && handle <= f->handle_capacity ? f->handles[handle - 1] : NULL;
 }
 
 static int create_dumb(struct drm_file *f, struct create_dumb *c) {
@@ -223,7 +249,7 @@ static int create_dumb(struct drm_file *f, struct create_dumb *c) {
 static int release_handle(struct drm_file *f, uint32_t handle) {
     lock(&f->lock);
     struct buffer *b = lookup(f, handle);
-    if (b) f->handles[handle - 1] = NULL;
+    if (b) { f->handles[handle - 1] = NULL; if (handle - 1 < f->handle_hint) f->handle_hint = handle - 1; }
     unlock(&f->lock);
     if (!b) return _EINVAL;
     buffer_put(b);
@@ -263,7 +289,7 @@ static int fd_to_handle(struct drm_file *f, struct prime *p) {
         unlock(&virgl_lock);
         if (shared) {
             lock(&f->lock);
-            for (unsigned i = 0; i < MAX_HANDLES; i++)
+            for (uint32_t i = 0; i < f->handle_capacity; i++)
                 if (f->handles[i] == shared) { p->handle = i + 1; unlock(&f->lock); buffer_put(shared); return 0; }
             int error = install_handle(f, shared, &p->handle);
             unlock(&f->lock);
@@ -273,7 +299,7 @@ static int fd_to_handle(struct drm_file *f, struct prime *p) {
     }
     lock(&f->lock);
     // The same buffer imported twice is the same handle, as in the kernel.
-    for (unsigned i = 0; i < MAX_HANDLES; i++) {
+    for (uint32_t i = 0; i < f->handle_capacity; i++) {
         struct buffer *b = f->handles[i];
         if (b && b->source == source && b->offset == offset && b->size == size) {
             p->handle = i + 1;
@@ -551,7 +577,11 @@ static void fill_crtc(struct mode_crtc *c) {
 // its shared guest memory once before it is shown, so the display bridge and
 // everything after it read the finished frame. The owning file's context is
 // taken under kms.lock (drm_close drops a file's framebuffers under it).
-static void scanout_sync(uint32_t fb_id) {
+static void presentation_damage(uint32_t fb_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+static uint64_t monotonic_ns(void);
+// Measurement counters (written with ISH_SCANOUT_DUMP statistics).
+static atomic_ullong stat_dirtyfb, stat_readbacks, stat_readback_ns, stat_readback_pixels;
+static void scanout_sync_box(uint32_t fb_id, const struct lr_virgl_box *area) {
     lock(&kms.lock);
     struct framebuffer *fb = fb_lookup(fb_id);
     struct framebuffer copy = fb && fb->buffer->res_id ? *fb : (struct framebuffer) {0};
@@ -560,12 +590,261 @@ static void scanout_sync(uint32_t fb_id) {
     if (copy.buffer) atomic_fetch_add(&copy.buffer->refs, 1);
     unlock(&kms.lock);
     if (!copy.buffer) return;
+    // LR_SCANOUT_READBACK=0 (measurement only): skip presentation readbacks to
+    // isolate their cost. Nothing reaches the viewer in that mode.
+    static int readback = -1;
+    if (readback < 0) { const char *v = getenv("LR_SCANOUT_READBACK"); readback = !(v && v[0] == '0'); }
+    if (!readback) { buffer_put(copy.buffer); return; }
     struct lr_virgl_box box = {0, 0, 0, copy.width, copy.height, 1};
-    int err = virgl->transfer(ctx, copy.buffer->res_id, 0, 0, copy.pitch, 0, &box, copy.offset);
+    if (area) {
+        // Clamp the damaged rectangle to the framebuffer (as the kernel's
+        // virtio-gpu dirtyfb does) and read back only that part.
+        uint32_t x = area->x < copy.width ? area->x : copy.width, y = area->y < copy.height ? area->y : copy.height;
+        uint32_t w = area->w < copy.width - x ? area->w : copy.width - x, h = area->h < copy.height - y ? area->h : copy.height - y;
+        if (!w || !h) { buffer_put(copy.buffer); return; }
+        box = (struct lr_virgl_box) {x, y, 0, w, h, 1};
+    }
+    uint64_t offset = copy.offset + (uint64_t) box.y * copy.pitch + (uint64_t) box.x * 4;
+    // Generation before the readback: a submission racing with it leaves the
+    // buffer marked stale. A partial (damage) readback keeps the pages current
+    // only if they were current before: DIRTYFB reports all damage since the
+    // previous report.
+    unsigned long long generation = atomic_load(&virgl_generation);
+    uint64_t transfer_start = monotonic_ns();
+    int err = virgl->transfer(ctx, copy.buffer->res_id, 0, 0, copy.pitch, 0, &box, offset);
+    atomic_fetch_add(&stat_readbacks, 1); atomic_fetch_add(&stat_readback_ns, monotonic_ns() - transfer_start);
+    atomic_fetch_add(&stat_readback_pixels, (unsigned long long) box.w * box.h);
+    if (!err && (!area || atomic_load(&copy.buffer->synced_generation)))
+        atomic_store(&copy.buffer->synced_generation, generation);
+    if (!err) presentation_damage(fb_id, box.x, box.y, box.w, box.h);
+    else if (err)
+        atomic_store(&copy.buffer->synced_generation, 0);
     static atomic_uint reported;
     if (err && atomic_fetch_add(&reported, 1) < 8)
         fprintf(stderr, "VIRGL_SCANOUT: readback of resource %u (%ux%u pitch %u) failed: %d\n", copy.buffer->res_id, copy.width, copy.height, copy.pitch, err);
     buffer_put(copy.buffer);
+}
+
+static void scanout_sync(uint32_t fb_id) { scanout_sync_box(fb_id, NULL); }
+
+// ---- direct presentation (lr_drm_scanout_copy) -------------------------------
+static struct {
+    lock_t lock;
+    uint64_t serial;                  // advances with each successful scanout readback
+    uint32_t fb_id;                   // framebuffer the damage refers to
+    uint32_t x1, y1, x2, y2;          // damage since the last copy (x2 == 0: none)
+} presented = {.lock = LOCK_INITIALIZER};
+
+// ISH_SCANOUT_DUMP=<file> (host test runs only): poll lr_drm_scanout_copy as
+// the viewer does, count new frames, and write the last one (BGRA) plus
+// <file>.txt statistics at exit.
+static const char *dump_path;
+static uint8_t *dump_frame; static struct lr_scanout_frame dump_info;
+static atomic_ullong dump_frames, dump_polls, dump_damage_pixels; static uint64_t dump_started_ns;
+static void dump_write(void) {
+    if (!dump_frame || !dump_info.width) return;
+    FILE *f = fopen(dump_path, "wb");
+    if (f) { fwrite(dump_frame, 4, (size_t) dump_info.width * dump_info.height, f); fclose(f); }
+    char stats[4096]; snprintf(stats, sizeof stats, "%s.txt", dump_path);
+    f = fopen(stats, "w");
+    if (f) {
+        double seconds = (monotonic_ns() - dump_started_ns) / 1e9;
+        fprintf(f, "frames=%llu polls=%llu seconds=%.2f fps=%.2f damage_pixels=%llu width=%u height=%u\n",
+            (unsigned long long) dump_frames, (unsigned long long) dump_polls, seconds, dump_frames / (seconds > 0 ? seconds : 1),
+            (unsigned long long) dump_damage_pixels, dump_info.width, dump_info.height);
+        unsigned long long readbacks = atomic_load(&stat_readbacks);
+        fprintf(f, "dirtyfb=%llu readbacks=%llu readback_ms_total=%.1f readback_ms_avg=%.3f readback_mpixels=%.1f\n",
+            (unsigned long long) atomic_load(&stat_dirtyfb), readbacks, atomic_load(&stat_readback_ns) / 1e6,
+            readbacks ? atomic_load(&stat_readback_ns) / 1e6 / readbacks : 0.0, atomic_load(&stat_readback_pixels) / 1e6);
+        fclose(f);
+    }
+}
+static void *dump_thread(void *unused) {
+    (void) unused;
+    size_t capacity = 4096 * 4096 * 4;
+    dump_frame = malloc(capacity);
+    uint64_t serial = 0;
+    for (;;) {
+        struct lr_scanout_frame frame;
+        if (dump_frame && lr_drm_scanout_copy(dump_frame, capacity, serial, &frame) == 1) {
+            serial = frame.serial; dump_info = frame;
+            // ISH_SCANOUT_SNAPSHOT_SECONDS=<n> (host test runs only): also keep
+            // the current frame as <file>.<seconds>.bgra every n seconds.
+            static long snapshot_every = -1; static uint64_t last_snapshot;
+            if (snapshot_every < 0) { const char *v = getenv("ISH_SCANOUT_SNAPSHOT_SECONDS"); snapshot_every = v ? atol(v) : 0; }
+            uint64_t snap_now = monotonic_ns();
+            if (snapshot_every > 0 && snap_now - last_snapshot >= (uint64_t) snapshot_every * 1000000000ULL) {
+                last_snapshot = snap_now;
+                char name[4096]; snprintf(name, sizeof name, "%s.%04.0f.bgra", dump_path, (snap_now - dump_started_ns) / 1e9);
+                FILE *snap = fopen(name, "wb");
+                if (snap) { fwrite(dump_frame, 4, (size_t) frame.width * frame.height, snap); fclose(snap); }
+            }
+            atomic_fetch_add(&dump_frames, 1);
+            atomic_fetch_add(&dump_damage_pixels, (unsigned long long) frame.damage_width * frame.damage_height);
+        }
+        atomic_fetch_add(&dump_polls, 1);
+        // <file>.fps: one line per second "<second> <frames> <damage pixels>"
+        // so a drag's frame rate can be read apart from idle time.
+        static uint64_t second_start; static unsigned long long second_frames, second_damage; static FILE *fps;
+        uint64_t now = monotonic_ns();
+        if (!second_start) second_start = now;
+        if (now - second_start >= 1000000000ULL) {
+            if (!fps) { char name[4096]; snprintf(name, sizeof name, "%s.fps", dump_path); fps = fopen(name, "w"); }
+            unsigned long long frames = atomic_load(&dump_frames), damage = atomic_load(&dump_damage_pixels);
+            if (fps) { fprintf(fps, "%.0f %llu %llu\n", (now - dump_started_ns) / 1e9, frames - second_frames, damage - second_damage); fflush(fps); }
+            second_frames = frames; second_damage = damage; second_start = now;
+        }
+        struct timespec wait = {0, 4000000}; nanosleep(&wait, NULL);   // 250 Hz, above any display rate
+    }
+    return NULL;
+}
+static void dump_start(void) {
+    static atomic_bool started;
+    if (atomic_exchange(&started, true)) return;
+    dump_path = getenv("ISH_SCANOUT_DUMP");
+    if (!dump_path || !dump_path[0]) return;
+    dump_started_ns = monotonic_ns();
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, dump_thread, NULL) == 0) { pthread_detach(thread); atexit(dump_write); }
+}
+
+static void presentation_damage(uint32_t fb_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    dump_start();
+    lock(&presented.lock);
+    if (presented.fb_id != fb_id) { presented.fb_id = fb_id; presented.x2 = 0; x = 0; y = 0; w = h = UINT32_MAX / 2; }
+    if (!presented.x2) { presented.x1 = x; presented.y1 = y; presented.x2 = x + w; presented.y2 = y + h; }
+    else {
+        presented.x1 = x < presented.x1 ? x : presented.x1; presented.y1 = y < presented.y1 ? y : presented.y1;
+        presented.x2 = x + w > presented.x2 ? x + w : presented.x2; presented.y2 = y + h > presented.y2 ? y + h : presented.y2;
+    }
+    presented.serial++;
+    unlock(&presented.lock);
+}
+
+// Deferred presentation readback. Xorg reports damage with DIRTYFB many times
+// per frame while a window is dragged; reading each rectangle back from the
+// GPU at once made the X server wait for the whole GPU pipeline every time.
+// DIRTYFB now only records the union of the damage; the viewer's copy (once
+// per displayed frame) performs one readback of everything damaged since the
+// previous copy, from its own thread. LR_SCANOUT_DEFERRED=1 enables it (off by
+// default until device measurements confirm it).
+static struct { lock_t lock; uint32_t fb_id; uint32_t x1, y1, x2, y2; } pending_readback = {.lock = LOCK_INITIALIZER};
+// Last time a viewer copied the scanout (monotonic ns; 0: never).
+static atomic_ullong last_viewer_copy_ns;
+static bool scanout_deferred(void) {
+    // Automatic: deferred while a viewer is polling lr_drm_scanout_copy (it
+    // performs the readback at most 500 ms later, once per displayed frame);
+    // immediate otherwise, so nothing is left unread when no viewer runs.
+    // Mac drag benchmark (Xfce, 960x540): the same window positions per
+    // second, GPU readback time 2.37 s -> 0.74 s. LR_SCANOUT_DEFERRED=0/1
+    // forces either mode (measurement).
+    static int forced = -2;
+    if (forced == -2) { const char *v = getenv("LR_SCANOUT_DEFERRED"); forced = v && v[0] == '1' ? 1 : v && v[0] == '0' ? 0 : -1; }
+    if (forced >= 0) return forced;
+    unsigned long long last = atomic_load(&last_viewer_copy_ns);
+    return last && monotonic_ns() - last < 500000000ULL;
+}
+static void defer_readback(uint32_t fb_id, const struct lr_virgl_box *box) {
+    lock(&pending_readback.lock);
+    if (pending_readback.fb_id != fb_id) { pending_readback.fb_id = fb_id; pending_readback.x2 = 0; }
+    uint32_t x2 = box->x + box->w, y2 = box->y + box->h;
+    if (!pending_readback.x2) { pending_readback.x1 = box->x; pending_readback.y1 = box->y; pending_readback.x2 = x2; pending_readback.y2 = y2; }
+    else {
+        if (box->x < pending_readback.x1) pending_readback.x1 = box->x;
+        if (box->y < pending_readback.y1) pending_readback.y1 = box->y;
+        if (x2 > pending_readback.x2) pending_readback.x2 = x2;
+        if (y2 > pending_readback.y2) pending_readback.y2 = y2;
+    }
+    unlock(&pending_readback.lock);
+}
+static void flush_deferred_readback(void) {
+    lock(&pending_readback.lock);
+    uint32_t fb_id = pending_readback.fb_id, x1 = pending_readback.x1, y1 = pending_readback.y1, x2 = pending_readback.x2, y2 = pending_readback.y2;
+    pending_readback.x2 = 0;
+    unlock(&pending_readback.lock);
+    if (!x2) return;
+    struct lr_virgl_box box = {x1, y1, 0, x2 - x1, y2 - y1, 1};
+    scanout_sync_box(fb_id, &box);   // reads back and records presentation damage
+}
+
+int lr_drm_scanout_copy(void *dst, size_t capacity, uint64_t serial, struct lr_scanout_frame *frame) {
+    atomic_store(&last_viewer_copy_ns, monotonic_ns());
+    flush_deferred_readback();
+    lock(&presented.lock);
+    uint64_t current = presented.serial;
+    uint32_t x1 = presented.x1, y1 = presented.y1, x2 = presented.x2, y2 = presented.y2, damaged_fb = presented.fb_id;
+    unlock(&presented.lock);
+    lock(&kms.lock);
+    struct framebuffer *fb = kms.mode_valid ? fb_lookup(kms.scanout) : NULL;
+    if (!fb && kms.mode_valid && kms.scanout >= FB_BASE && kms.scanout < FB_BASE + MAX_FBS && kms.fbs[kms.scanout - FB_BASE].buffer)
+        fb = &kms.fbs[kms.scanout - FB_BASE];   // closed but still displayed
+    struct framebuffer copy = fb ? *fb : (struct framebuffer) {0};
+    uint32_t scanout = kms.scanout;
+    if (fb) atomic_fetch_add(&copy.buffer->refs, 1);
+    unlock(&kms.lock);
+    if (!fb) return _ENODEV;
+    int result = 0;
+    if (!copy.buffer->res_id || !copy.buffer->host_map) { result = _ENOTSUP; goto out; }
+    if (current == serial || damaged_fb != scanout) goto out;   // nothing new for the displayed framebuffer
+    size_t row = (size_t) copy.width * 4;
+    if (capacity < row * copy.height) { result = _ENOSPC; goto out; }
+    const uint8_t *source = (const uint8_t *) copy.buffer->host_map + copy.offset;
+    uint8_t *out = dst;
+    for (uint32_t y = 0; y < copy.height; y++) {
+        uint32_t *pixels = (uint32_t *) (out + y * row);
+        memcpy(pixels, source + (size_t) y * copy.pitch, row);
+        if (copy.format == FOURCC('X', 'R', '2', '4'))
+            for (uint32_t x = 0; x < copy.width; x++) pixels[x] |= 0xff000000u;   // undefined X byte -> opaque
+    }
+    x2 = x2 < copy.width ? x2 : copy.width; y2 = y2 < copy.height ? y2 : copy.height;
+    if (x1 >= x2 || y1 >= y2) { x1 = y1 = 0; x2 = copy.width; y2 = copy.height; }
+    *frame = (struct lr_scanout_frame) {copy.width, copy.height, x1, y1, x2 - x1, y2 - y1, current};
+    lock(&presented.lock);
+    if (presented.serial == current) presented.x2 = 0;   // consumed; later damage starts a new rectangle
+    unlock(&presented.lock);
+    result = 1;
+out:
+    buffer_put(copy.buffer);
+    return result;
+}
+
+// DRM_IOCTL_MODE_DIRTYFB: front-buffer renderers (Xorg modesetting/glamor)
+// draw into the scanout and report the changed rectangles instead of
+// flipping. Copy the union of those rectangles from the host GPU so the
+// display bridge and X11 readback see the frame the GPU produced.
+struct fb_dirty { uint32_t fb_id, flags, color, num_clips; uint64_t clips_ptr; };
+struct clip_rect { uint16_t x1, y1, x2, y2; };
+_Static_assert(sizeof(struct fb_dirty) == 24 && sizeof(struct clip_rect) == 8, "drm_mode.h layouts");
+#define DIRTY_CLIPS_MAX 256
+static int dirty_fb(struct fb_dirty *d) {
+    atomic_fetch_add(&stat_dirtyfb, 1);
+    lock(&kms.lock);
+    struct framebuffer *fb = fb_lookup(d->fb_id);
+    bool host = fb && fb->buffer->res_id;
+    uint32_t width = fb ? fb->width : 0, height = fb ? fb->height : 0;
+    unlock(&kms.lock);
+    if (!fb) return _ENOENT;
+    if (d->flags & ~3U) return _EINVAL;
+    if (!host) return 0;  // dumb buffers already live in guest memory
+    if (!d->num_clips) { scanout_sync(d->fb_id); return 0; }
+    uint32_t count = d->num_clips < DIRTY_CLIPS_MAX ? d->num_clips : DIRTY_CLIPS_MAX;
+    struct clip_rect clips[DIRTY_CLIPS_MAX];
+    if (user_read((addr_t) d->clips_ptr, clips, sizeof(clips[0]) * count)) return _EFAULT;
+    // DRM_MODE_FB_DIRTY_ANNOTATE_COPY (1) lists source/destination pairs: both are damage.
+    uint32_t x1 = UINT32_MAX, y1 = UINT32_MAX, x2 = 0, y2 = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        struct clip_rect r = clips[i];
+        if (r.x2 <= r.x1 || r.y2 <= r.y1) continue;
+        x1 = r.x1 < x1 ? r.x1 : x1;
+        y1 = r.y1 < y1 ? r.y1 : y1;
+        x2 = r.x2 > x2 ? r.x2 : x2;
+        y2 = r.y2 > y2 ? r.y2 : y2;
+    }
+    if (x1 >= x2 || y1 >= y2 || x1 >= width || y1 >= height) return 0;
+    struct lr_virgl_box box = {x1, y1, 0, x2 - x1, y2 - y1, 1};
+    if (scanout_deferred()) { defer_readback(d->fb_id, &box); dump_start(); return 0; }
+    scanout_sync_box(d->fb_id, &box);
+    return 0;
 }
 
 static int set_crtc(struct mode_crtc *c) {
@@ -770,6 +1049,7 @@ static ssize_t drm_ioctl_size(int command) {
         case DRM_MODE_ADDFB2_: case DRM_MODE_GETFB2_: return sizeof(struct fb_cmd2);
         case DRM_MODE_RMFB_: return 4;
         case DRM_MODE_PAGE_FLIP_: return sizeof(struct page_flip);
+        case DRM_MODE_DIRTYFB_: return sizeof(struct fb_dirty);
         case DRM_MODE_GETPLANE_: return sizeof(struct get_plane);
         case DRM_MODE_SETPLANE_: return 48;
         case DRM_MODE_OBJ_GETPROPERTIES_: return sizeof(struct obj_get_properties);
@@ -876,7 +1156,8 @@ static int virgl_execbuffer(struct drm_file *f, struct virtgpu_execbuffer *e, bo
         fprintf(stderr, "VIRTGPU: execbuffer refused: flags %#x syncobjs in %u out %u\n", e->flags, v1 ? 0 : e->num_in_syncobjs, v1 ? 0 : e->num_out_syncobjs);
         return _EINVAL;
     }
-    if (e->size % 4 || e->size > VIRTGPU_COMMAND_LIMIT || e->num_bo_handles > MAX_HANDLES) return _EINVAL;
+    if (e->size % 4 || e->size > VIRTGPU_COMMAND_LIMIT || e->num_bo_handles > MAX_SUBMIT_HANDLES) return _EINVAL;
+    atomic_fetch_add(&virgl_generation, 1);
     for (uint32_t i = 0; i < e->num_bo_handles; i++) {
         uint32_t handle;
         if (user_read((addr_t) (e->bo_handles + 4 * i), &handle, 4)) return _EFAULT;
@@ -895,6 +1176,16 @@ static int virgl_execbuffer(struct drm_file *f, struct virtgpu_execbuffer *e, bo
 static int virgl_transfer(struct drm_file *f, struct virtgpu_transfer *t, int to_host) {
     uint32_t res = virgl_resource(f, t->bo_handle);
     if (!res) return _ENOENT;
+    if (!to_host && readback_cache_enabled()) {
+        // X11 readers (x11vnc polling through glamor) read the scanout row by
+        // row; each host readback also waits for all GPU work. Its pages are
+        // already current when no command was submitted since the last sync.
+        lock(&f->lock);
+        struct buffer *b = lookup(f, t->bo_handle);
+        bool current = b && atomic_load(&b->synced_generation) == atomic_load(&virgl_generation);
+        unlock(&f->lock);
+        if (current) return 0;
+    }
     return virgl->transfer(f->ctx_id, res, to_host, t->level, t->stride, t->layer_stride, &t->box, t->offset) ? _EINVAL : 0;
 }
 
@@ -1004,6 +1295,7 @@ static int drm_ioctl_dispatch(struct fd *fd, int command, void *arg) {
         }
         case DRM_MODE_SETCRTC_: return set_crtc(arg);
         case DRM_MODE_PAGE_FLIP_: return page_flip(fd, f, arg);
+        case DRM_MODE_DIRTYFB_: return dirty_fb(arg);
         case DRM_MODE_ADDFB_: {
             struct fb_cmd *c = arg;
             if (c->bpp != 32 || (c->depth != 24 && c->depth != 32)) return _EINVAL;
@@ -1099,7 +1391,7 @@ static int drm_mmap(struct fd *fd, struct mem *mem, page_t start, pages_t pages,
     if (!(flags & MMAP_SHARED) || offset < 0) return _EINVAL;
     lock(&f->lock);
     struct buffer *found = NULL;
-    for (unsigned i = 0; i < MAX_HANDLES && !found; i++) {
+    for (uint32_t i = 0; i < f->handle_capacity && !found; i++) {
         struct buffer *b = f->handles[i];
         if (b && (uint64_t) offset >= b->map_offset && (uint64_t) offset - b->map_offset <= b->size &&
                 bytes <= b->size - ((uint64_t) offset - b->map_offset))
@@ -1158,8 +1450,9 @@ static int drm_close(struct fd *fd) {
     }
     unlock(&kms.lock);
     while (n) buffer_put(released[--n]);
-    for (unsigned i = 0; i < MAX_HANDLES; i++)
+    for (uint32_t i = 0; i < f->handle_capacity; i++)
         if (f->handles[i]) buffer_put(f->handles[i]);
+    free(f->handles);
     if (f->ctx_created) virgl->context_destroy(f->ctx_id);
     free(f);
     return 0;

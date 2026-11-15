@@ -240,8 +240,8 @@ int_t sys_sched_getaffinity(pid_t_ pid, dword_t cpusetsize, addr_t cpuset_addr) 
             return _ESRCH;
     }
 
-    unsigned cpus = PLATFORM_GUEST_CPU_COUNT;
-    char cpuset[(PLATFORM_GUEST_CPU_COUNT + 7) / 8];
+    unsigned cpus = platform_guest_cpu_count();
+    char cpuset[(PLATFORM_GUEST_CPU_MAX + 7) / 8];
     if (cpusetsize < sizeof(cpuset))
         return _EINVAL;
     memset(cpuset, 0, sizeof(cpuset));

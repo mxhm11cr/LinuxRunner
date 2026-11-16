@@ -684,6 +684,12 @@ desktop_ready() {
         d = failed; gsub(/^ +| +$/, "", d); gsub(/ +/, ",", d); if (d != "") printf "degraded=%s\n", d
         exit !ok }' "$session/desktop-state.probe" > "$session/desktop-state.new"
 }
+# VS Code (Electron): its GPU process costs several seconds at every start
+# under the interpreter and an editor draws fine without it (Mac Debian:
+# window 56.7 s -> 48.8 s). Only when the user has no argv.json of their own.
+if [ -d /usr/share/code ] && [ -n "${HOME:-}" ] && [ ! -e "$HOME/.vscode/argv.json" ]; then
+ mkdir -p "$HOME/.vscode" 2>/dev/null && printf '{\n\t// Set by LinuxRunner: faster start without the GPU process. Remove to use the GPU.\n\t"disable-hardware-acceleration": true\n}\n' > "$HOME/.vscode/argv.json" 2>/dev/null || true
+fi
 i=0 started=$(date +%s)
 lr_stage components_started "environment=$environment"
 echo "DESKTOP_STARTUP: waiting for window manager, panel and desktop (wm=$wm panel=$panel surface=$surface)"

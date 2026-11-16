@@ -166,6 +166,7 @@ perform_catalog() {
 # package-plan.txt keeps the package manager's own transaction text.
 perform_plan() {
  kind=${operation#plan-}
+ [ "$kind" != install ] || mozilla_firefox_repo || return 1
  case "$distro" in
  debian)
   case "$kind" in
@@ -206,9 +207,35 @@ perform_plan() {
  mv package-plan.tsv.new package-plan.tsv
  echo "PACKAGE_PLAN: kind=$kind changes=$(wc -l < package-plan.tsv | tr -d ' ')"
 }
+# Ubuntu (and Zorin OS, Pop!_OS) package Firefox only as a snap stub; snapd
+# cannot run without systemd. Use Mozilla's own APT repository, pinned above
+# the stub as Mozilla documents (https://support.mozilla.org/kb/install-firefox-linux).
+mozilla_firefox_repo() {
+ [ "$distro" = debian ] || return 0
+ case "$os_id" in ubuntu|zorin|pop|linuxmint) ;; *) return 0;; esac
+ case "$value" in firefox|firefox-l10n-*) ;; *) return 0;; esac
+ [ -f /etc/apt/sources.list.d/mozilla.list ] && [ -f /etc/apt/preferences.d/mozilla ] && return 0
+ echo "PACKAGE_STAGE: Adding Mozilla's Firefox repository (Ubuntu's firefox package needs snap)"
+ key=/etc/apt/keyrings/packages.mozilla.org.asc
+ install -d -m 0755 /etc/apt/keyrings || return 1
+ if command -v curl >/dev/null; then curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o "$key.new"
+ elif command -v wget >/dev/null; then wget -q -O "$key.new" https://packages.mozilla.org/apt/repo-signing-key.gpg
+ # apt's own HTTPS downloader, present wherever apt is (Ubuntu Base has neither curl nor wget).
+ elif [ -x /usr/lib/apt/apt-helper ]; then /usr/lib/apt/apt-helper download-file https://packages.mozilla.org/apt/repo-signing-key.gpg "$key.new"
+ else echo 'PACKAGE_FAILURE: category=NETWORK_UNAVAILABLE detail=no downloader for the Mozilla repository key'; return 1; fi || { echo 'PACKAGE_FAILURE: category=NETWORK_UNAVAILABLE detail=Mozilla signing key download failed'; return 1; }
+ # Mozilla's published key fingerprint; checked when gpg is available.
+ if command -v gpg >/dev/null; then
+  gpg -n -q --import --import-options import-show "$key.new" 2>/dev/null | grep -q 35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3 || { echo 'PACKAGE_FAILURE: category=REPOSITORY_METADATA_ERROR detail=Mozilla signing key fingerprint mismatch'; rm -f "$key.new"; return 1; }
+ fi
+ mv "$key.new" "$key" && chmod 644 "$key"
+ echo "deb [signed-by=$key] https://packages.mozilla.org/apt mozilla main" > /etc/apt/sources.list.d/mozilla.list
+ printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' > /etc/apt/preferences.d/mozilla
+ apt-get update -o Dir::Etc::sourcelist=sources.list.d/mozilla.list -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0
+}
 # Applies the transaction the user reviewed in the app, without prompts.
 perform_apply() {
  kind=${operation#apply-}
+ [ "$kind" != install ] || mozilla_firefox_repo || return 1
  echo "PACKAGE_STAGE: Applying the reviewed $kind of $value"
  case "$distro:$kind" in
   debian:install) DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --no-remove -- "$value";;
@@ -269,6 +296,7 @@ perform() {
  update)
   if [ "$distro" = debian ]; then apt-get update; else apk update; fi;;
  install)
+  mozilla_firefox_repo || return 1
   if [ "$distro" = debian ]; then DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends --no-remove -y -- "$value"; else apk add -- "$value"; fi;;
  upgrade)
   # Upgrade only the named package. Never perform an automatic system upgrade

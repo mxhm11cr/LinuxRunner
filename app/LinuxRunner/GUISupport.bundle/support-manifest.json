@@ -84,7 +84,7 @@
     },
     {
       "name": "desktop-components.sh",
-      "sha256": "eb3123115ec0cca672406d54437dedf5d5e0dbe8f1d655584259a6f5c7c823ec",
+      "sha256": "13939feb89ccc59eadcfd844863126b1f847f047331fa729d8d8fb272bfcc865",
       "mode": "0755"
     },
     {
@@ -494,7 +494,7 @@
     },
     {
       "name": "package-manager.sh",
-      "sha256": "7ec1418c621545143dacb0afdea509e714899a3371b2772215100cdc87969255",
+      "sha256": "cd9f0544447a0a6d27ca927381267ef0df2edba7c9f975cb901f74d487b194d2",
       "mode": "0755"
     },
     {
@@ -539,7 +539,7 @@
     },
     {
       "name": "session.sh",
-      "sha256": "7a7eb05c35fa67d41e571ec5c6a018e7a8057c2e0097ee022320e7b16f5df0a8",
+      "sha256": "5e76e4b1572be2b63e11bcd24b17f1457ce29190df6ffde1089550d7642f8c50",
       "mode": "0755"
     },
     {

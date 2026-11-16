@@ -381,11 +381,13 @@ wait_x_display() {
     # gets 150 s; Xvfb 10 s. A dead server still ends the wait at once.
     lr_x_limit=10; [ "${native_xorg:-0}" != 1 ] || lr_x_limit=150
     lr_x_deadline=$(( $(date +%s) + lr_x_limit ))
+    # i counts the polls; the x11-ready line reports it (set -u: it must be set).
+    i=0
     while [ ! -S "/tmp/.X11-unix/X$display" ]; do
         [ ! -f "$session/stop" ] || return 1
         kill -0 "$xpid" 2>/dev/null || return 1
         [ "$(date +%s)" -lt "$lr_x_deadline" ] || return 1
-        sleep .1
+        i=$((i+1)); sleep .1
     done
 }
 start_x_display

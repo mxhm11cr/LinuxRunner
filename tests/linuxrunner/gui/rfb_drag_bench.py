@@ -8,7 +8,7 @@ moves 60 times a second for 2 x 5 s (right, then back), like a finger drag.
 'full' requests the whole screen (the app before)."""
 import glob, json, os, socket, struct, subprocess, sys, threading, time
 exchange, policy, out = sys.argv[1], sys.argv[2], sys.argv[3]
-ready = os.path.join(exchange, 'drag-ready')
+ready = os.environ.get('DRAG_READY') or os.path.join(exchange, 'drag-ready')
 for _ in range(600):
     if os.path.exists(ready) and open(ready).read().strip(): break
     time.sleep(0.5)
@@ -81,10 +81,20 @@ def runtime_cpu():
 cpu_before = runtime_cpu()
 pointer(0, x0, y0); time.sleep(0.3); pointer(1, x0, y0); time.sleep(0.2)
 start = time.time(); marks = {'drag_start_s': None}
-for direction in (1, -1):
-    for i in range(300):
-        dx = (i + 1) * direction if direction > 0 else 300 - (i + 1)
-        pointer(1, x0 + dx, y0 + dx // 3); time.sleep(1 / 60)
+# DRAG_CIRCLE=1: move the window in fast circles (radius 150, ~1 per second, 4 times).
+if os.environ.get('DRAG_CIRCLE') == '1':
+    import math
+    for k in range(4 * 60):
+        a = 2 * math.pi * k / 60
+        pointer(1, int(x0 + 150 * math.cos(a) - 150), int(y0 + 120 * math.sin(a)) + 120); time.sleep(1 / 60)
+    step = 0
+# DRAG_STEP (pixels per 60 Hz step, default 1): fast drags with large jumps.
+step = int(os.environ.get('DRAG_STEP', '1')) if os.environ.get('DRAG_CIRCLE') != '1' else 0; span = 300 if step == 1 else 400
+for rep in range(0 if step == 0 else 1 if step == 1 else 4):
+    for direction in (1, -1):
+        for i in range(0, span, step):
+            dx = i + step if direction > 0 else span - (i + step)
+            pointer(1, x0 - (0 if step == 1 else 200) + dx, y0 + dx // 3); time.sleep(1 / 60)
 pointer(0, x0, y0); end = time.time()
 cpu_drag = runtime_cpu() - cpu_before
 time.sleep(2)

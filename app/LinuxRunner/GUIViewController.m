@@ -34,7 +34,24 @@ static NSString *SupportSHA256(NSData *data){
     unsigned char digest[CC_SHA256_DIGEST_LENGTH];CC_SHA256(data.bytes,(CC_LONG)data.length,digest);
     NSMutableString *hex=[NSMutableString new];for(unsigned i=0;i<sizeof digest;i++)[hex appendFormat:@"%02x",digest[i]];return hex;
 }
+// The bundled support files cannot change while the app runs, so the full
+// deploy (read, SHA-256 and compare all ~8 MB of resources) runs once per Linux
+// environment per launch. Later calls (Modes refreshes, desktop starts) reuse
+// it while the folder and its manifest are still in place.
+static NSString *LRPreparedSupportRoot; static NSURL *LRPreparedSupportFolder;
+static NSURL *PrepareSupportFull(NSError **error);
 static NSURL *PrepareSupport(NSError **error){
+    NSString *root=LRRuntimeBridge.activeRootName;
+    @synchronized(NSFileManager.class){
+        if(LRPreparedSupportFolder&&[LRPreparedSupportRoot isEqualToString:root]&&
+           [NSFileManager.defaultManager fileExistsAtPath:[LRPreparedSupportFolder URLByAppendingPathComponent:@"support-manifest.json"].path])
+            return LRPreparedSupportFolder;
+    }
+    NSURL *folder=PrepareSupportFull(error);
+    if(folder)@synchronized(NSFileManager.class){LRPreparedSupportRoot=[root copy];LRPreparedSupportFolder=folder;}
+    return folder;
+}
+static NSURL *PrepareSupportFull(NSError **error){
     NSFileManager *fm=NSFileManager.defaultManager;
     NSURL *folder=[LRRuntimeBridge exchangeURL:LRRuntimeBridge.activeRootName];
     for(NSString *component in [LRGUIFolder componentsSeparatedByString:@"/"]){

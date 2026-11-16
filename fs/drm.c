@@ -580,7 +580,7 @@ static void fill_crtc(struct mode_crtc *c) {
 static void presentation_damage(uint32_t fb_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
 static uint64_t monotonic_ns(void);
 // Measurement counters (written with ISH_SCANOUT_DUMP statistics).
-static atomic_ullong stat_dirtyfb, stat_readbacks, stat_readback_ns, stat_readback_pixels;
+static atomic_ullong stat_dirtyfb, stat_dirtyfb_overflow, stat_readbacks, stat_readback_ns, stat_readback_pixels;
 static void scanout_sync_box(uint32_t fb_id, const struct lr_virgl_box *area) {
     lock(&kms.lock);
     struct framebuffer *fb = fb_lookup(fb_id);
@@ -653,6 +653,7 @@ static void dump_write(void) {
             (unsigned long long) dump_frames, (unsigned long long) dump_polls, seconds, dump_frames / (seconds > 0 ? seconds : 1),
             (unsigned long long) dump_damage_pixels, dump_info.width, dump_info.height);
         unsigned long long readbacks = atomic_load(&stat_readbacks);
+        fprintf(f, "dirtyfb_over_max_clips=%llu\n", (unsigned long long) atomic_load(&stat_dirtyfb_overflow));
         fprintf(f, "dirtyfb=%llu readbacks=%llu readback_ms_total=%.1f readback_ms_avg=%.3f readback_mpixels=%.1f\n",
             (unsigned long long) atomic_load(&stat_dirtyfb), readbacks, atomic_load(&stat_readback_ns) / 1e6,
             readbacks ? atomic_load(&stat_readback_ns) / 1e6 / readbacks : 0.0, atomic_load(&stat_readback_pixels) / 1e6);
@@ -741,12 +742,32 @@ static bool scanout_deferred(void) {
     static int forced = -2;
     if (forced == -2) { const char *v = getenv("LR_SCANOUT_DEFERRED"); forced = v && v[0] == '1' ? 1 : v && v[0] == '0' ? 0 : -1; }
     if (forced >= 0) return forced;
+    // Off by default again after 1.1.2: window trails were reported on iPhone
+    // with GNOME after 1.1.2 enabled the automatic mode, and they could not be
+    // reproduced on the Mac. Immediate readback is the 1.1.1 behaviour.
+    // LR_SCANOUT_DEFERRED=2 restores the automatic mode for testing.
+    static int automatic = -1;
+    if (automatic < 0) { const char *v = getenv("LR_SCANOUT_DEFERRED"); automatic = v && v[0] == '2'; }
+    if (!automatic) return false;
     unsigned long long last = atomic_load(&last_viewer_copy_ns);
     return last && monotonic_ns() - last < 500000000ULL;
 }
 static void defer_readback(uint32_t fb_id, const struct lr_virgl_box *box) {
     lock(&pending_readback.lock);
-    if (pending_readback.fb_id != fb_id) { pending_readback.fb_id = fb_id; pending_readback.x2 = 0; }
+    if (pending_readback.fb_id != fb_id) {
+        // A different framebuffer (compositors that alternate buffers, e.g.
+        // GNOME's mutter): read the previous one's pending damage back now.
+        // Dropping it left stale regions there, shown as window trails.
+        uint32_t old_fb = pending_readback.fb_id, x1 = pending_readback.x1, y1 = pending_readback.y1, x2 = pending_readback.x2, y2 = pending_readback.y2;
+        pending_readback.fb_id = fb_id; pending_readback.x2 = 0;
+        if (x2 > x1 && y2 > y1) {
+            unlock(&pending_readback.lock);
+            struct lr_virgl_box old = {x1, y1, 0, x2 - x1, y2 - y1, 1};
+            scanout_sync_box(old_fb, &old);
+            lock(&pending_readback.lock);
+            if (pending_readback.fb_id != fb_id) { pending_readback.fb_id = fb_id; pending_readback.x2 = 0; }
+        }
+    }
     uint32_t x2 = box->x + box->w, y2 = box->y + box->h;
     if (!pending_readback.x2) { pending_readback.x1 = box->x; pending_readback.y1 = box->y; pending_readback.x2 = x2; pending_readback.y2 = y2; }
     else {
@@ -827,7 +848,12 @@ static int dirty_fb(struct fb_dirty *d) {
     if (d->flags & ~3U) return _EINVAL;
     if (!host) return 0;  // dumb buffers already live in guest memory
     if (!d->num_clips) { scanout_sync(d->fb_id); return 0; }
-    uint32_t count = d->num_clips < DIRTY_CLIPS_MAX ? d->num_clips : DIRTY_CLIPS_MAX;
+    // More rectangles than one read takes (fast window drags under GNOME):
+    // read the whole framebuffer back. Only the first DIRTY_CLIPS_MAX used to
+    // count, so the rest of the damage was never read back and stayed on
+    // screen as window trails.
+    if (d->num_clips > DIRTY_CLIPS_MAX) { atomic_fetch_add(&stat_dirtyfb_overflow, 1); scanout_sync(d->fb_id); return 0; }
+    uint32_t count = d->num_clips;
     struct clip_rect clips[DIRTY_CLIPS_MAX];
     if (user_read((addr_t) d->clips_ptr, clips, sizeof(clips[0]) * count)) return _EFAULT;
     // DRM_MODE_FB_DIRTY_ANNOTATE_COPY (1) lists source/destination pairs: both are damage.
@@ -1078,8 +1104,9 @@ static int drm_ioctl(struct fd *fd, int command, void *arg) {
     if (drm_trace_enabled()) {
         struct drm_file *f = fd->data;
         uint32_t flags = (command & 0xff) == 0xb0 ? ((struct page_flip *) arg)->flags : 0;
-        fprintf(stderr, "DRM_IOCTL pid=%d file=%p nr=%#x flags=%#x result=%d scanout=%u seq=%llu queued=%u\n", current->pid, (void *) f,
-            (uint32_t) command & 0xff, flags, result, kms.scanout,
+        uint32_t target_fb = (command & 0xff) == 0xb1 ? ((struct fb_dirty *) arg)->fb_id : (command & 0xff) == 0xb0 ? ((struct page_flip *) arg)->fb_id : 0;
+        fprintf(stderr, "DRM_IOCTL pid=%d file=%p nr=%#x flags=%#x result=%d scanout=%u fb=%u seq=%llu queued=%u\n", current->pid, (void *) f,
+            (uint32_t) command & 0xff, flags, result, kms.scanout, target_fb,
             (unsigned long long) vblank_now().sequence, f ? f->event_count : 0);
     }
     return result;

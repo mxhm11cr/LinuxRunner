@@ -116,8 +116,8 @@ LinuxRunner supports ARM64 iPhone and iPad layouts, touch input, hardware keyboa
 
 | | Minimum guidance | Recommended |
 | --- | --- | --- |
-| Device | iPhone 11 or newer, or an equivalent compatible iPad/device | iPhone 12 Pro or newer, or a compatible device with more memory |
-| RAM | At least 4 GB | At least 6 GB |
+| Device | iPhone 6s or newer, or an equivalent compatible iPad/device | iPhone 12 Pro or newer, or a compatible device with more memory |
+| RAM | At least 2 GB | At least 6 GB |
 | OS | iOS/iPadOS 15.0 deployment target; see caveat below | iOS/iPadOS 26 or newer, preferably a recently tested version |
 | Free storage | Approximately 3–4 GB for basic use | At least 10 GB for desktops and larger applications |
 

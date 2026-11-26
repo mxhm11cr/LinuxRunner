@@ -4,8 +4,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  actions: write
+  actions: read
+           ActionScript
   contents: read
+            write
+            
 
 concurrency:
   group: actions-cleanup
